@@ -1,0 +1,158 @@
+import type { EmployeeDoc, SafeEmployee, UserDoc } from "@db/mongo/types";
+import { Collections } from "@db/mongo/collections";
+import { findById, getCollection, insertDoc, updateById } from "./mongo";
+
+export type { SafeEmployee };
+
+export function omitEmployeePassword(employee: EmployeeDoc): SafeEmployee {
+  const { passwordHash: _, ...safe } = employee;
+  return safe;
+}
+
+const PERSONAL_FIELD_DEFAULTS = {
+  firstName: null,
+  lastName: null,
+  secondName: null,
+  dateOfBirth: null,
+  sex: null,
+  city: null,
+  notificationLanguage: null,
+  headOfDepartmentUserIds: [] as number[],
+};
+
+function personalPatchFromUser(user: UserDoc): Partial<EmployeeDoc> {
+  return {
+    firstName: user.firstName ?? null,
+    lastName: user.lastName ?? null,
+    secondName: user.secondName ?? null,
+    dateOfBirth: user.dateOfBirth ?? null,
+    sex: user.sex ?? null,
+    city: user.city ?? null,
+    notificationLanguage: user.notificationLanguage ?? null,
+    headOfDepartmentUserIds: user.headOfDepartmentUserIds ?? [],
+  };
+}
+export async function findEmployeeByUserId(userId: number) {
+  const col = await getCollection<EmployeeDoc>(Collections.employees);
+  return col.findOne({ userId });
+}
+
+export async function findEmployeeByEmail(email: string) {
+  const col = await getCollection<EmployeeDoc>(Collections.employees);
+  return col.findOne({ email: email.toLowerCase() });
+}
+
+export async function createEmployeeFromUser(
+  user: UserDoc,
+  options: { inviteId?: number | null } = {},
+) {
+  const existing = await findEmployeeByUserId(user.id);
+  if (existing) {
+    return syncEmployeeFromUser(user, options.inviteId ?? existing.inviteId);
+  }
+
+  const now = new Date();
+  return insertDoc<EmployeeDoc>(Collections.employees, {
+    userId: user.id,
+    inviteId: options.inviteId ?? null,
+    name: user.name ?? "",
+    email: (user.email ?? "").toLowerCase(),
+    passwordHash: user.passwordHash ?? "",
+    avatar: user.avatar,
+    department: user.department,
+    position: user.position,
+    phone: user.phone,
+    ...PERSONAL_FIELD_DEFAULTS,
+    ...personalPatchFromUser(user),
+    status: user.status,
+    permissions: user.permissions ?? [],
+    joinedAt: now,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+export async function syncEmployeeFromUser(
+  user: UserDoc,
+  inviteId?: number | null,
+) {
+  const existing = await findEmployeeByUserId(user.id);
+  const now = new Date();
+
+  const patch: Partial<EmployeeDoc> = {
+    name: user.name ?? "",
+    email: (user.email ?? "").toLowerCase(),
+    passwordHash: user.passwordHash ?? "",
+    avatar: user.avatar,
+    department: user.department,
+    position: user.position,
+    phone: user.phone,
+    ...personalPatchFromUser(user),
+    status: user.status,
+    permissions: user.permissions ?? [],
+    updatedAt: now,
+  };
+
+  if (inviteId !== undefined) {
+    patch.inviteId = inviteId;
+  }
+
+  if (existing) {
+    await updateById<EmployeeDoc>(Collections.employees, existing.id, patch);
+    return findById<EmployeeDoc>(Collections.employees, existing.id);
+  }
+
+  if (user.role !== "employee") {
+    return null;
+  }
+
+  return insertDoc<EmployeeDoc>(Collections.employees, {
+    userId: user.id,
+    inviteId: inviteId ?? null,
+    name: user.name ?? "",
+    email: (user.email ?? "").toLowerCase(),
+    passwordHash: user.passwordHash ?? "",
+    avatar: user.avatar,
+    department: user.department,
+    position: user.position,
+    phone: user.phone,
+    ...PERSONAL_FIELD_DEFAULTS,
+    ...personalPatchFromUser(user),
+    status: user.status,
+    permissions: user.permissions ?? [],
+    joinedAt: user.createdAt ?? now,
+    createdAt: user.createdAt ?? now,
+    updatedAt: now,
+  });
+}
+
+export async function deactivateEmployeeByUserId(userId: number) {
+  const existing = await findEmployeeByUserId(userId);
+  if (!existing) return null;
+
+  return updateById<EmployeeDoc>(Collections.employees, existing.id, {
+    status: "inactive",
+    updatedAt: new Date(),
+  });
+}
+
+export async function backfillEmployeesFromUsers() {
+  const usersCol = await getCollection<UserDoc>(Collections.users);
+  const employees = await usersCol.find({ role: "employee" }).toArray();
+
+  let created = 0;
+  let updated = 0;
+
+  for (const user of employees) {
+    const existing = await findEmployeeByUserId(user.id);
+    if (existing) {
+      await syncEmployeeFromUser(user);
+      updated++;
+    } else {
+      await createEmployeeFromUser(user);
+      created++;
+    }
+  }
+
+  return { created, updated, total: employees.length };
+}
