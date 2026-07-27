@@ -49,7 +49,7 @@ export default function AdminPermissions() {
           ) : (
             <Save size={14} />
           )}
-          Save defaults
+          Save
         </Button>
       </div>
 

@@ -7,6 +7,8 @@ export type StreamNotification = {
   type?: string;
   taskId?: number | null;
   projectId?: number | null;
+  activityId?: number | null;
+  leaveRequestId?: number | null;
   link?: string | null;
 };
 
@@ -15,16 +17,16 @@ type StreamPayload =
   | { type: "ping" }
   | { type: "notifications"; notifications: StreamNotification[] };
 
-type InvalidateFn = () => void;
+type InvalidateFn = (notifications: StreamNotification[]) => void;
 
 let eventSource: EventSource | null = null;
 let subscriberCount = 0;
 const listeners = new Set<(notifications: StreamNotification[]) => void>();
 const invalidators = new Set<InvalidateFn>();
 
-function runInvalidators() {
+function runInvalidators(notifications: StreamNotification[]) {
   for (const fn of invalidators) {
-    fn();
+    fn(notifications);
   }
 }
 
@@ -35,7 +37,7 @@ function handleMessage(event: MessageEvent<string>) {
       return;
     }
 
-    runInvalidators();
+    runInvalidators(payload.notifications);
     for (const listener of listeners) {
       listener(payload.notifications);
     }

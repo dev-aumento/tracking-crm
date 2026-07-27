@@ -1,13 +1,31 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate } from "react-router";
 import { trpc } from "@/providers/trpc";
 import { useAuth } from "@/hooks/useAuth";
 import { useSidebarWidth } from "@/hooks/useSidebarWidth";
+import { useTaskLiveTimer } from "@/hooks/useTaskLiveTimer";
+import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
 import { UserAvatar } from "@/components/shared/UserAvatar";
-import { formatTimeAgo, formatElapsedHMS, cn } from "@/lib/utils";
+import {
+  PriorityMetaSelect,
+  isTaskPriority,
+} from "@/components/tasks/task-form-ui";
+import { formatTimeAgo, formatElapsedHMS, cn, priorityConfig } from "@/lib/utils";
 import { formatDueLabel, formatOverdueLabel, isTaskOverdue } from "@/lib/task-deadline";
+import {
+  formatWorkZoneDate,
+  formatWorkZoneDateTime,
+  workZoneDateKey,
+  workZoneDateParts,
+  workZoneWallTimeToUtc,
+} from "@/lib/timezone";
 import { invalidateProjectStats } from "@/lib/project-stats";
+import { invalidateTaskQueries } from "@/lib/invalidate-on-notifications";
+import { applyOptimisticTaskUpdate, patchTaskByIdCache } from "@/lib/task-cache";
+import { refreshDashboardStats } from "@/lib/dashboard-refresh";
+import { buildAbsoluteTaskViewUrl } from "@/lib/task-notification-link";
+import { hasPermission } from "@/lib/permissions";
+import { canChangeTaskAssignee } from "@/lib/change-assignee-permission";
 import {
   isTaskFavorite,
   readTaskPref,
@@ -15,20 +33,39 @@ import {
   TASK_PREFS_CHANGED_EVENT,
   writeTaskPref,
 } from "@/lib/task-prefs";
-import { setTaskCreatePrefill } from "@/lib/task-create-prefill";
-import { canCreateTask, tryOpenCreateTask } from "@/lib/create-task-permission";
-import { getDisplayDescription } from "@/lib/task-files";
-import { TaskFilesSection } from "@/components/tasks/TaskFilesSection";
-import { TaskTimeLoggedSection } from "@/components/tasks/TaskTimeLoggedSection";
+import { assertAttachmentFileSize, getDisplayDescription, readFileAsBase64, resolveFileMimeType } from "@/lib/task-files";
+import { createAttachmentPreviewResolver } from "@/lib/attachment-preview";
 import {
-  getWorkflowTransitions,
+  buildRichCommentMessage,
+  parseStoredCommentMessage,
+  richCommentPlainText,
+  type CommentMediaRef,
+} from "@/lib/rich-comment";
+import {
+  RichTextCommentEditor,
+  type RichTextCommentEditorHandle,
+} from "@/components/tasks/RichTextCommentEditor";
+import { CommentRichContent } from "@/components/tasks/CommentRichContent";
+import { TaskFilesSection } from "@/components/tasks/TaskFilesSection";
+import { TaskCommentBubble } from "@/components/tasks/TaskCommentBubble";
+import { TaskActivityBubble } from "@/components/tasks/TaskActivityBubble";
+import { TaskCommentComposer } from "@/components/tasks/TaskCommentComposer";
+import { TaskTimeLoggedSection } from "@/components/tasks/TaskTimeLoggedSection";
+import { TaskTimeEstimatePopover } from "@/components/tasks/TaskTimeEstimatePopover";
+import { UserSearchSelect } from "@/components/tasks/UserSearchSelect";
+import { ProjectSearchSelect } from "@/components/tasks/ProjectSearchSelect";
+import { TaskTrackedTimeDisplay } from "@/components/tasks/TaskTrackedTimeDisplay";
+import {
+  formatEstimatedDuration,
+  isTrackedOverEstimate,
+} from "@/lib/task-time-estimate";
+import {
   resolveWorkflowState,
-  workflowLabel,
   workflowStateToDb,
   type WorkflowState,
 } from "@/lib/task-workflow";
 import type { DbTaskStatus } from "@/lib/task-workflow";
-import { KANBAN_STAGES, kanbanStageColor, kanbanStageLabel, taskPipelineStage, type ProjectPipelineStageKey } from "@/lib/task-kanban";
+import { kanbanStageColor, kanbanStageLabel, mergePipelineStageSources, taskPipelineStage, type PipelineStageDef, type ProjectPipelineStageKey } from "@/lib/task-kanban";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -50,36 +87,37 @@ import {
 } from "@/components/ui/dialog";
 import {
   X, Clock, Play, Pause,
-  Loader2, Plus, Link2, ExternalLink,
-  Paperclip, LayoutGrid, Smile, Mic, Send, ChevronDown, ChevronUp, Trash2,
-  Flame, Menu, UserPlus, Search, PanelRightClose, PanelRightOpen, MoreHorizontal,
-  EyeOff, VolumeX, Volume2, CheckSquare, ListTree, CopyPlus, LayoutTemplate,
-  Star, Store, Bot, ChevronRight, Calendar, Folder, User, Users, Copy,
+  Loader2, Plus, Minus, Link2, ExternalLink,
+  Trash2, Pencil,
+  Flame, UserPlus, Search, PanelRightClose, PanelRightOpen, MoreHorizontal,
+  VolumeX, Star, Calendar, Folder, User, Users, Copy, Flag, Hourglass,
+  ChevronDown, ChevronUp,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 interface TaskDetailPanelProps {
   taskId: number;
+  highlightActivityId?: number | null;
+  onHighlightDone?: () => void;
   onClose: () => void;
   onTaskOpen?: (taskId: number) => void;
+  /** Project pipeline stages (defaults + custom kanban sections). */
+  pipelineStages?: PipelineStageDef[];
 }
 
-const QUICK_EMOJIS = ["👍", "😊", "🎉", "✅", "❤️", "🔥"];
+function readCustomPipelineStages(project: unknown) {
+  if (!project || typeof project !== "object") return null;
+  const custom = (project as { customPipelineStages?: PipelineStageDef[] | null })
+    .customPipelineStages;
+  return Array.isArray(custom) ? custom : null;
+}
 
-const MARKET_APPS = [
-  { id: "slack", name: "Slack", description: "Post task updates to a Slack channel" },
-  { id: "gdrive", name: "Google Drive", description: "Attach and sync files from Drive" },
-  { id: "github", name: "GitHub", description: "Link commits and pull requests" },
-  { id: "zapier", name: "Zapier", description: "Connect this task to 5,000+ apps" },
-] as const;
-
-const AUTOMATION_RULES = [
-  { id: "status_notify", label: "Notify participants when status changes" },
-  { id: "deadline_remind", label: "Send reminder 1 day before deadline" },
-  { id: "assignee_notify", label: "Notify assignee on new comments" },
-  { id: "complete_archive", label: "Move to archive when marked done" },
-] as const;
+function readPipelineStagesField(value: unknown) {
+  if (!value || typeof value !== "object") return null;
+  const stages = (value as { pipelineStages?: PipelineStageDef[] | null }).pipelineStages;
+  return Array.isArray(stages) ? stages : null;
+}
 
 function toDateTimeLocalValue(value?: string | Date | null) {
   if (!value) return "";
@@ -105,11 +143,11 @@ const META_DATETIME_CLASS = cn(
   "[&::-webkit-datetime-edit]:leading-9 [&::-webkit-datetime-edit-fields-wrapper]:p-0",
 );
 
+/** Collapsed task description height before Expand is offered. */
+const DESCRIPTION_COLLAPSED_MAX_HEIGHT = 220;
+
 function formatTaskDateTime(value?: string | Date | null) {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("en-US", {
+  return formatWorkZoneDateTime(value, {
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -117,94 +155,148 @@ function formatTaskDateTime(value?: string | Date | null) {
   });
 }
 
-export function TaskDetailPanel({ taskId, onClose, onTaskOpen }: TaskDetailPanelProps) {
+function activityDayKey(value: Date | string) {
+  return workZoneDateKey(value);
+}
+
+function formatChatDateLabel(value: Date | string) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+
+  const valueKey = workZoneDateKey(d);
+  const todayKey = workZoneDateKey(new Date());
+  if (valueKey === todayKey) return "Today";
+
+  const { year, month, day } = workZoneDateParts(new Date());
+  const yesterdayKey = workZoneDateKey(workZoneWallTimeToUtc(year, month, day - 1, 12));
+  if (valueKey === yesterdayKey) return "Yesterday";
+
+  return formatWorkZoneDate(d, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
+}
+
+export function TaskDetailPanel({
+  taskId,
+  highlightActivityId = null,
+  onHighlightDone,
+  onClose,
+  onTaskOpen,
+  pipelineStages: pipelineStagesProp,
+}: TaskDetailPanelProps) {
+  const [isPresent, setIsPresent] = useState(true);
+  const requestClose = useCallback(() => setIsPresent(false), []);
   const sidebarWidth = useSidebarWidth();
   const utils = trpc.useUtils();
-  const { data: task, isLoading } = trpc.task.getById.useQuery({ id: taskId });
+  const { data: task, isLoading } = trpc.task.getById.useQuery(
+    { id: taskId },
+  );
   const { data: timeData } = trpc.task.getTimeTracked.useQuery({ taskId });
+  // Local wall-clock drives the display; only poll occasionally to resync from the server.
   const { data: activeTimer } = trpc.task.getActiveTimer.useQuery(
     { taskId },
-    { refetchInterval: (q) => (q.state.data?.startedAt && !q.state.data?.paused ? 1000 : false) },
+    {
+      refetchInterval: (q) =>
+        q.state.data?.startedAt && !q.state.data?.paused ? 30_000 : false,
+      refetchOnWindowFocus: true,
+    },
   );
   const { data: usersData } = trpc.user.listForPicker.useQuery({ limit: 500 });
-  const { data: projectsData } = trpc.project.list.useQuery();
+  const { data: projectsData } = trpc.project.listForPicker.useQuery();
 
-  const [timerElapsed, setTimerElapsed] = useState(0);
+  const {
+    elapsedSeconds: timerElapsed,
+    isRunning: isTimerRunning,
+    isPaused: isTimerPaused,
+    hasActiveSession,
+  } = useTaskLiveTimer(activeTimer);
 
   useEffect(() => {
+    if (!isPresent) return;
+
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") requestClose();
     };
-    document.body.style.overflow = "hidden";
     window.addEventListener("keydown", onKey);
     return () => {
-      document.body.style.overflow = "";
       window.removeEventListener("keydown", onKey);
     };
-  }, [onClose]);
+  }, [isPresent, requestClose]);
+
+  useBodyScrollLock(isPresent);
 
   useEffect(() => {
-    if (!activeTimer?.startedAt || activeTimer.paused) {
-      setTimerElapsed(activeTimer?.accumulatedSeconds ?? 0);
-      return;
-    }
-    const start = new Date(activeTimer.startedAt).getTime();
-    const base = activeTimer.accumulatedSeconds ?? 0;
-    const tick = () => setTimerElapsed(base + Math.max(0, Math.floor((Date.now() - start) / 1000)));
-    tick();
-    const id = window.setInterval(tick, 1000);
-    return () => window.clearInterval(id);
-  }, [activeTimer?.startedAt, activeTimer?.paused, activeTimer?.accumulatedSeconds]);
+    setIsPresent(true);
+  }, [taskId]);
 
-  const isTimerRunning = !!activeTimer?.startedAt && !activeTimer?.paused;
-  const isTimerPaused = !!activeTimer?.paused;
-  const hasActiveSession = !!activeTimer;
-  const liveSessionSeconds = isTimerRunning ? timerElapsed : (activeTimer?.accumulatedSeconds ?? 0);
-  const trackedSeconds = (timeData?.totalSeconds ?? 0) + (hasActiveSession ? liveSessionSeconds : 0);
+  const liveSessionSeconds = isTimerRunning
+    ? timerElapsed
+    : (activeTimer?.accumulatedSeconds ?? (hasActiveSession ? timerElapsed : 0));
+  const completedSeconds = timeData?.totalSeconds ?? 0;
+  /** Live clock shows the current session from 00:00:00; idle shows total from entries. */
+  const displaySeconds = hasActiveSession ? liveSessionSeconds : completedSeconds;
+  const trackedSeconds = completedSeconds + (hasActiveSession ? liveSessionSeconds : 0);
 
   const panel = (
-    <AnimatePresence>
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[125] bg-black/35"
-        onClick={onClose}
-        aria-hidden
-      />
-      <motion.aside
-        initial={{ x: "100%" }}
-        animate={{ x: 0 }}
-        exit={{ x: "100%" }}
-        transition={{ type: "spring", damping: 32, stiffness: 320 }}
-        style={{ left: sidebarWidth, width: `calc(100vw - ${sidebarWidth}px)` }}
-        className="fixed top-0 bottom-0 z-[130] bg-[#EEF0F3] flex overflow-visible border-l border-gray-200 shadow-[4px_0_24px_rgba(15,23,42,0.08)]"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-      >
-        {isLoading || !task ? (
-          <div className="flex-1 flex items-center justify-center bg-white">
-            <Loader2 size={32} className="animate-spin text-gray-400" />
-          </div>
-        ) : (
-          <TaskPanelContent
-            key={taskId}
-            task={task}
-            taskId={taskId}
-            onClose={onClose}
-            onTaskOpen={onTaskOpen}
-            usersData={usersData?.users ?? []}
-            projectsData={projectsData ?? []}
-            timeData={timeData}
-            trackedSeconds={trackedSeconds}
-            liveSessionSeconds={liveSessionSeconds}
-            isTimerRunning={isTimerRunning}
-            isTimerPaused={isTimerPaused}
-            hasActiveSession={hasActiveSession}
+    <AnimatePresence onExitComplete={onClose}>
+      {isPresent ? (
+        <>
+          <motion.div
+            key="task-detail-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 z-[125] bg-black/35"
+            onClick={requestClose}
+            aria-hidden
           />
-        )}
-      </motion.aside>
+          <motion.aside
+            key="task-detail-panel"
+            initial={{ x: "100%" }}
+            animate={{ x: 0 }}
+            exit={{ x: "100%" }}
+            transition={{ type: "spring", damping: 32, stiffness: 320 }}
+            style={{ left: sidebarWidth, width: `calc(100vw - ${sidebarWidth}px)` }}
+            className="fixed top-0 bottom-0 z-[130] bg-[#EEF0F3] flex min-h-0 h-[100dvh] overflow-visible border-l border-gray-200 shadow-[4px_0_24px_rgba(15,23,42,0.08)]"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+          >
+            {isLoading && !task ? (
+              <div className="flex-1 flex items-center justify-center bg-white">
+                <Loader2 size={32} className="animate-spin text-gray-400" />
+              </div>
+            ) : !task ? (
+              <div className="flex-1 flex items-center justify-center bg-white text-sm text-gray-500">
+                Task not found
+              </div>
+            ) : (
+              <TaskPanelContent
+                key={taskId}
+                task={task}
+                taskId={taskId}
+                highlightActivityId={highlightActivityId}
+                onHighlightDone={onHighlightDone}
+                onClose={requestClose}
+                onTaskOpen={onTaskOpen}
+                pipelineStagesProp={pipelineStagesProp}
+                usersData={usersData?.users ?? []}
+                projectsData={projectsData ?? []}
+                timeData={timeData}
+                trackedSeconds={trackedSeconds}
+                displaySeconds={displaySeconds}
+                liveSessionSeconds={liveSessionSeconds}
+                isTimerRunning={isTimerRunning}
+                isTimerPaused={isTimerPaused}
+                hasActiveSession={hasActiveSession}
+              />
+            )}
+          </motion.aside>
+        </>
+      ) : null}
     </AnimatePresence>
   );
 
@@ -214,12 +306,16 @@ export function TaskDetailPanel({ taskId, onClose, onTaskOpen }: TaskDetailPanel
 function TaskPanelContent({
   task,
   taskId,
+  highlightActivityId,
+  onHighlightDone,
   onClose,
   onTaskOpen,
+  pipelineStagesProp,
   usersData,
   projectsData,
   timeData,
   trackedSeconds,
+  displaySeconds,
   liveSessionSeconds,
   isTimerRunning,
   isTimerPaused,
@@ -227,60 +323,98 @@ function TaskPanelContent({
 }: {
   task: NonNullable<ReturnType<typeof trpc.task.getById.useQuery>["data"]>;
   taskId: number;
+  highlightActivityId?: number | null;
+  onHighlightDone?: () => void;
   onClose: () => void;
   onTaskOpen?: (taskId: number) => void;
+  pipelineStagesProp?: PipelineStageDef[];
   usersData: Array<{ id: number; name: string | null; avatar?: string | null }>;
   projectsData: Array<{ id: number; name: string; color?: string | null }>;
   timeData: ReturnType<typeof trpc.task.getTimeTracked.useQuery>["data"];
   trackedSeconds: number;
+  displaySeconds: number;
   liveSessionSeconds: number;
   isTimerRunning: boolean;
   isTimerPaused: boolean;
   hasActiveSession: boolean;
 }) {
   const { user } = useAuth();
-  const navigate = useNavigate();
   const utils = trpc.useUtils();
-  const chatInputRef = useRef<HTMLInputElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const participantsRef = useRef<HTMLDivElement>(null);
+  const chatFeedRef = useRef<HTMLDivElement>(null);
+  const descriptionEditorRef = useRef<RichTextCommentEditorHandle>(null);
+
+  const projectId =
+    typeof task.projectId === "number" && task.projectId > 0
+      ? task.projectId
+      : typeof (task.project as { id?: number } | null)?.id === "number"
+        ? (task.project as { id: number }).id
+        : null;
+
+  const taskHasPipelineStages = Boolean(readPipelineStagesField(task)?.length);
+  const { data: taskProject } = trpc.project.getById.useQuery(
+    { id: projectId! },
+    {
+      enabled:
+        projectId != null &&
+        projectId > 0 &&
+        !pipelineStagesProp?.length &&
+        !taskHasPipelineStages,
+    },
+  );
+
+  const pipelineStages = useMemo(() => {
+    if (pipelineStagesProp && pipelineStagesProp.length > 0) {
+      return pipelineStagesProp;
+    }
+    const fromTask = readPipelineStagesField(task);
+    if (fromTask && fromTask.length > 0) return fromTask;
+    const fromProject = readPipelineStagesField(taskProject);
+    if (fromProject && fromProject.length > 0) return fromProject;
+    return mergePipelineStageSources(
+      readCustomPipelineStages(taskProject),
+      readCustomPipelineStages(task.project),
+    );
+  }, [pipelineStagesProp, task, taskProject]);
 
   const [description, setDescription] = useState(task.description || "");
+  const [descriptionHtml, setDescriptionHtml] = useState("");
+  const [descriptionMedia, setDescriptionMedia] = useState<CommentMediaRef[]>([]);
   const [editingDescription, setEditingDescription] = useState(false);
-  const [showAddParticipant, setShowAddParticipant] = useState(false);
-  const [participantToAdd, setParticipantToAdd] = useState<number | "">("");
-  const [showAddObserver, setShowAddObserver] = useState(false);
-  const [observerToAdd, setObserverToAdd] = useState<number | "">("");
-  const [chatMessage, setChatMessage] = useState("");
-  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(task.title);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const titleInputRef = useRef<HTMLInputElement>(null);
   const [linkCopied, setLinkCopied] = useState(false);
   const [idCopied, setIdCopied] = useState(false);
+  const linkCopiedTimerRef = useRef<number | null>(null);
+  const copyLinkBtnRef = useRef<HTMLButtonElement>(null);
+  const [linkCopiedTipPos, setLinkCopiedTipPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
-  const [showTimeTracking, setShowTimeTracking] = useState(false);
+  const [descriptionOverflows, setDescriptionOverflows] = useState(false);
+  const descriptionContentRef = useRef<HTMLDivElement>(null);
+  const [timeDetailsExpanded, setTimeDetailsExpanded] = useState(false);
+  const [taskDetailsExpanded, setTaskDetailsExpanded] = useState(false);
+  const [participantsExpanded, setParticipantsExpanded] = useState(false);
+  const [observersExpanded, setObserversExpanded] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [showSwitchTimerConfirm, setShowSwitchTimerConfirm] = useState(false);
   const [showChatPanel, setShowChatPanel] = useState(true);
   const [showChatSearch, setShowChatSearch] = useState(false);
   const [chatSearch, setChatSearch] = useState("");
-  const [isFollowing, setIsFollowing] = useState(() => readTaskPref(taskId, "following", true));
+  const [chatFeedMode, setChatFeedMode] = useState<"comments" | "all">("comments");
+  const [commentWindowSize, setCommentWindowSize] = useState(4);
+  const skipChatAutoScrollRef = useRef(false);
   const [isMuted, setIsMuted] = useState(() => readTaskPref(taskId, "muted", false));
   const [isFavorite, setIsFavorite] = useState(() => isTaskFavorite(taskId));
-  const [showSubtaskDialog, setShowSubtaskDialog] = useState(false);
-  const [subtaskTitle, setSubtaskTitle] = useState("");
-  const [showMarketDialog, setShowMarketDialog] = useState(false);
-  const [showAutomationDialog, setShowAutomationDialog] = useState(false);
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
   const [showDelegateDialog, setShowDelegateDialog] = useState(false);
   const [delegateUserId, setDelegateUserId] = useState<number | "">("");
-  const [installedApps, setInstalledApps] = useState<string[]>(() =>
-    readTaskPref(taskId, "market-apps", [] as string[]),
-  );
-  const [automationRules, setAutomationRules] = useState<Record<string, boolean>>(() =>
-    readTaskPref(taskId, "automations", {} as Record<string, boolean>),
-  );
   const [isDeferred, setIsDeferred] = useState(() => readTaskPref(taskId, "deferred", false));
-  const [statusSelectKey, setStatusSelectKey] = useState(0);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [highlightedActivityId, setHighlightedActivityId] = useState<number | null>(null);
 
   useEffect(() => {
     setIsDeferred(readTaskPref(taskId, "deferred", false));
@@ -298,18 +432,35 @@ function TaskPanelContent({
   }, [taskId]);
 
   const workflowState = resolveWorkflowState(task.status, isDeferred);
-  const workflowTransitions = getWorkflowTransitions(workflowState);
 
   useEffect(() => {
     setDescription(task.description || "");
+    const parsed = parseStoredCommentMessage(task.description || "");
+    if (parsed.isRich) {
+      setDescriptionHtml(parsed.body);
+      setDescriptionMedia(parsed.media);
+    } else {
+      setDescriptionHtml(task.description || "");
+      setDescriptionMedia([]);
+    }
   }, [task.description]);
 
   useEffect(() => {
-    setIsFollowing(readTaskPref(taskId, "following", true));
+    if (!editingTitle) setTitleDraft(task.title);
+  }, [task.title, editingTitle]);
+
+  useEffect(() => {
+    if (!editingTitle) return;
+    const id = window.requestAnimationFrame(() => {
+      titleInputRef.current?.focus();
+      titleInputRef.current?.select();
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [editingTitle]);
+
+  useEffect(() => {
     setIsMuted(readTaskPref(taskId, "muted", false));
     setIsFavorite(isTaskFavorite(taskId));
-    setInstalledApps(readTaskPref(taskId, "market-apps", [] as string[]));
-    setAutomationRules(readTaskPref(taskId, "automations", {} as Record<string, boolean>));
   }, [taskId]);
 
   useEffect(() => {
@@ -318,7 +469,6 @@ function TaskPanelContent({
       if (detail?.taskId !== taskId) return;
       if (detail.key === "favorite") setIsFavorite(isTaskFavorite(taskId));
       if (detail.key === "muted") setIsMuted(readTaskPref(taskId, "muted", false));
-      if (detail.key === "following") setIsFollowing(readTaskPref(taskId, "following", true));
     };
     window.addEventListener(TASK_PREFS_CHANGED_EVENT, onPrefsChanged);
     return () => window.removeEventListener(TASK_PREFS_CHANGED_EVENT, onPrefsChanged);
@@ -330,76 +480,177 @@ function TaskPanelContent({
   };
 
   const updateMutation = trpc.task.update.useMutation({
-    onSuccess: () => {
-      utils.task.getById.invalidate({ id: taskId });
-      utils.task.list.invalidate();
+    onMutate: async (input) => {
+      const previousById = utils.task.getById.getData({ id: taskId });
+      await applyOptimisticTaskUpdate(utils, task, input);
+      if (input.createdBy !== undefined) {
+        const creator =
+          input.createdBy == null
+            ? null
+            : usersData.find((u) => u.id === input.createdBy) ??
+              (task.creator?.id === input.createdBy ? task.creator : null) ??
+              previousById?.creator ??
+              null;
+        patchTaskByIdCache(utils, taskId, { creator });
+      }
+      if (input.assigneeId !== undefined) {
+        const assignee =
+          input.assigneeId == null
+            ? null
+            : usersData.find((u) => u.id === input.assigneeId) ??
+              (task.assignee?.id === input.assigneeId ? task.assignee : null) ??
+              previousById?.assignee ??
+              null;
+        patchTaskByIdCache(utils, taskId, { assignee });
+      }
+      return { previousById };
+    },
+    onError: (_error, _input, context) => {
+      if (context?.previousById) {
+        utils.task.getById.setData({ id: taskId }, context.previousById);
+      }
+      void utils.task.list.invalidate();
+      void refreshDashboardStats(utils);
+    },
+    onSettled: async () => {
+      await invalidateTaskQueries(utils, { taskIds: [taskId] });
       invalidateProjectStats(utils, task.projectId);
       setEditingDescription(false);
     },
   });
 
+  const { data: myActiveTimer } = trpc.task.getMyActiveTimer.useQuery(undefined, {
+    refetchInterval: (q) => (q.state.data?.startedAt && !q.state.data?.paused ? 5000 : false),
+  });
+
+  const invalidateTimerQueries = (otherTaskId?: number) => {
+    void utils.task.getMyActiveTimer.invalidate();
+    void utils.task.getActiveTimer.invalidate();
+    void utils.task.getTimeTracked.invalidate();
+    if (otherTaskId && otherTaskId !== taskId) {
+      void utils.task.getActiveTimer.invalidate({ taskId: otherTaskId });
+      void utils.task.getTimeTracked.invalidate({ taskId: otherTaskId });
+      void utils.task.getById.invalidate({ id: otherTaskId });
+    }
+    void utils.task.getById.invalidate({ id: taskId });
+    void utils.task.list.invalidate();
+    void utils.timeEntry.getStats.invalidate();
+    void utils.timeEntry.list.invalidate();
+    void utils.dashboard.getStats.invalidate();
+  };
+
   const startTimerMutation = trpc.task.startTimer.useMutation({
-    onSuccess: () => {
-      utils.task.getActiveTimer.invalidate({ taskId });
-      utils.task.getById.invalidate({ id: taskId });
+    onMutate: async () => {
+      await utils.task.getActiveTimer.cancel({ taskId });
+      const previous = utils.task.getActiveTimer.getData({ taskId });
+      // Show the live clock immediately (don't wait for the network round-trip).
+      utils.task.getActiveTimer.setData(
+        { taskId },
+        {
+          taskId,
+          startedAt: new Date(),
+          paused: false,
+          accumulatedSeconds: 0,
+        },
+      );
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      utils.task.getActiveTimer.setData({ taskId }, context?.previous ?? null);
+    },
+    onSuccess: (data, variables) => {
+      // Align the clock to the server start time so elapsed seconds stay accurate.
+      utils.task.getActiveTimer.setData(
+        { taskId: variables.taskId },
+        {
+          taskId: variables.taskId,
+          startedAt: data.startedAt,
+          paused: false,
+          accumulatedSeconds: 0,
+        },
+      );
+      invalidateTimerQueries(myActiveTimer?.taskId);
+      void utils.task.getActiveTimer.invalidate({ taskId: variables.taskId });
+      void utils.task.getTimeTracked.invalidate({ taskId: variables.taskId });
     },
   });
 
   const pauseTimerMutation = trpc.task.pauseTimer.useMutation({
+    onMutate: async () => {
+      await utils.task.getActiveTimer.cancel({ taskId });
+      const previous = utils.task.getActiveTimer.getData({ taskId });
+      // Pause closes the open entry server-side — clear the live session immediately.
+      utils.task.getActiveTimer.setData({ taskId }, null);
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous !== undefined) {
+        utils.task.getActiveTimer.setData({ taskId }, context.previous);
+      }
+    },
     onSuccess: () => {
-      utils.task.getActiveTimer.invalidate({ taskId });
-      utils.task.getTimeTracked.invalidate({ taskId });
-      utils.task.getById.invalidate({ id: taskId });
-      utils.task.list.invalidate();
-      utils.timeEntry.getStats.invalidate();
-      utils.timeEntry.list.invalidate();
-      utils.dashboard.getStats.invalidate();
+      invalidateTimerQueries();
     },
   });
 
   const stopTimerMutation = trpc.task.stopTimer.useMutation({
+    onMutate: async () => {
+      await utils.task.getActiveTimer.cancel({ taskId });
+      const previous = utils.task.getActiveTimer.getData({ taskId });
+      utils.task.getActiveTimer.setData({ taskId }, null);
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous !== undefined) {
+        utils.task.getActiveTimer.setData({ taskId }, context.previous);
+      }
+    },
     onSuccess: () => {
-      utils.task.getActiveTimer.invalidate({ taskId });
-      utils.task.getTimeTracked.invalidate({ taskId });
-      utils.task.getById.invalidate({ id: taskId });
-      utils.task.list.invalidate();
-      utils.timeEntry.getStats.invalidate();
-      utils.timeEntry.list.invalidate();
-      utils.dashboard.getStats.invalidate();
+      invalidateTimerQueries();
     },
   });
 
   const deleteMutation = trpc.task.delete.useMutation({
-    onSuccess: () => {
-      utils.task.list.invalidate();
-      utils.task.getById.invalidate({ id: taskId });
+    onSuccess: async () => {
+      await invalidateTaskQueries(utils, { taskIds: [taskId] });
       invalidateProjectStats(utils, task.projectId);
       setShowDeleteConfirm(false);
       onClose();
     },
   });
 
-  const createSubtaskMutation = trpc.subtask.create.useMutation({
-    onSuccess: () => {
-      utils.task.getById.invalidate({ id: taskId });
-      setShowSubtaskDialog(false);
-      setSubtaskTitle("");
-      showNotice("Subtask created");
-    },
-  });
-
   const addCommentMutation = trpc.task.addComment.useMutation({
     onSuccess: () => {
       utils.task.getById.invalidate({ id: taskId });
-      setChatMessage("");
     },
   });
+
+  const editCommentMutation = trpc.task.editComment.useMutation({
+    onSuccess: () => utils.task.getById.invalidate({ id: taskId }),
+  });
+
+  const deleteCommentMutation = trpc.task.deleteComment.useMutation({
+    onSuccess: () => utils.task.getById.invalidate({ id: taskId }),
+  });
+
+  const addAttachmentMutation = trpc.task.addAttachment.useMutation({
+    onSuccess: () => {
+      utils.task.getById.invalidate({ id: taskId });
+      utils.task.listAttachments.invalidate({ taskId });
+    },
+  });
+
+  const crmFiles = task.attachments ?? [];
+  const isCrmFilesLoading = false;
+
+  const { data: taskListData, isLoading: isTaskListLoading } = trpc.task.list.useQuery(
+    { limit: 100 },
+    { enabled: showChatPanel, staleTime: 60_000 },
+  );
 
   const addParticipantMutation = trpc.task.addParticipant.useMutation({
     onSuccess: () => {
       utils.task.getById.invalidate({ id: taskId });
-      setShowAddParticipant(false);
-      setParticipantToAdd("");
     },
   });
 
@@ -410,8 +661,6 @@ function TaskPanelContent({
   const addObserverMutation = trpc.task.addObserver.useMutation({
     onSuccess: () => {
       utils.task.getById.invalidate({ id: taskId });
-      setShowAddObserver(false);
-      setObserverToAdd("");
     },
   });
 
@@ -419,28 +668,90 @@ function TaskPanelContent({
     onSuccess: () => utils.task.getById.invalidate({ id: taskId }),
   });
 
-  const canCreate = canCreateTask(user);
-  const isOwner = task.createdBy === user?.id;
+  const sameUserId = (a?: number | null, b?: number | null) =>
+    a != null && b != null && Number(a) === Number(b);
+
+  const isOwner = sameUserId(task.createdBy, user?.id);
+  const isAssignee = sameUserId(task.assigneeId, user?.id);
+  const isParticipant = task.participants.some((p) => sameUserId(p.id, user?.id));
+  /** Full task edits (deadline, priority, estimate, files, etc.). */
   const canManage =
-    user?.role === "admin" || user?.role === "manager" || isOwner || task.assigneeId === user?.id;
-  const canChangeOwner = user?.role === "admin" || user?.role === "manager";
-  const canManageParticipants = user?.role === "admin" || user?.role === "manager" || isOwner;
-  const canDelete = user?.role === "admin" || user?.role === "manager" || isOwner;
+    user?.role === "admin" ||
+    user?.role === "manager" ||
+    hasPermission(user, "tasks.edit_all") ||
+    isOwner ||
+    isAssignee;
+  /**
+   * Status / participants / observers remain editable for anyone who can open the task.
+   * Assignee changes are restricted separately (see canChangeAssignee).
+   */
+  const canEditTeamAndStatus = Boolean(user);
+  /** Assignee, participants, owner, and leads can run the task timer. */
+  const canTrackTime = canManage || isParticipant;
+  const canChangeOwner =
+    user?.role === "admin" ||
+    user?.role === "manager" ||
+    hasPermission(user, "tasks.edit_all");
+  const canChangeAssignee = canChangeTaskAssignee(user, task.assigneeId);
+  const canManageParticipants = canEditTeamAndStatus;
+  const canDelete =
+    user?.role === "admin" ||
+    user?.role === "manager" ||
+    hasPermission(user, "tasks.delete") ||
+    isOwner;
 
-  const existingParticipantIds = new Set(task.participants.map((p) => p.id));
-  const existingObserverIds = new Set((task.observers ?? []).map((p) => p.id));
-  const availableUsers = usersData.filter(
-    (u) => !existingParticipantIds.has(u.id) && u.id !== task.assigneeId,
+  const existingParticipantIds = useMemo(
+    () => new Set(task.participants.map((p) => p.id)),
+    [task.participants],
   );
-  const availableObservers = usersData.filter(
-    (u) =>
-      !existingObserverIds.has(u.id) &&
-      !existingParticipantIds.has(u.id) &&
-      u.id !== task.assigneeId &&
-      u.id !== task.createdBy,
+  const existingObserverIds = useMemo(
+    () => new Set((task.observers ?? []).map((p) => p.id)),
+    [task.observers],
   );
 
-  const taskUrl = `${window.location.origin}/tasks?task=${taskId}&view=deadline`;
+  const participantSelectUsers = useMemo(
+    () => usersData.filter((u) => u.id !== task.assigneeId),
+    [usersData, task.assigneeId],
+  );
+
+  const observerSelectUsers = useMemo(() => {
+    const map = new Map<number, { id: number; name: string | null; avatar?: string | null }>();
+    for (const user of usersData) {
+      if (user.id === task.assigneeId) continue;
+      if (existingParticipantIds.has(user.id)) continue;
+      if (user.id === task.createdBy && !existingObserverIds.has(user.id)) continue;
+      map.set(user.id, user);
+    }
+    for (const observer of task.observers ?? []) {
+      map.set(observer.id, observer);
+    }
+    return [...map.values()];
+  }, [
+    usersData,
+    task.assigneeId,
+    task.createdBy,
+    task.observers,
+    existingParticipantIds,
+    existingObserverIds,
+  ]);
+
+  const assigneeKnownUsers = useMemo(() => {
+    const list = [...usersData];
+    if (task.assignee && !list.some((u) => u.id === task.assignee?.id)) {
+      list.push(task.assignee);
+    }
+    return list;
+  }, [usersData, task.assignee]);
+
+  const ownerKnownUsers = useMemo(() => {
+    const list = [...usersData];
+    if (task.creator && !list.some((u) => u.id === task.creator?.id)) {
+      list.push(task.creator);
+    }
+    return list;
+  }, [usersData, task.creator]);
+
+  const taskUrl = buildAbsoluteTaskViewUrl(taskId, task.project?.name);
 
   const memberIds = new Set(
     [task.assigneeId, task.createdBy, ...task.participants.map((p) => p.id)].filter(
@@ -452,12 +763,50 @@ function TaskPanelContent({
   const handleCopyLink = async () => {
     try {
       await navigator.clipboard.writeText(taskUrl);
-      setLinkCopied(true);
-      window.setTimeout(() => setLinkCopied(false), 2000);
     } catch {
-      /* ignore */
+      try {
+        const input = document.createElement("textarea");
+        input.value = taskUrl;
+        input.setAttribute("readonly", "");
+        input.style.position = "fixed";
+        input.style.left = "-9999px";
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        document.body.removeChild(input);
+      } catch {
+        return;
+      }
     }
+
+    const rect = copyLinkBtnRef.current?.getBoundingClientRect();
+    if (rect) {
+      setLinkCopiedTipPos({
+        top: rect.top + rect.height / 2,
+        left: rect.right + 8,
+      });
+    } else {
+      setLinkCopiedTipPos(null);
+    }
+
+    setLinkCopied(true);
+    if (linkCopiedTimerRef.current != null) {
+      window.clearTimeout(linkCopiedTimerRef.current);
+    }
+    linkCopiedTimerRef.current = window.setTimeout(() => {
+      setLinkCopied(false);
+      setLinkCopiedTipPos(null);
+      linkCopiedTimerRef.current = null;
+    }, 1500);
   };
+
+  useEffect(() => {
+    return () => {
+      if (linkCopiedTimerRef.current != null) {
+        window.clearTimeout(linkCopiedTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleCopyId = async () => {
     try {
@@ -470,8 +819,45 @@ function TaskPanelContent({
   };
 
   const taskOverdue = task.dueDate ? isTaskOverdue(task) : false;
-  const descriptionText = getDisplayDescription(task.description);
-  const isLongDescription = descriptionText.length > 280 || descriptionText.split("\n").length > 6;
+  const parsedDescription = parseStoredCommentMessage(task.description || "");
+  const descriptionText = parsedDescription.isRich
+    ? richCommentPlainText(task.description || "")
+    : getDisplayDescription(task.description);
+  const hasRichDescription =
+    parsedDescription.isRich
+    && (descriptionText.length > 0 || parsedDescription.media.length > 0);
+
+  useEffect(() => {
+    setDescriptionExpanded(false);
+  }, [taskId, task.description]);
+
+  useEffect(() => {
+    if (editingDescription) {
+      setDescriptionOverflows(false);
+      return;
+    }
+
+    const el = descriptionContentRef.current;
+    if (!el) return;
+
+    const measure = () => {
+      setDescriptionOverflows(el.scrollHeight > DESCRIPTION_COLLAPSED_MAX_HEIGHT);
+    };
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [
+    task.description,
+    taskId,
+    editingDescription,
+    hasRichDescription,
+    descriptionText,
+  ]);
+
+  const showCollapsedDescription =
+    !descriptionExpanded && descriptionOverflows;
 
   const handlePopOut = () => {
     window.open(taskUrl, "_blank", "noopener,noreferrer");
@@ -482,60 +868,29 @@ function TaskPanelContent({
     updateMutation.mutate({ id: taskId, priority: next });
   };
 
-  const handleCloneTask = () => {
-    tryOpenCreateTask(user, () => {
-      setTaskCreatePrefill({
-        mode: "clone",
-        sourceTitle: task.title,
-        form: {
-          title: task.title,
-          description: task.description ?? "",
-          priority: task.priority as "low" | "medium" | "high" | "urgent",
-          assigneeId: task.assigneeId ?? undefined,
-          ownerId: task.createdBy ?? undefined,
-          projectId: task.projectId ?? undefined,
-          dueDate: toDateTimeLocalValue(task.dueDate),
-          estimatedHours: task.estimatedHours ? String(task.estimatedHours) : "",
-          participantIds: task.participants.map((p) => p.id),
-          observerIds: (task.observers ?? []).map((o) => o.id),
-        },
-      });
-      setMenuOpen(false);
-      onClose();
-      navigate("/tasks?create=true&from=clone");
-    });
+  const startEditingTitle = () => {
+    if (!canManage) return;
+    setTitleDraft(task.title);
+    setEditingTitle(true);
   };
 
-  const handleOpenCreateTask = () => {
-    tryOpenCreateTask(user, () => {
-      setMenuOpen(false);
-      onClose();
-      navigate("/tasks?create=true");
-    });
+  const cancelEditingTitle = () => {
+    setTitleDraft(task.title);
+    setEditingTitle(false);
   };
 
-  const handleCreateFromTemplate = () => {
-    tryOpenCreateTask(user, () => {
-      setTaskCreatePrefill({
-        mode: "template",
-        sourceTitle: task.title,
-        form: {
-          title: `${task.title} (template)`,
-          description: task.description ?? "",
-          priority: task.priority as "low" | "medium" | "high" | "urgent",
-          projectId: task.projectId ?? undefined,
-        },
-      });
-      setMenuOpen(false);
-      onClose();
-      navigate("/tasks?create=true&from=template");
-    });
-  };
-
-  const handleCreateSubtask = () => {
-    const title = subtaskTitle.trim();
-    if (!title) return;
-    createSubtaskMutation.mutate({ taskId, title });
+  const saveTitle = () => {
+    if (!canManage || !editingTitle) return;
+    const next = titleDraft.trim();
+    if (!next) {
+      setTitleDraft(task.title);
+      setEditingTitle(false);
+      return;
+    }
+    if (next !== task.title) {
+      updateMutation.mutate({ id: taskId, title: next });
+    }
+    setEditingTitle(false);
   };
 
   const handleToggleFavorite = () => {
@@ -543,15 +898,6 @@ function TaskPanelContent({
     setTaskFavorite(taskId, next);
     setIsFavorite(next);
     showNotice(next ? "Added to favorites" : "Removed from favorites");
-    setMenuOpen(false);
-  };
-
-  const handleToggleFollow = () => {
-    const next = !isFollowing;
-    setIsFollowing(next);
-    writeTaskPref(taskId, "following", next);
-    showNotice(next ? "Following task" : "Unfollowed task");
-    setMenuOpen(false);
   };
 
   const handleToggleMute = () => {
@@ -559,32 +905,32 @@ function TaskPanelContent({
     setIsMuted(next);
     writeTaskPref(taskId, "muted", next);
     showNotice(next ? "Notifications muted" : "Notifications unmuted");
-    setMenuOpen(false);
-  };
-
-  const handleInstallApp = (appId: string, appName: string) => {
-    if (installedApps.includes(appId)) {
-      showNotice(`${appName} is already installed`);
-      return;
-    }
-    const next = [...installedApps, appId];
-    setInstalledApps(next);
-    writeTaskPref(taskId, "market-apps", next);
-    showNotice(`${appName} installed for this task`);
-  };
-
-  const handleToggleAutomation = (ruleId: string, enabled: boolean) => {
-    const next = { ...automationRules, [ruleId]: enabled };
-    setAutomationRules(next);
-    writeTaskPref(taskId, "automations", next);
-    const rule = AUTOMATION_RULES.find((r) => r.id === ruleId);
-    showNotice(enabled ? `Enabled: ${rule?.label}` : `Disabled: ${rule?.label}`);
   };
 
   const handleAddMember = () => {
-    setShowAddParticipant(true);
+    if (!canManageParticipants) return;
+    setParticipantsExpanded(true);
     setShowChatPanel(true);
     window.setTimeout(() => participantsRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 100);
+  };
+
+  const toggleParticipant = (userId: number) => {
+    if (existingParticipantIds.has(userId)) {
+      removeParticipantMutation.mutate({ taskId, userId });
+      return;
+    }
+    if (existingObserverIds.has(userId)) {
+      removeObserverMutation.mutate({ taskId, userId });
+    }
+    addParticipantMutation.mutate({ taskId, userId });
+  };
+
+  const toggleObserver = (userId: number) => {
+    if (existingObserverIds.has(userId)) {
+      removeObserverMutation.mutate({ taskId, userId });
+      return;
+    }
+    addObserverMutation.mutate({ taskId, userId });
   };
 
 
@@ -620,14 +966,11 @@ function TaskPanelContent({
         showNotice("Task paused");
       }
     }
-
-    setStatusSelectKey((k) => k + 1);
   };
 
   const handleStageChange = (stage: ProjectPipelineStageKey) => {
     updateMutation.mutate({ id: taskId, stage });
-    setStatusSelectKey((k) => k + 1);
-    showNotice(`Moved to ${kanbanStageLabel(stage)}`);
+    showNotice(`Moved to ${kanbanStageLabel(stage, pipelineStages)}`);
   };
 
   const handleResumeTask = () => {
@@ -637,11 +980,38 @@ function TaskPanelContent({
       { id: taskId, status: "in_progress" },
       {
         onSuccess: () => {
-          startTimerMutation.mutate({ taskId });
+          handleStartTimer();
           showNotice("Task resumed");
         },
       },
     );
+  };
+
+  const doStartTimer = () => {
+    if (workflowState === "not_started" || workflowState === "paused") {
+      handleWorkflowChange("in_progress");
+    }
+    startTimerMutation.mutate({ taskId });
+  };
+
+  const handleStartTimer = () => {
+    const otherRunningTaskId =
+      typeof myActiveTimer?.taskId === "number" ? myActiveTimer.taskId : null;
+    if (
+      otherRunningTaskId != null
+      && otherRunningTaskId !== taskId
+      && myActiveTimer?.startedAt
+      && !myActiveTimer.paused
+    ) {
+      setShowSwitchTimerConfirm(true);
+      return;
+    }
+    doStartTimer();
+  };
+
+  const handleConfirmSwitchTimer = () => {
+    setShowSwitchTimerConfirm(false);
+    doStartTimer();
   };
 
   const handleDelegate = () => {
@@ -667,91 +1037,427 @@ function TaskPanelContent({
   const handleComplete = () => {
     writeTaskPref(taskId, "deferred", false);
     setIsDeferred(false);
-    if (hasActiveSession) {
-      stopTimerMutation.mutate(
-        { taskId },
-        { onSuccess: () => updateMutation.mutate({ id: taskId, status: "done" }) },
+    const finishTask = () => {
+      updateMutation.mutate(
+        { id: taskId, stage: "finished", status: "done" },
+        {
+          onSuccess: () => {
+            showNotice("Moved to Finished");
+          },
+        },
       );
+    };
+    if (hasActiveSession) {
+      stopTimerMutation.mutate({ taskId }, { onSuccess: finishTask });
     } else {
-      updateMutation.mutate({ id: taskId, status: "done" });
+      finishTask();
     }
   };
 
-  const handleSendComment = (text?: string) => {
-    const message = (text ?? chatMessage).trim();
+  const handleSendComment = (text: string) => {
+    const message = text.trim();
     if (!message) return;
     addCommentMutation.mutate({ taskId, message });
   };
 
-  const handleFileAttach = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    handleSendComment(`📎 Attached file: ${file.name}`);
-    e.target.value = "";
+  const handleEditComment = (activityId: number, message: string) => {
+    editCommentMutation.mutate({ taskId, activityId, message });
+  };
+
+  const handleDeleteComment = (activityId: number) => {
+    deleteCommentMutation.mutate({ taskId, activityId });
+  };
+
+  const handleUploadCommentMedia = async (file: File) => {
+    assertAttachmentFileSize(file);
+    const mimeType = resolveFileMimeType(file);
+    const dataBase64 = await readFileAsBase64(file);
+    const attachment = await addAttachmentMutation.mutateAsync({
+      taskId,
+      fileName: file.name,
+      mimeType,
+      fileSize: file.size,
+      dataBase64,
+      listedInFiles: false,
+    });
+    return {
+      id: attachment.id,
+      fileName: attachment.fileName,
+      mimeType: attachment.mimeType || mimeType,
+    };
+  };
+
+  const resolveMediaPreviewUrl = useCallback(
+    createAttachmentPreviewResolver((id) => utils.task.getAttachment.fetch({ id })),
+    [utils],
+  );
+
+  const handleSelectCrmFile = (file: { id: number; fileName: string }) => {
+    handleSendComment(`📎 Shared CRM file: ${file.fileName}`);
+  };
+
+  const handleSelectTaskReference = (pickedTask: { id: number; title: string }) => {
+    handleSendComment(`📋 Linked task #${pickedTask.id}: ${pickedTask.title}`);
+  };
+
+  const handleSelectEvent = (title: string, when: string) => {
+    const whenPart = when ? ` (${when})` : "";
+    handleSendComment(`📅 Event or meeting: ${title}${whenPart}`);
+  };
+
+  const mentionUsers = usersData;
+
+  const isManageableComment = (activity: (typeof task.activities)[number]) => {
+    if (activity.action !== "commented") return false;
+    if (activity.userId !== user?.id) return false;
+    const metadata = activity.metadata;
+    return !(metadata && typeof metadata === "object" && "subtaskId" in metadata);
+  };
+
+  const formatMinutesAsDuration = (totalMinutes: number) => {
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    if (hours > 0 && minutes > 0) {
+      return `${hours} hour${hours === 1 ? "" : "s"} ${minutes} minute${minutes === 1 ? "" : "s"}`;
+    }
+    if (hours > 0) return `${hours} hour${hours === 1 ? "" : "s"}`;
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  };
+
+  const formatLoggedDuration = (raw?: string | null) => {
+    if (!raw) return null;
+    const minutesMatch = raw.match(/(\d+)\s*min(?:ute)?s?/i);
+    if (!minutesMatch) return null;
+    return `tracked ${formatMinutesAsDuration(Number(minutesMatch[1]))}`;
+  };
+
+  const resolveActivityUserLabel = (value?: string | null) => {
+    if (value == null || value === "") return "Unassigned";
+    const trimmed = value.trim();
+    if (/^\d+$/.test(trimmed)) {
+      const id = Number(trimmed);
+      const match = usersData.find((u) => u.id === id);
+      return match?.name?.trim() || `User #${id}`;
+    }
+    return trimmed;
   };
 
   const activityMessage = (action: string, oldValue?: string | null, newValue?: string | null) => {
     switch (action) {
-      case "created": return "created this task";
-      case "status_changed":
-        return `changed status from ${oldValue?.replace("_", " ") ?? "—"} to ${newValue?.replace("_", " ") ?? "—"}`;
-      case "assigned":
-        return `changed assignee from ${oldValue ?? "—"} to ${newValue ?? "—"}`;
-      case "participant_added": return `added participant ${newValue ?? ""}`;
-      case "observer_added": return `added observer ${newValue ?? ""}`;
-      case "time_logged":
-        if (newValue === "started timer") return "started the timer";
-        if (newValue === "paused timer") return "paused the timer";
-        if (newValue === "resumed timer") return "resumed the timer";
-        return `logged time: ${newValue ?? ""}`;
-      case "commented": return newValue ?? "commented";
-      default: return action.replace("_", " ");
+      case "created":
+        return "created this task.";
+      case "status_changed": {
+        const knownStage = Boolean(newValue && pipelineStages.some((s) => s.key === newValue));
+        if (knownStage) {
+          return `changed stage to '${kanbanStageLabel(newValue, pipelineStages)}'.`;
+        }
+        return `changed status to '${(newValue ?? "—").replace(/_/g, " ")}'.`;
+      }
+      case "stage_changed":
+        return `changed stage to '${kanbanStageLabel(newValue)}'.`;
+      case "priority_changed": {
+        const formatPriority = (value?: string | null) => {
+          if (!value) return "—";
+          if (isTaskPriority(value)) return priorityConfig[value].label;
+          return value.charAt(0).toUpperCase() + value.slice(1);
+        };
+        if (newValue === "urgent" && oldValue !== "urgent") {
+          return "changed priority to urgent.";
+        }
+        if (oldValue && newValue) {
+          return `changed priority from '${formatPriority(oldValue)}' to '${formatPriority(newValue)}'.`;
+        }
+        return `changed priority to '${formatPriority(newValue)}'.`;
+      }
+      case "title_changed":
+        if (oldValue && newValue) {
+          return `renamed this task from '${oldValue}' to '${newValue}'.`;
+        }
+        return `renamed this task to '${newValue ?? "—"}'.`;
+      case "assigned": {
+        const fromLabel = resolveActivityUserLabel(oldValue);
+        const toLabel = resolveActivityUserLabel(newValue);
+        if (!oldValue && newValue) {
+          return `assigned this task to ${toLabel}.`;
+        }
+        if (oldValue && !newValue) {
+          return `removed ${fromLabel} as assignee.`;
+        }
+        return `changed assignee from ${fromLabel} to ${toLabel}.`;
+      }
+      case "owner_changed": {
+        const fromLabel = resolveActivityUserLabel(oldValue);
+        const toLabel = resolveActivityUserLabel(newValue);
+        if (oldValue && newValue) {
+          return `changed task owner from ${fromLabel} to ${toLabel}.`;
+        }
+        return `changed task owner to ${toLabel}.`;
+      }
+      case "participant_added":
+        return "has been added as a participant.";
+      case "observer_added":
+        return "has been added as an observer.";
+      case "time_logged": {
+        if (newValue === "started timer") return "started time tracking.";
+        if (newValue === "resumed timer") return "resumed time tracking.";
+        if (typeof newValue === "string" && newValue.toLowerCase().includes("paused timer")) {
+          const minutesMatch = newValue.match(/(\d+)\s*min(?:ute)?s?/i);
+          const minutes = minutesMatch ? Number(minutesMatch[1]) : null;
+          if (minutes != null && Number.isFinite(minutes) && minutes > 0) {
+            return `paused time tracking. Duration: ${formatMinutesAsDuration(minutes)}.`;
+          }
+          return "paused time tracking.";
+        }
+        if (newValue === "started the task" || newValue === "started task") return "started the task.";
+        if (newValue?.toLowerCase().includes("manual")) {
+          const minutesMatch = newValue.match(/(\d+)\s*min(?:ute)?s?/i);
+          const minutes = minutesMatch ? Number(minutesMatch[1]) : null;
+          if (minutes != null) {
+            return `added a manual time entry of ${formatMinutesAsDuration(minutes)} to the timesheet.`;
+          }
+          return "added a manual time entry to the timesheet.";
+        }
+        const durationText = formatLoggedDuration(newValue);
+        if (durationText) return `${durationText}.`;
+        return `logged time: ${newValue ?? ""}.`;
+      }
+      case "commented":
+        return newValue ?? "commented";
+      default:
+        return `${action.replace(/_/g, " ")}.`;
     }
   };
 
-  const filteredActivities = [...task.activities].reverse().filter((activity) => {
-    if (!chatSearch.trim()) return true;
-    const q = chatSearch.toLowerCase();
-    const text = activity.action === "commented"
-      ? (activity.newValue ?? "")
-      : activityMessage(activity.action, activity.oldValue, activity.newValue);
-    return text.toLowerCase().includes(q) || (activity.user?.name ?? "").toLowerCase().includes(q);
-  });
+  const activityBubbleName = (
+    action: string,
+    actorName: string | null | undefined,
+    newValue?: string | null,
+  ) => {
+    if (action === "participant_added" || action === "observer_added") {
+      return resolveActivityUserLabel(newValue);
+    }
+    return actorName;
+  };
+
+  const filteredActivities = useMemo(() => {
+    const searched = [...task.activities]
+      .filter((activity) => {
+        if (!chatSearch.trim()) return true;
+        const q = chatSearch.toLowerCase();
+        const text =
+          activity.action === "commented"
+            ? (activity.newValue ?? "")
+            : `${activityBubbleName(activity.action, activity.user?.name, activity.newValue) ?? ""} ${activityMessage(activity.action, activity.oldValue, activity.newValue)}`;
+        return (
+          text.toLowerCase().includes(q) ||
+          (activity.user?.name ?? "").toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+    if (chatFeedMode === "all") return searched;
+
+    const comments = searched.filter((activity) => activity.action === "commented");
+    if (comments.length <= commentWindowSize) return comments;
+    return comments.slice(comments.length - commentWindowSize);
+  }, [task.activities, chatSearch, chatFeedMode, commentWindowSize]);
+
+  const totalCommentCount = useMemo(() => {
+    const searched = [...task.activities].filter((activity) => {
+      if (activity.action !== "commented") return false;
+      if (!chatSearch.trim()) return true;
+      const q = chatSearch.toLowerCase();
+      const text = activity.newValue ?? "";
+      return (
+        text.toLowerCase().includes(q) ||
+        (activity.user?.name ?? "").toLowerCase().includes(q)
+      );
+    });
+    return searched.length;
+  }, [task.activities, chatSearch]);
+
+  const hiddenEarlierComments =
+    chatFeedMode === "comments"
+      ? Math.max(0, totalCommentCount - filteredActivities.length)
+      : 0;
+
+  useEffect(() => {
+    setChatFeedMode("comments");
+    setCommentWindowSize(4);
+    setChatSearch("");
+  }, [taskId]);
+
+  useEffect(() => {
+    if (!highlightActivityId) return;
+    const activity = task.activities.find((item) => item.id === highlightActivityId);
+    if (!activity) return;
+
+    if (activity.action !== "commented") {
+      setChatFeedMode("all");
+      return;
+    }
+
+    setChatFeedMode("comments");
+    const comments = [...task.activities]
+      .filter((item) => item.action === "commented")
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    const index = comments.findIndex((item) => item.id === highlightActivityId);
+    if (index < 0) return;
+    const needed = comments.length - index;
+    setCommentWindowSize((current) => Math.max(current, needed));
+  }, [highlightActivityId, task.activities]);
+
+  useEffect(() => {
+    if (!highlightActivityId) return;
+
+    setShowChatPanel(true);
+
+    let highlightTimer: number | undefined;
+    let doneTimer: number | undefined;
+
+    const scrollToActivity = () => {
+      const element = document.getElementById(`activity-${highlightActivityId}`);
+      if (!element) return false;
+
+      element.scrollIntoView({ behavior: "smooth", block: "center" });
+      setHighlightedActivityId(highlightActivityId);
+
+      highlightTimer = window.setTimeout(() => {
+        setHighlightedActivityId(null);
+      }, 2000);
+
+      doneTimer = window.setTimeout(() => {
+        onHighlightDone?.();
+      }, 2100);
+
+      return true;
+    };
+
+    if (scrollToActivity()) {
+      return () => {
+        if (highlightTimer) window.clearTimeout(highlightTimer);
+        if (doneTimer) window.clearTimeout(doneTimer);
+      };
+    }
+
+    const retryTimer = window.setTimeout(() => {
+      scrollToActivity();
+    }, 350);
+
+    return () => {
+      window.clearTimeout(retryTimer);
+      if (highlightTimer) window.clearTimeout(highlightTimer);
+      if (doneTimer) window.clearTimeout(doneTimer);
+    };
+  }, [highlightActivityId, filteredActivities, onHighlightDone]);
+
+  useEffect(() => {
+    if (highlightActivityId) return;
+    if (skipChatAutoScrollRef.current) {
+      skipChatAutoScrollRef.current = false;
+      return;
+    }
+    const el = chatFeedRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [filteredActivities.length, highlightActivityId, taskId, chatFeedMode]);
 
   return (
     <>
-      <div className="flex flex-1 min-w-0 flex-col lg:flex-row">
-        {/* Task details */}
-        <div className={`relative w-full min-w-0 flex flex-col bg-white border-r border-gray-200 ${showChatPanel ? "lg:w-[44%]" : "flex-1"}`}>
-          <div className="absolute top-24 left-0 z-20 flex flex-col gap-1 pointer-events-auto">
-            <EdgeTabButton icon={X} label="Close" onClick={onClose} />
-            <EdgeTabButton
-              icon={Link2}
-              label={linkCopied ? "Copied!" : "Copy link"}
+      <div className="relative flex flex-1 min-h-0 min-w-0 h-full w-full">
+        {/* Edge actions sit outside the overflow clip so desktop tabs remain visible */}
+        <div className="absolute top-24 left-0 z-20 flex flex-col gap-1 pointer-events-auto max-lg:top-3 max-lg:right-3 max-lg:left-auto max-lg:flex-row max-lg:items-center">
+          <EdgeTabButton icon={X} label="Close" onClick={onClose} />
+          <div className="relative max-lg:translate-x-0 -translate-x-full">
+            <button
+              ref={copyLinkBtnRef}
+              type="button"
               onClick={handleCopyLink}
-              active={linkCopied}
-            />
-            <EdgeTabButton icon={ExternalLink} label="Open in new tab" onClick={handlePopOut} />
+              title="Copy link"
+              aria-label="Copy link"
+              className={`h-10 w-11 flex items-center justify-center text-white shadow-[0_2px_8px_rgba(37,99,235,0.35)] transition-colors max-lg:rounded-2xl lg:rounded-l-2xl lg:rounded-r-none ${
+                linkCopied ? "bg-[#1D4ED8]" : "bg-[#2563EB] hover:bg-[#1D4ED8]"
+              }`}
+            >
+              <Link2 size={17} strokeWidth={2.25} />
+            </button>
           </div>
+          <EdgeTabButton icon={ExternalLink} label="Open in new tab" onClick={handlePopOut} />
+        </div>
+        {linkCopied && linkCopiedTipPos
+          ? createPortal(
+              <div
+                role="status"
+                className="pointer-events-none fixed z-[200] -translate-y-1/2 whitespace-nowrap rounded-md bg-[#111827] px-2.5 py-1.5 text-xs font-medium text-white shadow-lg"
+                style={{ top: linkCopiedTipPos.top, left: linkCopiedTipPos.left }}
+              >
+                Link copied
+              </div>,
+              document.body,
+            )
+          : null}
+
+        <div className="flex flex-1 min-h-0 min-w-0 h-full overflow-hidden flex-col lg:flex-row">
+        {/* Task details */}
+        <div
+          className={`relative w-full min-w-0 min-h-0 flex flex-1 flex-col bg-white border-r border-gray-200 ${
+            showChatPanel ? "lg:w-[44%] lg:flex-none" : ""
+          }`}
+        >
           {actionNotice && (
             <div className="shrink-0 px-6 py-2 bg-blue-50 border-b border-blue-100 text-xs font-medium text-[#2563EB]">
               {actionNotice}
             </div>
           )}
-          <div className="flex-1 overflow-y-auto">
-            <div className="p-6 space-y-4">
+          <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain touch-pan-y">
+            <div className="p-6 pt-14 lg:pt-6 space-y-4">
             {/* Section 1: Title (outside card) + description card */}
             <section>
               <div className="flex items-center justify-between gap-3 mb-3">
-                <input
-                  type="text"
-                  value={task.title}
-                  readOnly
-                  aria-readonly="true"
-                  tabIndex={-1}
-                  className="flex-1 text-xl font-semibold text-[#1F2937] leading-tight border-0 outline-none bg-transparent cursor-default focus:ring-0"
-                />
+                {editingTitle ? (
+                  <input
+                    ref={titleInputRef}
+                    type="text"
+                    value={titleDraft}
+                    onChange={(e) => setTitleDraft(e.target.value)}
+                    onBlur={saveTitle}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        saveTitle();
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        cancelEditingTitle();
+                      }
+                    }}
+                    disabled={updateMutation.isPending}
+                    aria-label="Task title"
+                    className="flex-1 min-w-0 text-xl font-semibold text-[#1F2937] leading-tight border border-[#2563EB]/40 rounded-lg px-2 py-1 outline-none bg-white focus:ring-2 focus:ring-[#2563EB]/20"
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={startEditingTitle}
+                    disabled={!canManage}
+                    title={canManage ? "Edit title" : undefined}
+                    className={cn(
+                      "flex-1 min-w-0 text-left text-xl font-semibold text-[#1F2937] leading-tight border-0 outline-none bg-transparent rounded-lg px-0 py-0.5",
+                      canManage && "hover:bg-gray-50 cursor-text",
+                      !canManage && "cursor-default",
+                    )}
+                  >
+                    {task.title}
+                  </button>
+                )}
                 <div className="flex items-center gap-0.5 shrink-0">
+                  {canManage && !editingTitle ? (
+                    <HeaderIconButton
+                      icon={Pencil}
+                      label="Edit title"
+                      onClick={startEditingTitle}
+                    />
+                  ) : null}
                   {isFavorite && (
                     <HeaderIconButton
                       icon={Star}
@@ -777,116 +1483,48 @@ function TaskPanelContent({
                     active={task.priority === "urgent"}
                     activeClassName="text-orange-500 bg-orange-50 hover:bg-orange-100"
                   />
-                  <Popover open={menuOpen} onOpenChange={setMenuOpen}>
-                    <PopoverTrigger asChild>
-                      <button
-                        type="button"
-                        className={`w-9 h-9 flex items-center justify-center rounded-lg transition-colors ${
-                          menuOpen
-                            ? "bg-gray-100 text-gray-800"
-                            : "text-gray-500 hover:bg-gray-100 hover:text-gray-800"
-                        }`}
-                        aria-label="Task menu"
-                        title="Task menu"
-                      >
-                        <Menu size={18} />
-                      </button>
-                    </PopoverTrigger>
-                    <PopoverContent
-                      align="end"
-                      sideOffset={8}
-                      className="z-[130] w-[300px] p-3 rounded-2xl border border-gray-200 shadow-xl bg-white"
-                    >
-                      <div className="grid grid-cols-3 gap-2 pb-3 border-b border-gray-100">
-                        <MenuQuickAction
-                          icon={EyeOff}
-                          label={isFollowing ? "Unfollow" : "Follow"}
-                          onClick={handleToggleFollow}
-                        />
-                        <MenuQuickAction
-                          icon={isMuted ? Volume2 : VolumeX}
-                          label={isMuted ? "Unmute" : "Mute"}
-                          onClick={handleToggleMute}
-                        />
-                        <MenuQuickAction
-                          icon={Link2}
-                          label={linkCopied ? "Copied!" : "Copy link"}
-                          onClick={() => {
-                            void handleCopyLink();
-                            setMenuOpen(false);
-                          }}
-                        />
-                      </div>
-                      <div className="py-1">
-                        {canCreate ? (
-                          <>
-                            <MenuListItem icon={CheckSquare} label="Create task" onClick={handleOpenCreateTask} />
-                            <MenuListItem
-                              icon={CopyPlus}
-                              label="Clone task"
-                              onClick={handleCloneTask}
-                            />
-                            <MenuListItem
-                              icon={LayoutTemplate}
-                              label="Create using template"
-                              onClick={handleCreateFromTemplate}
-                            />
-                          </>
-                        ) : null}
-                        <MenuListItem
-                          icon={ListTree}
-                          label="Create subtask"
-                          onClick={() => {
-                            setMenuOpen(false);
-                            setShowSubtaskDialog(true);
-                          }}
-                        />
-                        <MenuListItem
-                          icon={Star}
-                          label={isFavorite ? "Remove from Favorites" : "Add to Favorites"}
-                          onClick={handleToggleFavorite}
-                          active={isFavorite}
-                        />
-                      </div>
-                      <div className="border-t border-gray-100 py-1 mt-1">
-                        <MenuListItem
-                          icon={Store}
-                          label="Market"
-                          onClick={() => {
-                            setMenuOpen(false);
-                            setShowMarketDialog(true);
-                          }}
-                        />
-                        <MenuListItem
-                          icon={Bot}
-                          label="Automation"
-                          onClick={() => {
-                            setMenuOpen(false);
-                            setShowAutomationDialog(true);
-                          }}
-                        />
-                      </div>
-                    </PopoverContent>
-                  </Popover>
                 </div>
               </div>
 
               <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
-              <div className="px-4 py-3">
+              <div
+                className={cn(
+                  "px-4 py-4",
+                  editingDescription && "flex min-h-[380px] flex-col",
+                )}
+              >
                 {editingDescription ? (
-                  <div className="space-y-3">
-                    <textarea
-                      value={description}
-                      onChange={(e) => setDescription(e.target.value)}
-                      className="w-full min-h-[7rem] text-sm text-gray-700 border border-gray-200 rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 resize-y"
-                      autoFocus
+                  <div className="flex flex-1 flex-col gap-3">
+                    <RichTextCommentEditor
+                      ref={descriptionEditorRef}
+                      key={`${taskId}-${editingDescription}`}
+                      initialHtml={descriptionHtml}
+                      initialMedia={descriptionMedia}
+                      onChange={(html, media) => {
+                        setDescriptionHtml(html);
+                        setDescriptionMedia(media);
+                      }}
+                      onUploadMedia={handleUploadCommentMedia}
+                      resolveMediaPreviewUrl={resolveMediaPreviewUrl}
                       placeholder="Add a description..."
+                      className="flex-1"
+                      editorClassName="min-h-[200px] max-h-[360px]"
                     />
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
                         onClick={() => {
-                          updateMutation.mutate({ id: taskId, description });
+                          const serialized =
+                            descriptionEditorRef.current?.getSerializedContent() ?? {
+                              html: descriptionHtml,
+                              media: descriptionMedia,
+                            };
+                          const nextDescription =
+                            serialized.html.trim() || serialized.media.length > 0
+                              ? buildRichCommentMessage([], serialized.html, serialized.media)
+                              : description.trim();
+                          updateMutation.mutate({ id: taskId, description: nextDescription });
+                          setDescription(nextDescription);
                           setEditingDescription(false);
                         }}
                         className="h-8 px-3.5 bg-[#2563EB] text-white rounded-lg text-xs font-medium hover:bg-[#1D4ED8] transition-colors"
@@ -896,6 +1534,14 @@ function TaskPanelContent({
                       <button
                         type="button"
                         onClick={() => {
+                          const parsed = parseStoredCommentMessage(task.description || "");
+                          if (parsed.isRich) {
+                            setDescriptionHtml(parsed.body);
+                            setDescriptionMedia(parsed.media);
+                          } else {
+                            setDescriptionHtml(task.description || "");
+                            setDescriptionMedia([]);
+                          }
                           setDescription(task.description || "");
                           setEditingDescription(false);
                         }}
@@ -907,22 +1553,62 @@ function TaskPanelContent({
                   </div>
                 ) : (
                   <>
-                    <p
-                      className={`text-sm text-gray-600 leading-relaxed whitespace-pre-wrap ${
-                        !descriptionExpanded && isLongDescription ? "line-clamp-5" : ""
-                      } ${!descriptionText ? "text-gray-400 italic" : ""}`}
+                    <div
+                      className={cn(
+                        "relative",
+                        showCollapsedDescription && "overflow-hidden",
+                      )}
+                      style={
+                        showCollapsedDescription
+                          ? { maxHeight: DESCRIPTION_COLLAPSED_MAX_HEIGHT }
+                          : undefined
+                      }
                     >
-                      {descriptionText || "No description yet."}
-                    </p>
-                    <div className="flex items-center gap-4 mt-3 pt-3 border-t border-gray-100">
+                      <div ref={descriptionContentRef}>
+                        {hasRichDescription ? (
+                          <CommentRichContent
+                            message={task.description || ""}
+                            mentionUsers={[]}
+                            className="text-gray-600"
+                            inlineMedia
+                          />
+                        ) : (
+                          <p
+                            className={cn(
+                              "text-sm text-gray-600 leading-relaxed whitespace-pre-wrap",
+                              !descriptionText && "text-gray-400 italic",
+                            )}
+                          >
+                            {descriptionText || "No description yet."}
+                          </p>
+                        )}
+                      </div>
+                      {showCollapsedDescription ? (
+                        <div
+                          className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-white to-transparent"
+                          aria-hidden
+                        />
+                      ) : null}
+                    </div>
+                    <div className="mt-4 flex items-center gap-4 border-t border-gray-100 pt-4">
                       <button
                         type="button"
-                        onClick={() => setEditingDescription(true)}
+                        onClick={() => {
+                          const parsed = parseStoredCommentMessage(task.description || "");
+                          if (parsed.isRich) {
+                            setDescriptionHtml(parsed.body);
+                            setDescriptionMedia(parsed.media);
+                          } else {
+                            setDescriptionHtml(task.description || "");
+                            setDescriptionMedia([]);
+                          }
+                          setEditingDescription(true);
+                        }}
                         className="text-xs font-medium text-[#2563EB] hover:text-[#1D4ED8] transition-colors"
                       >
                         Edit
                       </button>
-                      {isLongDescription && (
+                      {descriptionOverflows ? (
                         <button
                           type="button"
                           onClick={() => setDescriptionExpanded((v) => !v)}
@@ -930,7 +1616,7 @@ function TaskPanelContent({
                         >
                           {descriptionExpanded ? "Collapse" : "Expand"}
                         </button>
-                      )}
+                      ) : null}
                     </div>
                   </>
                 )}
@@ -941,28 +1627,33 @@ function TaskPanelContent({
             <TaskFilesSection taskId={taskId} canManage={canManage} />
 
             {/* Section 2: Task metadata */}
-            <section className="rounded-xl border border-gray-200 bg-white overflow-visible">
-            <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-100 rounded-t-xl">
-              <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Task details</span>
-            </div>
+            <section className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+              <CollapsibleSectionHeader
+                title="Task details"
+                expanded={taskDetailsExpanded}
+                onToggle={() => setTaskDetailsExpanded((open) => !open)}
+              />
+              {taskDetailsExpanded ? (
             <div className="px-4 py-1 text-sm">
-              <MetaRow label="Task owner" icon={User}>
+              <MetaRow label="Task Owner" icon={User}>
                 {canChangeOwner ? (
-                  <select
-                    value={task.createdBy ?? ""}
-                    onChange={(e) =>
+                  <UserSearchSelect
+                    mode="single"
+                    users={usersData}
+                    knownUsers={ownerKnownUsers}
+                    value={task.createdBy}
+                    placeholder="Select owner…"
+                    searchPlaceholder="Search employees…"
+                    triggerClassName="h-9 max-w-[240px] border-gray-200"
+                    onValueChange={(ownerId) => {
+                      if (ownerId == null) return;
+                      if (Number(ownerId) === Number(task.createdBy)) return;
                       updateMutation.mutate({
                         id: taskId,
-                        createdBy: e.target.value ? Number(e.target.value) : null,
-                      })
-                    }
-                    className={META_SELECT_CLASS}
-                  >
-                    <option value="">Unknown</option>
-                    {usersData.map((u) => (
-                      <option key={u.id} value={u.id}>{u.name}</option>
-                    ))}
-                  </select>
+                        createdBy: Number(ownerId),
+                      });
+                    }}
+                  />
                 ) : (
                   <div className="inline-flex h-9 items-center">
                     <UserChip name={task.creator?.name} avatar={task.creator?.avatar} />
@@ -971,22 +1662,23 @@ function TaskPanelContent({
               </MetaRow>
 
               <MetaRow label="Assignees" icon={Users}>
-                {canManage ? (
-                  <select
-                    value={task.assigneeId ?? ""}
-                    onChange={(e) =>
+                {canChangeAssignee ? (
+                  <UserSearchSelect
+                    mode="single"
+                    users={usersData}
+                    knownUsers={assigneeKnownUsers}
+                    value={task.assigneeId}
+                    allowClear
+                    placeholder="Unassigned"
+                    searchPlaceholder="Search employees…"
+                    triggerClassName="h-9 max-w-[240px] border-gray-200"
+                    onValueChange={(assigneeId) =>
                       updateMutation.mutate({
                         id: taskId,
-                        assigneeId: e.target.value ? Number(e.target.value) : null,
+                        assigneeId: assigneeId ?? null,
                       })
                     }
-                    className={META_SELECT_CLASS}
-                  >
-                    <option value="">Unassigned</option>
-                    {usersData.map((u) => (
-                      <option key={u.id} value={u.id}>{u.name}</option>
-                    ))}
-                  </select>
+                  />
                 ) : (
                   <div className="inline-flex h-9 items-center">
                     <UserChip name={task.assignee?.name} avatar={task.assignee?.avatar} />
@@ -1031,100 +1723,155 @@ function TaskPanelContent({
                 </div>
               )}
 
-              <MetaRow label="Time tracking" icon={Clock}>
+              <MetaRow label="Time Tracking" icon={Clock}>
                 <div className="inline-flex items-center gap-2">
-                  <span
-                    className={`inline-flex items-center gap-1.5 font-mono font-semibold tabular-nums ${
-                      isTimerRunning ? "text-[#2563EB]" : "text-[#1F2937]"
-                    }`}
+                  <TaskTrackedTimeDisplay
+                    trackedSeconds={displaySeconds}
+                    isTimerRunning={isTimerRunning}
+                    isTimerPaused={isTimerPaused}
+                    hasActiveSession={hasActiveSession}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setTimeDetailsExpanded((open) => !open)}
+                    className={cn(
+                      "inline-flex items-center justify-center h-8 w-8 rounded-lg transition-colors",
+                      timeDetailsExpanded
+                        ? "text-white bg-[#2563EB] hover:bg-[#1D4ED8] shadow-sm"
+                        : "text-[#2563EB] bg-blue-50 border border-blue-200 hover:bg-blue-100 shadow-sm",
+                    )}
+                    aria-label={
+                      timeDetailsExpanded
+                        ? "Hide time details"
+                        : "Add or view manual time entries"
+                    }
+                    aria-expanded={timeDetailsExpanded}
+                    title="Add manual time entry"
                   >
-                    <Clock
-                      size={14}
-                      className={isTimerRunning ? "text-[#2563EB] animate-pulse" : "text-gray-400"}
-                    />
-                    {formatElapsedHMS(trackedSeconds)}
-                    {isTimerRunning && (
-                      <span className="text-[10px] font-semibold uppercase tracking-wide text-[#2563EB] bg-blue-50 px-1.5 py-0.5 rounded">
-                        Live
+                    {timeDetailsExpanded ? <Minus size={16} /> : <Plus size={16} strokeWidth={2.5} />}
+                  </button>
+                </div>
+              </MetaRow>
+              {timeDetailsExpanded ? (
+                <div className="pb-3 px-4 border-b border-gray-100 space-y-2">
+                  {hasActiveSession && (
+                    <div className="flex items-center justify-between text-sm bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
+                      <span className="text-gray-600">Current session</span>
+                      <span className={`font-mono font-semibold tabular-nums ${isTimerRunning ? "text-[#2563EB]" : "text-gray-700"}`}>
+                        {formatElapsedHMS(liveSessionSeconds)}
                       </span>
-                    )}
-                    {isTimerPaused && hasActiveSession && (
-                      <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
-                        Paused
-                      </span>
-                    )}
-                  </span>
-                  <Popover open={showTimeTracking} onOpenChange={setShowTimeTracking}>
-                    <PopoverTrigger asChild>
-                      <button
-                        type="button"
-                        className="inline-flex items-center justify-center h-7 w-7 rounded-md text-gray-400 hover:text-[#2563EB] hover:bg-gray-50 transition-colors"
-                        aria-label={showTimeTracking ? "Hide time history" : "Show time history"}
-                        aria-expanded={showTimeTracking}
-                      >
-                        {showTimeTracking ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                      </button>
-                    </PopoverTrigger>
-                    <PopoverContent
-                      align="start"
-                      side="bottom"
-                      sideOffset={6}
-                      className="z-[140] w-[min(22rem,calc(100vw-3rem))] p-3 rounded-xl shadow-lg"
-                    >
-                      <div className="space-y-2">
-                        {hasActiveSession && (
-                          <div className="flex items-center justify-between text-sm bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
-                            <span className="text-gray-600">Current session</span>
-                            <span className={`font-mono font-semibold tabular-nums ${isTimerRunning ? "text-[#2563EB]" : "text-gray-700"}`}>
-                              {formatElapsedHMS(liveSessionSeconds)}
-                            </span>
-                          </div>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between text-sm bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
+                    <span className="text-gray-600">Total logged</span>
+                    <span className="font-mono font-semibold tabular-nums text-gray-800">
+                      {formatElapsedHMS(timeData?.totalSeconds ?? 0)}
+                    </span>
+                  </div>
+                  <TaskTimeLoggedSection
+                    taskId={taskId}
+                    timeData={timeData}
+                    hasActiveSession={hasActiveSession}
+                    canManageTime={canTrackTime}
+                    currentUserId={user?.id ?? 0}
+                    canPickUser={user?.role === "admin" || user?.role === "manager"}
+                    users={usersData}
+                  />
+                </div>
+              ) : null}
+
+              <MetaRow label="Estimate" icon={Hourglass}>
+                <div className="inline-flex items-center gap-2">
+                  {(() => {
+                    const estimateLabel = formatEstimatedDuration(task.estimatedHours);
+                    const overEstimate = isTrackedOverEstimate(
+                      trackedSeconds,
+                      task.estimatedHours,
+                    );
+                    return estimateLabel ? (
+                      <span
+                        className={cn(
+                          "inline-flex items-center font-mono font-semibold tabular-nums text-sm",
+                          overEstimate ? "text-red-600" : "text-[#1F2937]",
                         )}
-                        <TaskTimeLoggedSection
-                          taskId={taskId}
-                          timeData={timeData}
-                          hasActiveSession={hasActiveSession}
-                          canManageTime={canManage}
-                          currentUserId={user?.id ?? 0}
-                          canPickUser={user?.role === "admin" || user?.role === "manager"}
-                          users={usersData}
-                        />
-                      </div>
-                    </PopoverContent>
-                  </Popover>
+                      >
+                        {estimateLabel}
+                      </span>
+                    ) : (
+                      <span className="text-sm text-gray-400 italic">Not set</span>
+                    );
+                  })()}
+                  <TaskTimeEstimatePopover
+                    taskId={taskId}
+                    estimatedHours={task.estimatedHours}
+                    canEdit={canManage}
+                  />
                 </div>
               </MetaRow>
 
               <MetaRow label="Status" icon={Play}>
-                {canManage ? (
-                  workflowState === "complete" ? (
-                    <span className="inline-flex h-9 items-center rounded-full bg-emerald-50 px-3 text-sm font-medium text-emerald-700">
-                      {workflowLabel(workflowState)}
-                    </span>
-                  ) : (
-                    <select
-                      key={statusSelectKey}
-                      defaultValue=""
-                      onChange={(e) => {
-                        const value = e.target.value as WorkflowState;
-                        if (value) handleWorkflowChange(value);
-                      }}
-                      className={META_SELECT_CLASS}
-                    >
-                      <option value="" disabled>
-                        {workflowLabel(workflowState)}
+                {canEditTeamAndStatus ? (
+                  <select
+                    value={taskPipelineStage(task)}
+                    onChange={(e) => handleStageChange(e.target.value as ProjectPipelineStageKey)}
+                    className={cn(
+                      META_SELECT_CLASS,
+                      "rounded-full border-blue-100 bg-blue-50 text-[#2563EB] font-medium",
+                    )}
+                  >
+                    {pipelineStages.map((stage) => (
+                      <option key={stage.key} value={stage.key}>
+                        {stage.label}
                       </option>
-                      {workflowTransitions.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  )
+                    ))}
+                  </select>
                 ) : (
-                  <div className="inline-flex h-9 items-center">
-                    <WorkflowStatusChip state={workflowState} />
-                  </div>
+                  <span className="inline-flex h-9 items-center gap-2 rounded-full bg-blue-50 px-3 text-sm font-medium text-[#2563EB]">
+                    <span
+                      className="w-2 h-2 rounded-full shrink-0"
+                      style={{ backgroundColor: kanbanStageColor(taskPipelineStage(task), pipelineStages) }}
+                    />
+                    {kanbanStageLabel(taskPipelineStage(task), pipelineStages)}
+                  </span>
+                )}
+              </MetaRow>
+
+              <MetaRow label="Project" icon={Folder}>
+                <ProjectSearchSelect
+                  projects={projectsData}
+                  knownProject={
+                    task.project && typeof task.project.id === "number"
+                      ? {
+                          id: task.project.id,
+                          name: task.project.name,
+                          color: task.project.color,
+                        }
+                      : null
+                  }
+                  value={projectId}
+                  allowClear
+                  placeholder="No project"
+                  searchPlaceholder="Search projects…"
+                  triggerClassName="h-9 max-w-[240px] border-gray-200"
+                  onValueChange={(nextProjectId) =>
+                    updateMutation.mutate({
+                      id: taskId,
+                      projectId: nextProjectId ?? null,
+                    })
+                  }
+                />
+              </MetaRow>
+
+              <MetaRow label="Priority" icon={Flag}>
+                {canManage ? (
+                  <PriorityMetaSelect
+                    value={isTaskPriority(task.priority) ? task.priority : "medium"}
+                    onChange={(priority) => updateMutation.mutate({ id: taskId, priority })}
+                  />
+                ) : (
+                  <span className="inline-flex h-9 items-center text-sm text-gray-800">
+                    {priorityConfig[isTaskPriority(task.priority) ? task.priority : "medium"].label}
+                  </span>
                 )}
               </MetaRow>
 
@@ -1153,201 +1900,96 @@ function TaskPanelContent({
                 </div>
               </MetaRow>
             </div>
+              ) : null}
             </section>
 
-            {/* Section 3: Project */}
+            <section ref={participantsRef} className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+              <CollapsibleSectionHeader
+                title="Participants"
+                expanded={participantsExpanded}
+                onToggle={() => setParticipantsExpanded((open) => !open)}
+              />
+              {participantsExpanded ? (
+                <div className="p-4 pt-3">
+                  {canManageParticipants ? (
+                    <UserSearchSelect
+                      mode="multi"
+                      users={participantSelectUsers}
+                      knownUsers={task.participants}
+                      selected={task.participants.map((p) => p.id)}
+                      onToggle={toggleParticipant}
+                      placeholder="Select participants…"
+                      searchPlaceholder="Search employees…"
+                      disabled={
+                        addParticipantMutation.isPending || removeParticipantMutation.isPending
+                      }
+                    />
+                  ) : (
+                    <div className="space-y-1.5">
+                      {task.participants.map((p) => (
+                        <UserChip key={p.id} name={p.name} avatar={p.avatar} />
+                      ))}
+                      {task.participants.length === 0 && (
+                        <p className="text-sm text-gray-400">No participants</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </section>
+
             <section className="rounded-xl border border-gray-200 bg-white overflow-hidden">
-            <div className="px-4 py-1 text-sm">
-              <MetaRow label="Project" icon={Folder}>
-                {canManage ? (
-                  <select
-                    value={task.projectId ?? ""}
-                    onChange={(e) =>
-                      updateMutation.mutate({
-                        id: taskId,
-                        projectId: e.target.value ? Number(e.target.value) : null,
-                      })
-                    }
-                    className={META_SELECT_CLASS}
-                  >
-                    <option value="">No project</option>
-                    {projectsData.map((p) => (
-                      <option key={p.id} value={p.id}>{p.name}</option>
-                    ))}
-                  </select>
-                ) : task.project ? (
-                  <span className="inline-flex h-9 items-center gap-2 text-sm text-gray-800 font-medium">
-                    <span
-                      className="w-2.5 h-2.5 rounded-full shrink-0"
-                      style={{ backgroundColor: task.project.color ?? "#2563EB" }}
+              <CollapsibleSectionHeader
+                title="Observers"
+                expanded={observersExpanded}
+                onToggle={() => setObserversExpanded((open) => !open)}
+              />
+              {observersExpanded ? (
+                <div className="p-4 pt-3 space-y-2">
+                  <p className="text-xs text-gray-400">
+                    Former assignees are added automatically when you reassign a task.
+                  </p>
+                  {canManageParticipants ? (
+                    <UserSearchSelect
+                      mode="multi"
+                      users={observerSelectUsers}
+                      knownUsers={task.observers ?? []}
+                      selected={(task.observers ?? []).map((o) => o.id)}
+                      onToggle={toggleObserver}
+                      placeholder="Select observers…"
+                      searchPlaceholder="Search employees…"
+                      disabled={
+                        addObserverMutation.isPending || removeObserverMutation.isPending
+                      }
                     />
-                    {task.project.name}
-                  </span>
-                ) : (
-                  <span className="inline-flex h-9 items-center text-sm text-gray-400">No project</span>
-                )}
-              </MetaRow>
-
-              <MetaRow label="Stage" icon={LayoutGrid}>
-                {canManage ? (
-                  <select
-                    value={taskPipelineStage(task)}
-                    onChange={(e) => handleStageChange(e.target.value as ProjectPipelineStageKey)}
-                    className={cn(
-                      META_SELECT_CLASS,
-                      "rounded-full border-blue-100 bg-blue-50 text-[#2563EB] font-medium",
-                    )}
-                  >
-                    {KANBAN_STAGES.map((stage) => (
-                      <option key={stage.key} value={stage.key}>
-                        {stage.label}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <span className="inline-flex h-9 items-center gap-2 rounded-full bg-blue-50 px-3 text-sm font-medium text-[#2563EB]">
-                    <span
-                      className="w-2 h-2 rounded-full shrink-0"
-                      style={{ backgroundColor: kanbanStageColor(taskPipelineStage(task)) }}
-                    />
-                    {kanbanStageLabel(taskPipelineStage(task))}
-                  </span>
-                )}
-              </MetaRow>
-            </div>
-            </section>
-
-            {/* Section 4: Participants & observers */}
-            <section ref={participantsRef} className="rounded-xl border border-gray-200 bg-white overflow-hidden p-4">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Participants</span>
-                {canManageParticipants && (
-                  <button
-                    type="button"
-                    onClick={() => setShowAddParticipant(!showAddParticipant)}
-                    className="text-xs text-[#2563EB] font-medium flex items-center gap-1"
-                  >
-                    <Plus size={12} /> Add
-                  </button>
-                )}
-              </div>
-              {showAddParticipant && (
-                <div className="flex gap-2 mb-2">
-                  <select
-                    value={participantToAdd}
-                    onChange={(e) => setParticipantToAdd(e.target.value ? Number(e.target.value) : "")}
-                    className="flex-1 h-8 text-sm border border-gray-200 rounded-md px-2"
-                  >
-                    <option value="">Select person...</option>
-                    {availableUsers.map((u) => (
-                      <option key={u.id} value={u.id}>{u.name}</option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    disabled={!participantToAdd}
-                    onClick={() =>
-                      participantToAdd &&
-                      addParticipantMutation.mutate({ taskId, userId: participantToAdd as number })
-                    }
-                    className="h-8 px-3 bg-[#2563EB] text-white rounded-md text-xs font-medium disabled:opacity-50"
-                  >
-                    Add
-                  </button>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {(task.observers ?? []).map((o) => (
+                        <UserChip key={o.id} name={o.name} avatar={o.avatar} />
+                      ))}
+                      {(task.observers ?? []).length === 0 && (
+                        <p className="text-sm text-gray-400">No observers</p>
+                      )}
+                    </div>
+                  )}
                 </div>
-              )}
-              <div className="space-y-1.5">
-                {task.participants.map((p) => (
-                  <div key={p.id} className="flex items-center justify-between">
-                    <UserChip name={p.name} avatar={p.avatar} />
-                    {canManageParticipants && (
-                      <button
-                        type="button"
-                        onClick={() => removeParticipantMutation.mutate({ taskId, userId: p.id })}
-                        className="text-xs text-gray-400 hover:text-blue-600"
-                      >
-                        Remove
-                      </button>
-                    )}
-                  </div>
-                ))}
-                {task.participants.length === 0 && (
-                  <p className="text-sm text-gray-400">No participants</p>
-                )}
-              </div>
-
-            <div className="mt-5 pt-5 border-t border-gray-100">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Observers</span>
-                {canManageParticipants && (
-                  <button
-                    type="button"
-                    onClick={() => setShowAddObserver(!showAddObserver)}
-                    className="text-xs text-[#2563EB] font-medium flex items-center gap-1"
-                  >
-                    <Plus size={12} /> Add
-                  </button>
-                )}
-              </div>
-              <p className="text-xs text-gray-400 mb-2">
-                Former assignees are added automatically when you reassign a task.
-              </p>
-              {showAddObserver && (
-                <div className="flex gap-2 mb-2">
-                  <select
-                    value={observerToAdd}
-                    onChange={(e) => setObserverToAdd(e.target.value ? Number(e.target.value) : "")}
-                    className="flex-1 h-8 text-sm border border-gray-200 rounded-md px-2"
-                  >
-                    <option value="">Select observer...</option>
-                    {availableObservers.map((u) => (
-                      <option key={u.id} value={u.id}>{u.name}</option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    disabled={!observerToAdd}
-                    onClick={() =>
-                      observerToAdd &&
-                      addObserverMutation.mutate({ taskId, userId: observerToAdd as number })
-                    }
-                    className="h-8 px-3 bg-[#2563EB] text-white rounded-md text-xs font-medium disabled:opacity-50"
-                  >
-                    Add
-                  </button>
-                </div>
-              )}
-              <div className="space-y-1.5">
-                {(task.observers ?? []).map((o) => (
-                  <div key={o.id} className="flex items-center justify-between">
-                    <UserChip name={o.name} avatar={o.avatar} />
-                    {canManageParticipants && (
-                      <button
-                        type="button"
-                        onClick={() => removeObserverMutation.mutate({ taskId, userId: o.id })}
-                        className="text-xs text-gray-400 hover:text-blue-600"
-                      >
-                        Remove
-                      </button>
-                    )}
-                  </div>
-                ))}
-                {(task.observers ?? []).length === 0 && (
-                  <p className="text-sm text-gray-400">No observers</p>
-                )}
-              </div>
-            </div>
+              ) : null}
             </section>
             </div>
           </div>
 
           {/* Bottom Start / Complete — always visible */}
-          {canManage && workflowState !== "complete" && (
+          {canTrackTime && workflowState !== "complete" && (
             <div className="shrink-0 border-t border-gray-200 px-4 py-3 bg-white">
               {hasActiveSession && workflowState !== "deferred" && (
-                <div className="flex items-center justify-center gap-2 mb-2 font-mono text-base font-semibold tabular-nums text-[#2563EB]">
-                  <Clock size={16} className={isTimerRunning ? "animate-pulse" : ""} />
-                  {formatElapsedHMS(trackedSeconds)}
+                <div className="flex items-center justify-center gap-2 mb-2">
+                  <TaskTrackedTimeDisplay
+                    trackedSeconds={liveSessionSeconds}
+                    isTimerRunning={isTimerRunning}
+                    isTimerPaused={isTimerPaused}
+                    hasActiveSession={hasActiveSession}
+                    className="text-base"
+                  />
                   <span className="text-[11px] font-medium text-gray-500 font-sans">
                     {isTimerRunning ? "tracking…" : "paused"}
                   </span>
@@ -1381,12 +2023,7 @@ function TaskPanelContent({
                 ) : (
                   <button
                     type="button"
-                    onClick={() => {
-                      if (workflowState === "not_started" || workflowState === "paused") {
-                        handleWorkflowChange("in_progress");
-                      }
-                      startTimerMutation.mutate({ taskId });
-                    }}
+                    onClick={handleStartTimer}
                     disabled={startTimerMutation.isPending}
                     className="h-9 px-4 inline-flex items-center justify-center gap-1.5 bg-[#2563EB] text-white rounded-lg text-sm font-medium hover:bg-[#1D4ED8] disabled:opacity-50"
                   >
@@ -1404,7 +2041,8 @@ function TaskPanelContent({
                     Complete
                   </button>
                 )}
-                <Popover open={actionsMenuOpen} onOpenChange={setActionsMenuOpen}>
+                {(canChangeAssignee || canDelete) && (
+                <Popover open={actionsMenuOpen} onOpenChange={setActionsMenuOpen} modal>
                   <PopoverTrigger asChild>
                     <button
                       type="button"
@@ -1415,8 +2053,19 @@ function TaskPanelContent({
                       <MoreHorizontal size={18} />
                     </button>
                   </PopoverTrigger>
-                  <PopoverContent align="end" side="top" sideOffset={8} className="z-[130] w-44 p-1.5 rounded-xl">
-                    <ActionMenuItem icon={UserPlus} label="Delegate" onClick={handleDelegate} />
+                  <PopoverContent
+                    align="end"
+                    side="top"
+                    sideOffset={8}
+                    className="z-[130] w-44 p-1.5 rounded-xl"
+                    onOpenAutoFocus={(event) => event.preventDefault()}
+                    onInteractOutside={() => setActionsMenuOpen(false)}
+                    onPointerDownOutside={() => setActionsMenuOpen(false)}
+                    onEscapeKeyDown={() => setActionsMenuOpen(false)}
+                  >
+                    {canChangeAssignee ? (
+                      <ActionMenuItem icon={UserPlus} label="Delegate" onClick={handleDelegate} />
+                    ) : null}
                     {canDelete && (
                       <ActionMenuItem
                         icon={Trash2}
@@ -1430,6 +2079,7 @@ function TaskPanelContent({
                     )}
                   </PopoverContent>
                 </Popover>
+                )}
               </div>
             </div>
           )}
@@ -1441,18 +2091,13 @@ function TaskPanelContent({
           <div className="px-5 py-3 bg-white/80 border-b border-gray-200 shrink-0">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <h3 className="font-semibold text-[#1F2937]">Task chat</h3>
+                <h3 className="font-semibold text-[#1F2937]">Task Chat</h3>
                 <p className="text-xs text-gray-500 mt-0.5">
                   {memberCount} member{memberCount === 1 ? "" : "s"}
                   {isMuted && " · Muted"}
                 </p>
               </div>
               <div className="flex items-center gap-1 shrink-0">
-                <HeaderIconButton
-                  icon={UserPlus}
-                  label="Add member"
-                  onClick={handleAddMember}
-                />
                 <HeaderIconButton
                   icon={Search}
                   label="Search chat"
@@ -1466,6 +2111,34 @@ function TaskPanelContent({
                 />
               </div>
             </div>
+
+            <div className="mt-3 flex items-center gap-1 rounded-lg bg-gray-100 p-0.5 w-fit">
+              <button
+                type="button"
+                onClick={() => setChatFeedMode("comments")}
+                className={cn(
+                  "h-7 px-3 rounded-md text-xs font-semibold transition-colors",
+                  chatFeedMode === "comments"
+                    ? "bg-white text-[#1F2937] shadow-sm"
+                    : "text-gray-500 hover:text-gray-700",
+                )}
+              >
+                Comments
+              </button>
+              <button
+                type="button"
+                onClick={() => setChatFeedMode("all")}
+                className={cn(
+                  "h-7 px-3 rounded-md text-xs font-semibold transition-colors",
+                  chatFeedMode === "all"
+                    ? "bg-white text-[#1F2937] shadow-sm"
+                    : "text-gray-500 hover:text-gray-700",
+                )}
+              >
+                All Activity
+              </button>
+            </div>
+
             {showChatSearch && (
               <div className="mt-3 relative">
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -1481,133 +2154,115 @@ function TaskPanelContent({
             )}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
-            {filteredActivities.length === 0 ? (
-              <p className="text-sm text-gray-500 text-center py-8">No messages found.</p>
-            ) : (
-            filteredActivities.map((activity) => {
-              const isSystem = ["created", "time_logged", "status_changed", "assigned", "participant_added", "observer_added"].includes(activity.action);
-              const isComment = activity.action === "commented";
-              return (
-                <div
-                  key={activity.id}
-                  className={`rounded-xl px-4 py-3 text-sm max-w-[90%] ${
-                    isComment
-                      ? "bg-white border border-gray-200 text-gray-800 ml-auto"
-                      : isSystem
-                        ? "bg-white/70 border border-blue-100 text-blue-900"
-                        : "bg-white border border-gray-200 text-gray-700"
-                  }`}
+          <div ref={chatFeedRef} className="flex-1 min-h-0 overflow-y-auto overscroll-contain touch-pan-y p-4 space-y-3">
+            {hiddenEarlierComments > 0 ? (
+              <div className="flex justify-center pb-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    skipChatAutoScrollRef.current = true;
+                    setCommentWindowSize((current) =>
+                      Math.min(current + 4, totalCommentCount),
+                    );
+                  }}
+                  className="text-xs font-medium text-[#2563EB] hover:text-[#1D4ED8] hover:underline"
                 >
-                  <p className="font-semibold text-xs text-gray-500 mb-1">{activity.user?.name ?? "System"}</p>
+                  Show previous comments
+                  {hiddenEarlierComments > 0
+                    ? ` (${hiddenEarlierComments})`
+                    : ""}
+                </button>
+              </div>
+            ) : null}
+            {filteredActivities.length === 0 ? (
+              <p className="text-sm text-gray-500 text-center py-8">
+                {chatFeedMode === "comments"
+                  ? chatSearch.trim()
+                    ? "No comments found."
+                    : "No comments yet."
+                  : chatSearch.trim()
+                    ? "No messages found."
+                    : "No activity yet."}
+              </p>
+            ) : (
+            filteredActivities.map((activity, index) => {
+              const isComment = activity.action === "commented";
+              const isHighlighted = highlightedActivityId === activity.id;
+              const prev = filteredActivities[index - 1];
+              const showDateDivider = !prev || activityDayKey(prev.createdAt) !== activityDayKey(activity.createdAt);
+
+              return (
+                <div key={activity.id} className="space-y-3">
+                  {showDateDivider ? (
+                    <div className="flex justify-center py-1">
+                      <span className="rounded-full bg-[#6B7280]/85 px-3.5 py-1 text-[11px] font-medium text-white shadow-sm backdrop-blur-sm">
+                        {formatChatDateLabel(activity.createdAt)}
+                      </span>
+                    </div>
+                  ) : null}
+
                   {isComment ? (
-                    <p>{activity.newValue}</p>
+                    <div
+                      id={`activity-${activity.id}`}
+                      className={cn(
+                        "rounded-xl transition-all duration-300",
+                        isHighlighted && "ring-2 ring-amber-400 ring-offset-2 shadow-lg",
+                      )}
+                    >
+                      <TaskCommentBubble
+                        activity={activity}
+                        taskId={taskId}
+                        isOwn={activity.userId === user?.id}
+                        mentionUsers={mentionUsers}
+                        canManage={isManageableComment(activity)}
+                        isSaving={editCommentMutation.isPending}
+                        isDeleting={deleteCommentMutation.isPending}
+                        onSave={handleEditComment}
+                        onDelete={handleDeleteComment}
+                        onUploadMedia={handleUploadCommentMedia}
+                      />
+                    </div>
                   ) : (
-                    <p>{activityMessage(activity.action, activity.oldValue, activity.newValue)}</p>
+                    <div
+                      id={`activity-${activity.id}`}
+                      className={cn(
+                        "rounded-xl transition-all duration-300",
+                        isHighlighted && "ring-2 ring-amber-400 ring-offset-2 shadow-lg",
+                      )}
+                    >
+                      <TaskActivityBubble
+                        name={activityBubbleName(
+                          activity.action,
+                          activity.user?.name,
+                          activity.newValue,
+                        )}
+                        message={activityMessage(activity.action, activity.oldValue, activity.newValue)}
+                        createdAt={activity.createdAt}
+                      />
+                    </div>
                   )}
-                  <p className="text-[10px] text-gray-400 mt-1">{formatTimeAgo(activity.createdAt)}</p>
                 </div>
               );
             })
             )}
           </div>
 
-          {/* Chat composer */}
-          <div className="shrink-0 bg-white border-t border-gray-200 p-3">
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              onChange={handleFileAttach}
-            />
-            <div className="flex items-center gap-1.5 bg-gray-50 border border-gray-200 rounded-xl px-2 py-1.5">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="w-9 h-9 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-200 hover:text-gray-700 shrink-0"
-                aria-label="Attach file"
-              >
-                <Paperclip size={18} />
-              </button>
-
-              <input
-                ref={chatInputRef}
-                type="text"
-                value={chatMessage}
-                onChange={(e) => setChatMessage(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSendComment();
-                  }
-                }}
-                placeholder="Write a message..."
-                className="flex-1 min-w-0 h-9 px-2 text-sm bg-transparent focus:outline-none"
-              />
-
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setShowEmojiPicker((v) => !v)}
-                  className="w-9 h-9 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-200 shrink-0"
-                  aria-label="Emoji"
-                >
-                  <Smile size={18} />
-                </button>
-                {showEmojiPicker && (
-                  <div className="absolute bottom-full right-0 mb-2 p-2 bg-white border border-gray-200 rounded-xl shadow-lg flex gap-1 z-10">
-                    {QUICK_EMOJIS.map((emoji) => (
-                      <button
-                        key={emoji}
-                        type="button"
-                        className="w-8 h-8 hover:bg-gray-100 rounded text-lg"
-                        onClick={() => {
-                          setChatMessage((m) => m + emoji);
-                          setShowEmojiPicker(false);
-                          chatInputRef.current?.focus();
-                        }}
-                      >
-                        {emoji}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <button
-                type="button"
-                className="w-9 h-9 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-200 shrink-0"
-                aria-label="More actions"
-                title="More actions"
-              >
-                <LayoutGrid size={18} />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleSendComment("🎤 Voice note (demo)")}
-                className="w-9 h-9 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-200 shrink-0"
-                aria-label="Voice message"
-                title="Voice message"
-              >
-                <Mic size={18} />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleSendComment()}
-                disabled={!chatMessage.trim() || addCommentMutation.isPending}
-                className="w-9 h-9 flex items-center justify-center rounded-lg bg-[#2563EB] text-white hover:bg-[#1D4ED8] disabled:opacity-40 shrink-0"
-                aria-label="Send"
-              >
-                {addCommentMutation.isPending ? (
-                  <Loader2 size={16} className="animate-spin" />
-                ) : (
-                  <Send size={16} />
-                )}
-              </button>
-            </div>
-          </div>
+          <TaskCommentComposer
+            taskId={taskId}
+            onSend={handleSendComment}
+            isSending={addCommentMutation.isPending}
+            isUploadingMedia={addAttachmentMutation.isPending}
+            mentionUsers={mentionUsers}
+            onUploadMedia={handleUploadCommentMedia}
+            resolveMediaPreviewUrl={resolveMediaPreviewUrl}
+            crmFiles={crmFiles}
+            isCrmFilesLoading={isCrmFilesLoading}
+            onSelectCrmFile={handleSelectCrmFile}
+            tasks={taskListData?.tasks ?? []}
+            isTasksLoading={isTaskListLoading}
+            onSelectTask={handleSelectTaskReference}
+            onSelectEvent={handleSelectEvent}
+          />
         </div>
         )}
 
@@ -1623,6 +2278,7 @@ function TaskPanelContent({
             <span className="text-[10px] font-medium [writing-mode:vertical-rl] rotate-180">Chat</span>
           </button>
         )}
+        </div>
       </div>
 
       <Dialog open={showDelegateDialog} onOpenChange={setShowDelegateDialog}>
@@ -1664,110 +2320,30 @@ function TaskPanelContent({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={showSubtaskDialog} onOpenChange={setShowSubtaskDialog}>
-        <DialogContent className="z-[130] sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Create subtask</DialogTitle>
-            <DialogDescription>Add a subtask under &ldquo;{task.title}&rdquo;.</DialogDescription>
-          </DialogHeader>
-          <input
-            type="text"
-            value={subtaskTitle}
-            onChange={(e) => setSubtaskTitle(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleCreateSubtask();
-            }}
-            placeholder="Subtask title"
-            className="w-full h-10 px-3 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20"
-            autoFocus
-          />
-          <DialogFooter>
-            <button
-              type="button"
-              onClick={() => {
-                setShowSubtaskDialog(false);
-                setSubtaskTitle("");
+      <AlertDialog open={showSwitchTimerConfirm} onOpenChange={setShowSwitchTimerConfirm}>
+        <AlertDialogContent overlayClassName="z-[130]" className="z-[130]">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Switch time tracking?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Time tracking is already running on &ldquo;{myActiveTimer?.taskTitle ?? "another task"}
+              &rdquo;. Starting time tracking on this task will pause the timer on that task. Do you
+              want to continue?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={startTimerMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={startTimerMutation.isPending}
+              onClick={(e) => {
+                e.preventDefault();
+                handleConfirmSwitchTimer();
               }}
-              className="h-9 px-4 border border-gray-200 rounded-lg text-sm text-gray-600"
             >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={handleCreateSubtask}
-              disabled={!subtaskTitle.trim() || createSubtaskMutation.isPending}
-              className="h-9 px-4 bg-[#2563EB] text-white rounded-lg text-sm font-medium disabled:opacity-50"
-            >
-              {createSubtaskMutation.isPending ? "Creating…" : "Create subtask"}
-            </button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={showMarketDialog} onOpenChange={setShowMarketDialog}>
-        <DialogContent className="z-[130] sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Market</DialogTitle>
-            <DialogDescription>Install apps and integrations for this task.</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2 max-h-[360px] overflow-y-auto">
-            {MARKET_APPS.map((app) => {
-              const installed = installedApps.includes(app.id);
-              return (
-                <div
-                  key={app.id}
-                  className="flex items-center justify-between gap-3 p-3 border border-gray-200 rounded-xl"
-                >
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold text-gray-800">{app.name}</p>
-                    <p className="text-xs text-gray-500 mt-0.5">{app.description}</p>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={installed}
-                    onClick={() => handleInstallApp(app.id, app.name)}
-                    className={`shrink-0 h-8 px-3 rounded-lg text-xs font-medium ${
-                      installed
-                        ? "bg-green-50 text-green-700 border border-green-200"
-                        : "bg-[#2563EB] text-white hover:bg-[#1D4ED8]"
-                    }`}
-                  >
-                    {installed ? "Installed" : "Install"}
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={showAutomationDialog} onOpenChange={setShowAutomationDialog}>
-        <DialogContent className="z-[130] sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Automation</DialogTitle>
-            <DialogDescription>Configure rules that run automatically for this task.</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            {AUTOMATION_RULES.map((rule) => {
-              const enabled = !!automationRules[rule.id];
-              return (
-                <label
-                  key={rule.id}
-                  className="flex items-center justify-between gap-3 p-3 border border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50"
-                >
-                  <span className="text-sm text-gray-700">{rule.label}</span>
-                  <input
-                    type="checkbox"
-                    checked={enabled}
-                    onChange={(e) => handleToggleAutomation(rule.id, e.target.checked)}
-                    className="w-4 h-4 accent-[#2563EB]"
-                  />
-                </label>
-              );
-            })}
-          </div>
-        </DialogContent>
-      </Dialog>
+              {startTimerMutation.isPending ? "Starting…" : "OK"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
         <AlertDialogContent overlayClassName="z-[130]" className="z-[130]">
@@ -1813,7 +2389,7 @@ function EdgeTabButton({
       onClick={onClick}
       title={label}
       aria-label={label}
-      className={`h-10 w-11 -translate-x-full flex items-center justify-center rounded-l-2xl rounded-r-none text-white shadow-[0_2px_8px_rgba(37,99,235,0.35)] transition-colors ${
+      className={`h-10 w-11 flex items-center justify-center text-white shadow-[0_2px_8px_rgba(37,99,235,0.35)] transition-colors max-lg:translate-x-0 max-lg:rounded-2xl lg:-translate-x-full lg:rounded-l-2xl lg:rounded-r-none ${
         active ? "bg-[#1D4ED8]" : "bg-[#2563EB] hover:bg-[#1D4ED8]"
       }`}
     >
@@ -1850,56 +2426,6 @@ function HeaderIconButton({
   );
 }
 
-function MenuQuickAction({
-  icon: Icon,
-  label,
-  onClick,
-}: {
-  icon: React.ComponentType<{ size?: number }>;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex flex-col items-center justify-center gap-2 py-3 px-1 rounded-xl border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
-    >
-      <Icon size={18} className="text-gray-500" />
-      <span className="text-[11px] font-medium leading-none text-center">{label}</span>
-    </button>
-  );
-}
-
-function MenuListItem({
-  icon: Icon,
-  label,
-  onClick,
-  disabled,
-  active,
-}: {
-  icon: React.ComponentType<{ size?: number }>;
-  label: string;
-  onClick: () => void;
-  disabled?: boolean;
-  active?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={`w-full flex items-center gap-3 px-2 py-2.5 text-sm text-left rounded-lg transition-colors disabled:opacity-50 ${
-        active ? "text-[#2563EB] bg-blue-50/60" : "text-gray-700 hover:bg-gray-50"
-      }`}
-    >
-      <Icon size={16} className={active ? "text-[#2563EB]" : "text-gray-500"} />
-      <span className="flex-1">{label}</span>
-      <ChevronRight size={14} className="text-gray-400" />
-    </button>
-  );
-}
-
 function ActionMenuItem({
   icon: Icon,
   label,
@@ -1917,13 +2443,64 @@ function ActionMenuItem({
       onClick={onClick}
       className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 text-sm rounded-lg transition-colors ${
         destructive
-          ? "text-[#E2352D] hover:bg-red-50"
+          ? "text-red-600 hover:bg-red-50"
           : "text-gray-800 hover:bg-gray-50"
       }`}
     >
       <span>{label}</span>
-      <Icon size={16} className={destructive ? "text-[#E2352D]" : "text-gray-400"} />
+      <Icon size={16} className={destructive ? "text-red-600" : "text-gray-400"} />
     </button>
+  );
+}
+
+function CollapsibleSectionHeader({
+  title,
+  expanded,
+  onToggle,
+  actions,
+}: {
+  title: string;
+  expanded: boolean;
+  onToggle: () => void;
+  actions?: React.ReactNode;
+}) {
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onToggle();
+    }
+  };
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onToggle}
+      onKeyDown={handleKeyDown}
+      aria-expanded={expanded}
+      aria-label={expanded ? `Collapse ${title}` : `Expand ${title}`}
+      className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b border-gray-100 cursor-pointer hover:bg-gray-100/80 transition-colors"
+    >
+      <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide select-none">
+        {title}
+      </span>
+      <div className="flex items-center gap-2">
+        {actions ? (
+          <div onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+            {actions}
+          </div>
+        ) : null}
+        <span className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-500 pointer-events-none">
+          {actions ? (
+            expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />
+          ) : expanded ? (
+            <Minus size={14} />
+          ) : (
+            <Plus size={14} />
+          )}
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -1973,21 +2550,3 @@ function UserChip({ name, avatar }: { name?: string | null; avatar?: string | nu
   );
 }
 
-function WorkflowStatusChip({ state }: { state: WorkflowState }) {
-  const styles: Record<WorkflowState, { color: string; bg: string }> = {
-    not_started: { color: "#6B7280", bg: "#F3F4F6" },
-    in_progress: { color: "#2563EB", bg: "#DBEAFE" },
-    paused: { color: "#D97706", bg: "#FEF3C7" },
-    deferred: { color: "#7C3AED", bg: "#EDE9FE" },
-    complete: { color: "#059669", bg: "#D1FAE5" },
-  };
-  const style = styles[state];
-  return (
-    <span
-      className="inline-flex items-center rounded-full px-3 py-1 text-sm font-medium"
-      style={{ backgroundColor: style.bg, color: style.color }}
-    >
-      {workflowLabel(state)}
-    </span>
-  );
-}

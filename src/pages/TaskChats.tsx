@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import { trpc } from "@/providers/trpc";
 import { TaskChatsList } from "@/components/tasks/TaskChatsList";
 import { TaskDetailPanel } from "@/components/tasks/TaskDetailPanel";
 import { useTaskChats } from "@/hooks/useTaskChats";
+import { parseActivityIdParam } from "@/lib/task-notification-link";
+import { markTaskNotificationsReadInCache } from "@/lib/notification-list-cache";
 import { Loader2 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 
@@ -15,11 +17,25 @@ export default function TaskChats() {
   const utils = trpc.useUtils();
   const markAllReadMutation = trpc.notification.markAllRead.useMutation({
     onSuccess: () => {
-      utils.notification.list.invalidate();
+      void utils.notification.list.invalidate();
     },
   });
 
+  const markTaskReadMutation = trpc.notification.markReadForTask.useMutation({
+    onMutate: ({ taskId }) => {
+      markTaskNotificationsReadInCache(utils, taskId);
+    },
+    onSettled: () => {
+      void utils.notification.list.invalidate();
+    },
+  });
+
+  const markTaskAsRead = (taskId: number) => {
+    markTaskReadMutation.mutate({ taskId });
+  };
+
   const openTask = (id: number) => {
+    markTaskAsRead(id);
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       next.set("task", String(id));
@@ -31,9 +47,23 @@ export default function TaskChats() {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       next.delete("task");
+      next.delete("activity");
       return next;
     });
   };
+
+  const clearActivityHighlight = () => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("activity");
+      return next;
+    }, { replace: true });
+  };
+
+  const highlightActivityId = useMemo(
+    () => parseActivityIdParam(searchParams.get("activity")),
+    [searchParams],
+  );
 
   useEffect(() => {
     const taskParam = searchParams.get("task");
@@ -48,7 +78,7 @@ export default function TaskChats() {
     >
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-[#1F2937]">Task chats</h1>
+          <h1 className="text-2xl font-bold text-[#1F2937]">Task Chats</h1>
           <p className="text-sm text-gray-500 mt-0.5">
             Recent conversations across your tasks
           </p>
@@ -71,11 +101,18 @@ export default function TaskChats() {
         chats={taskChats}
         isLoading={isLoading}
         onTaskClick={openTask}
+        onMarkAsRead={markTaskAsRead}
       />
 
       <AnimatePresence>
         {selectedTask && (
-          <TaskDetailPanel taskId={selectedTask} onClose={closeTask} onTaskOpen={openTask} />
+          <TaskDetailPanel
+            taskId={selectedTask}
+            highlightActivityId={highlightActivityId}
+            onHighlightDone={clearActivityHighlight}
+            onClose={closeTask}
+            onTaskOpen={openTask}
+          />
         )}
       </AnimatePresence>
     </motion.div>

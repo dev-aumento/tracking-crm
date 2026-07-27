@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FolderKanban, Search, User, X, ClipboardList } from "lucide-react";
 import { UserAvatar } from "@/components/shared/UserAvatar";
+import { FilterSelect } from "@/components/shared/FilterSelect";
 import {
   DEFAULT_TASK_SEARCH_FILTERS,
   formatActiveTaskFiltersSummary,
@@ -15,6 +16,7 @@ import {
   buildSearchSuggestions,
   type SearchSuggestion,
 } from "@/lib/unified-search";
+import { cn } from "@/lib/utils";
 
 interface TaskSearchFilterPanelProps {
   open: boolean;
@@ -28,6 +30,8 @@ interface TaskSearchFilterPanelProps {
   searchInput: string;
   onSearchInputChange: (value: string) => void;
   showOverdueOnly?: boolean;
+  className?: string;
+  onTaskSelect?: (taskId: number) => void;
 }
 
 export function TaskSearchFilterPanel({
@@ -42,10 +46,13 @@ export function TaskSearchFilterPanel({
   searchInput,
   onSearchInputChange,
   showOverdueOnly = false,
+  className,
+  onTaskSelect,
 }: TaskSearchFilterPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [draftFilters, setDraftFilters] = useState<TaskSearchFilters>(filters);
+  const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
 
   useEffect(() => {
     if (open) setDraftFilters(filters);
@@ -63,11 +70,17 @@ export function TaskSearchFilterPanel({
 
   const isTyping = searchInput.trim().length > 0;
   const showFilterPanel = open && !isTyping;
-  const showQuickSuggestions = isTyping && suggestions.length > 0;
+  const showQuickSuggestions =
+    isTyping && suggestions.length > 0 && !suggestionsDismissed;
 
   const closePanel = () => {
     onOpenChange(false);
     setAssigneeOpen(false);
+  };
+
+  const closeOverlays = () => {
+    closePanel();
+    setSuggestionsDismissed(true);
   };
 
   const openFilterPanel = () => {
@@ -78,6 +91,7 @@ export function TaskSearchFilterPanel({
   };
 
   const handleSearchInputChange = (value: string) => {
+    setSuggestionsDismissed(false);
     onSearchInputChange(value);
     if (value.trim()) {
       onOpenChange(false);
@@ -92,8 +106,7 @@ export function TaskSearchFilterPanel({
 
     const onDoc = (e: MouseEvent) => {
       if (panelRef.current?.contains(e.target as Node)) return;
-      closePanel();
-      setAssigneeOpen(false);
+      closeOverlays();
     };
 
     document.addEventListener("mousedown", onDoc);
@@ -134,6 +147,20 @@ export function TaskSearchFilterPanel({
     closePanel();
   };
 
+  const handleSearchSubmit = () => {
+    if (open && !isTyping) {
+      handleApplySearch();
+      return;
+    }
+
+    const query = searchInput.trim();
+    if (query) {
+      onSearchInputChange(query);
+    }
+    setSuggestionsDismissed(true);
+    closePanel();
+  };
+
   const handleReset = () => {
     setDraftFilters(DEFAULT_TASK_SEARCH_FILTERS);
     closePanel();
@@ -141,6 +168,13 @@ export function TaskSearchFilterPanel({
   };
 
   const handleSuggestionSelect = (suggestion: SearchSuggestion) => {
+    setSuggestionsDismissed(true);
+    if (suggestion.kind === "task") {
+      onSearchInputChange(suggestion.label);
+      onTaskSelect?.(suggestion.id);
+      closePanel();
+      return;
+    }
     if (suggestion.kind === "user") {
       onFiltersChange({
         ...filters,
@@ -150,16 +184,13 @@ export function TaskSearchFilterPanel({
         text: "",
       });
       onSearchInputChange("");
-    } else if (suggestion.kind === "project") {
+    } else {
       onFiltersChange({
         ...filters,
         projectId: suggestion.id,
         personUserId: null,
         text: suggestion.label,
       });
-      onSearchInputChange(suggestion.label);
-    } else {
-      onFiltersChange({ ...filters, text: suggestion.label });
       onSearchInputChange(suggestion.label);
     }
     closePanel();
@@ -173,7 +204,7 @@ export function TaskSearchFilterPanel({
       : searchInput;
 
   return (
-    <div ref={panelRef} className="relative flex-1 min-w-[200px] max-w-md">
+    <div ref={panelRef} className={cn("relative flex-1 min-w-[200px] max-w-md", className)}>
       <div className="relative flex items-center w-full h-9 pl-3 pr-9 bg-white border border-gray-200 rounded-lg focus-within:ring-2 focus-within:ring-[#2563EB]/20 focus-within:border-[#2563EB]">
         {filterSummary && (
           <span className="text-sm text-[#1F2937] shrink-0 pointer-events-none select-none">
@@ -192,8 +223,11 @@ export function TaskSearchFilterPanel({
             else openFilterPanel();
           }}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && open) handleApplySearch();
-            if (e.key === "Escape") closePanel();
+            if (e.key === "Enter") {
+              e.preventDefault();
+              handleSearchSubmit();
+            }
+            if (e.key === "Escape") closeOverlays();
           }}
           className="flex-1 min-w-0 h-full bg-transparent border-0 text-sm focus:outline-none cursor-pointer"
         />
@@ -281,15 +315,17 @@ export function TaskSearchFilterPanel({
               <div className="space-y-4 flex-1">
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1.5">Role</label>
-                  <select
+                  <FilterSelect
                     value={draftFilters.personRole}
-                    onChange={(e) => handlePersonRoleChange(e.target.value as TaskPersonRoleFilter)}
-                    className="w-full h-9 text-sm border border-gray-200 rounded-lg px-3 bg-white focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20"
-                  >
-                    {TASK_PERSON_ROLE_OPTIONS.map((o) => (
-                      <option key={o.id} value={o.id}>{o.label}</option>
-                    ))}
-                  </select>
+                    onChange={(value) => handlePersonRoleChange(value as TaskPersonRoleFilter)}
+                    options={TASK_PERSON_ROLE_OPTIONS.map((o) => ({
+                      value: o.id,
+                      label: o.label,
+                    }))}
+                    aria-label="Filter person role"
+                    triggerClassName="h-9 w-full"
+                    className="w-full"
+                  />
                 </div>
 
                 <div className="relative">

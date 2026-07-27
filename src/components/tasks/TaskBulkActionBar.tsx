@@ -1,13 +1,37 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Trash2 } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { ProjectSearchSelect } from "@/components/tasks/ProjectSearchSelect";
 
 type TaskStatus = "todo" | "in_progress" | "review" | "done";
+
+const STATUS_OPTIONS: Array<{ value: TaskStatus; label: string }> = [
+  { value: "todo", label: "To do" },
+  { value: "in_progress", label: "In progress" },
+  { value: "review", label: "Review" },
+  { value: "done", label: "Done" },
+];
+
+const bulkSelectTriggerClass =
+  "h-9 min-w-[140px] rounded-xl border border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 shadow-none hover:bg-gray-50 focus-visible:ring-[#2563EB]/20 focus-visible:border-[#2563EB]";
+
+const bulkSelectContentClass =
+  "rounded-xl border border-gray-200 bg-white shadow-lg p-1";
+
+const bulkSelectItemClass =
+  "rounded-lg text-sm text-gray-700 focus:bg-blue-50 focus:text-[#2563EB] data-[state=checked]:bg-blue-50 data-[state=checked]:text-[#2563EB] data-[state=checked]:font-medium";
 
 interface TaskBulkActionBarProps {
   selectedCount: number;
   canBulkEdit: boolean;
   canBulkDelete: boolean;
-  projects: Array<{ id: number; name: string }>;
+  projects: Array<{ id: number; name: string; color?: string | null }>;
   excludeProjectId?: number;
   isPending?: boolean;
   onChangeStatus: (status: TaskStatus) => void;
@@ -29,63 +53,73 @@ export function TaskBulkActionBar({
   onClear,
 }: TaskBulkActionBarProps) {
   const [bulkStatus, setBulkStatus] = useState<TaskStatus>("todo");
-  const [bulkMoveProjectId, setBulkMoveProjectId] = useState<number | null>(null);
+  // undefined = not chosen yet; null = No project; number = project id
+  const [moveProjectId, setMoveProjectId] = useState<number | null | undefined>(undefined);
+
+  const moveProjects = useMemo(
+    () => projects.filter((p) => p.id !== excludeProjectId),
+    [projects, excludeProjectId],
+  );
 
   if (selectedCount === 0 || (!canBulkEdit && !canBulkDelete)) {
     return null;
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-3 p-3 bg-blue-50 border border-blue-100 rounded-xl">
+    <div className="sticky top-[4.25rem] z-30 flex flex-wrap items-center gap-3 p-3 bg-blue-50 border border-blue-100 rounded-xl shadow-sm">
       <span className="text-sm font-medium text-[#1F2937]">
         {selectedCount} selected
       </span>
 
       {canBulkEdit ? (
         <>
-          <select
+          <Select
             value={bulkStatus}
-            onChange={(e) => setBulkStatus(e.target.value as TaskStatus)}
-            className="h-9 px-2 border border-gray-200 rounded-lg text-sm bg-white"
+            onValueChange={(value) => setBulkStatus(value as TaskStatus)}
           >
-            <option value="todo">To do</option>
-            <option value="in_progress">In progress</option>
-            <option value="review">Review</option>
-            <option value="done">Done</option>
-          </select>
+            <SelectTrigger className={bulkSelectTriggerClass} size="default">
+              <SelectValue placeholder="Select status" />
+            </SelectTrigger>
+            <SelectContent className={bulkSelectContentClass} position="popper" align="start">
+              {STATUS_OPTIONS.map((opt) => (
+                <SelectItem
+                  key={opt.value}
+                  value={opt.value}
+                  className={bulkSelectItemClass}
+                >
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <button
             type="button"
             disabled={isPending}
             onClick={() => onChangeStatus(bulkStatus)}
-            className="h-9 px-3 bg-white border border-gray-200 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+            className="h-9 px-3 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
           >
             Change status
           </button>
 
-          <select
-            value={bulkMoveProjectId ?? ""}
-            onChange={(e) =>
-              setBulkMoveProjectId(e.target.value === "" ? null : Number(e.target.value))
-            }
-            className="h-9 px-2 border border-gray-200 rounded-lg text-sm bg-white max-w-[200px]"
-          >
-            <option value="">Move to project…</option>
-            {projects
-              .filter((p) => p.id !== excludeProjectId)
-              .map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            <option value="-1">No project</option>
-          </select>
+          <ProjectSearchSelect
+            projects={moveProjects}
+            value={typeof moveProjectId === "number" ? moveProjectId : null}
+            onValueChange={(id) => {
+              // Clear option => no project (null). Project id => that project.
+              setMoveProjectId(id === undefined ? null : id);
+            }}
+            placeholder={moveProjectId === null ? "No project" : "Move to project…"}
+            clearLabel="No project"
+            searchPlaceholder="Search projects…"
+            allowClear
+            containerClassName="w-auto max-w-[240px] shrink-0"
+            triggerClassName="rounded-xl max-w-[240px] font-medium text-gray-700 shadow-none"
+          />
           <button
             type="button"
-            disabled={isPending || bulkMoveProjectId === null}
-            onClick={() =>
-              onMoveProject(bulkMoveProjectId === -1 ? null : bulkMoveProjectId)
-            }
-            className="h-9 px-3 bg-white border border-gray-200 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+            disabled={isPending || moveProjectId === undefined}
+            onClick={() => onMoveProject(moveProjectId ?? null)}
+            className="h-9 px-3 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
           >
             Move
           </button>
@@ -97,7 +131,7 @@ export function TaskBulkActionBar({
           type="button"
           disabled={isPending}
           onClick={onDelete}
-          className="h-9 px-3 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50 inline-flex items-center gap-1.5"
+          className="h-9 px-3 bg-red-600 text-white rounded-xl text-sm font-medium hover:bg-red-700 disabled:opacity-50 inline-flex items-center gap-1.5"
         >
           <Trash2 size={14} />
           Delete

@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { hashPassword } from "../api/lib/password";
 import { ensureSchema } from "../api/lib/migrate";
+import { ensureDefaultOrganizationMigration } from "../api/lib/tenant";
 import { findById, getCollection, insertDoc, updateById } from "../api/queries/mongo";
 import { syncEmployeeFromUser } from "../api/queries/employees";
 import { Collections } from "./mongo/collections";
@@ -23,6 +24,7 @@ const LEGACY_DEMO_ADMIN_EMAIL = "alex@aumento.io";
 
 export async function ensureDefaultAdmin() {
   await ensureSchema();
+  const organizationId = await ensureDefaultOrganizationMigration();
 
   const col = await getCollection<UserDoc>(Collections.users);
   const email = DEFAULT_ADMIN.email.toLowerCase();
@@ -37,6 +39,7 @@ export async function ensureDefaultAdmin() {
   if (target) {
     await updateById<UserDoc>(Collections.users, target.id, {
       unionId: DEFAULT_ADMIN.unionId,
+      organizationId: target.organizationId ?? organizationId,
       name: target.name?.trim() || DEFAULT_ADMIN.name,
       email,
       role: DEFAULT_ADMIN.role,
@@ -51,6 +54,7 @@ export async function ensureDefaultAdmin() {
   } else {
     await insertDoc<UserDoc>(Collections.users, {
       unionId: DEFAULT_ADMIN.unionId,
+      organizationId,
       name: DEFAULT_ADMIN.name,
       email,
       passwordHash,
@@ -60,11 +64,27 @@ export async function ensureDefaultAdmin() {
       department: DEFAULT_ADMIN.department,
       position: DEFAULT_ADMIN.position,
       phone: null,
+      firstName: "Sandeep",
+      lastName: null,
+      secondName: null,
+      dateOfBirth: null,
+      dateOfJoining: null,
+      sex: null,
+      city: null,
+      address: null,
+      familyContactNumber: null,
+      bloodGroup: null,
+      aadhaarCard: null,
+      panCard: null,
+      notificationLanguage: null,
+      privateNotes: null,
+      employmentType: "full_time",
+      headOfDepartmentUserIds: [],
       permissions,
       createdAt: now,
       updatedAt: now,
       lastSignInAt: now,
-    });
+    } as Omit<UserDoc, "id">);
     console.log(`Created admin: ${email}`);
   }
 

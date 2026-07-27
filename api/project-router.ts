@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { createRouter, authedQuery } from "./middleware";
 import { isAuthDisabled } from "./lib/dev-mode";
 import * as mock from "./lib/mock-store";
@@ -19,13 +20,23 @@ import {
 } from "./queries/project-members";
 import { omitPasswordHash } from "./queries/users";
 import { notifyLeads } from "./lib/notify-leads";
-import { assertPermission } from "./lib/permissions";
+import { assertPermission, hasAnyPermission } from "./lib/permissions";
 import { Collections } from "@db/mongo/collections";
 import type { ProjectDoc, TaskDoc, UserDoc } from "@db/mongo/types";
 import { ensureSchema } from "./lib/migrate";
+import { belongsToUserOrg, orgFilter, requireOrganizationId } from "./lib/tenant";
 import {
   projectPerformancePercent,
 } from "@/lib/project-funnel";
+import {
+  createPipelineStageKey,
+  nextCustomStageColor,
+  resolveProjectPipelineStages,
+  isPipelineStageDeletable,
+  isCustomPipelineStageKey,
+  movePipelineStageOrder,
+  PIPELINE_STAGE_KEY_REGEX,
+} from "@/lib/task-kanban";
 
 function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -49,7 +60,7 @@ export const projectRouter = createRouter({
       await ensureSchema();
       const { status, search } = input || {};
 
-      const filter: Record<string, unknown> = {};
+      const filter: Record<string, unknown> = { ...orgFilter(ctx.user) };
       if (status) filter.status = status;
       if (search) filter.name = new RegExp(escapeRegex(search), "i");
 
@@ -62,7 +73,7 @@ export const projectRouter = createRouter({
       const projectIds = allProjects.map((p) => p.id);
       const taskCol = await getCollection<TaskDoc>(Collections.tasks);
       const allTasks = projectIds.length > 0
-        ? await taskCol.find({ projectId: { $in: projectIds } }).toArray()
+        ? await taskCol.find({ projectId: { $in: projectIds }, ...orgFilter(ctx.user) }).toArray()
         : [];
 
       const tasksByProject = new Map<number, TaskDoc[]>();
@@ -136,6 +147,36 @@ export const projectRouter = createRouter({
       });
     }),
 
+  /** Lightweight project picker (id/name/color/client) — avoids loading all tasks. */
+  listForPicker: authedQuery.query(async ({ ctx }) => {
+    if (useMock()) {
+      const list = mock.mockProjectList(ctx.user.id);
+      return list.map(
+        (p: { id: number; name: string; color?: string | null; clientName?: string | null }) => ({
+          id: p.id,
+          name: p.name,
+          color: p.color ?? null,
+          clientName: p.clientName ?? null,
+        }),
+      );
+    }
+
+    await ensureSchema();
+    const projectCol = await getCollection<ProjectDoc>(Collections.projects);
+    const projects = await projectCol
+      .find(orgFilter(ctx.user))
+      .project({ id: 1, name: 1, color: 1, clientName: 1, _id: 0 })
+      .sort({ name: 1 })
+      .toArray();
+
+    return projects.map((p) => ({
+      id: p.id,
+      name: p.name,
+      color: p.color ?? null,
+      clientName: p.clientName ?? null,
+    }));
+  }),
+
   getById: authedQuery
     .input(z.object({ id: z.number() }))
     .query(async ({ input, ctx }) => {
@@ -143,51 +184,83 @@ export const projectRouter = createRouter({
 
       await ensureSchema();
       const project = await findById<ProjectDoc>(Collections.projects, input.id);
-      if (!project) return null;
+      if (!project || !belongsToUserOrg(ctx.user, project.organizationId)) return null;
 
       const joined = await isProjectMember(project.id, ctx.user.id, project.createdBy);
       const canViewTasks = canViewProjectTasks(ctx.user, project.createdBy, joined);
 
       const taskCol = await getCollection<TaskDoc>(Collections.tasks);
-      const projectTasks = canViewTasks
-        ? await taskCol.find({ projectId: project.id }).toArray()
-        : [];
+      const [joinedMemberIds, statusGroups, hoursAgg, dueAgg, creator] = await Promise.all([
+        getProjectMemberUserIds(project.id),
+        canViewTasks
+          ? taskCol
+              .aggregate<{ _id: string; count: number }>([
+                { $match: { projectId: project.id } },
+                { $group: { _id: "$status", count: { $sum: 1 } } },
+              ])
+              .toArray()
+          : Promise.resolve([] as Array<{ _id: string; count: number }>),
+        canViewTasks
+          ? taskCol
+              .aggregate<{ total: number }>([
+                { $match: { projectId: project.id } },
+                {
+                  $group: {
+                    _id: null,
+                    total: {
+                      $sum: {
+                        $convert: {
+                          input: "$actualHours",
+                          to: "double",
+                          onError: 0,
+                          onNull: 0,
+                        },
+                      },
+                    },
+                  },
+                },
+              ])
+              .toArray()
+          : Promise.resolve([] as Array<{ total: number }>),
+        canViewTasks
+          ? taskCol
+              .find({ projectId: project.id, dueDate: { $ne: null } })
+              .project({ dueDate: 1, _id: 0 })
+              .sort({ dueDate: 1 })
+              .limit(1)
+              .toArray()
+          : Promise.resolve([] as Array<{ dueDate?: Date | null }>),
+        project.createdBy
+          ? findById<UserDoc>(Collections.users, project.createdBy)
+          : Promise.resolve(null),
+      ]);
 
-      const total = canViewTasks ? projectTasks.length : 0;
-      const todo = canViewTasks ? projectTasks.filter((t) => t.status === "todo").length : 0;
-      const inProgress = canViewTasks ? projectTasks.filter((t) => t.status === "in_progress").length : 0;
-      const review = canViewTasks ? projectTasks.filter((t) => t.status === "review").length : 0;
-      const done = canViewTasks ? projectTasks.filter((t) => t.status === "done").length : 0;
+      const countByStatus = new Map(statusGroups.map((row) => [row._id, row.count]));
+      const total = canViewTasks
+        ? [...countByStatus.values()].reduce((sum, n) => sum + n, 0)
+        : 0;
+      const todo = countByStatus.get("todo") ?? 0;
+      const inProgress = countByStatus.get("in_progress") ?? 0;
+      const review = countByStatus.get("review") ?? 0;
+      const done = countByStatus.get("done") ?? 0;
+      const hoursTracked = hoursAgg[0]?.total ?? 0;
+      const dueDate = dueAgg[0]?.dueDate ?? null;
 
-      const joinedMemberIds = await getProjectMemberUserIds(project.id);
       const memberIds = new Set<number>(joinedMemberIds);
       if (project.createdBy) memberIds.add(project.createdBy);
-      for (const t of projectTasks) {
-        if (t.assigneeId) memberIds.add(t.assigneeId);
-        if (t.createdBy) memberIds.add(t.createdBy);
-      }
-
-      const hoursTracked = projectTasks.reduce(
-        (sum, t) => sum + parseFloat(String(t.actualHours ?? "0")),
-        0,
-      );
-
-      const dueDates = projectTasks
-        .map((t) => t.dueDate)
-        .filter((d): d is Date => Boolean(d))
-        .sort((a, b) => a.getTime() - b.getTime());
-
-      const creator = project.createdBy
-        ? await findById<UserDoc>(Collections.users, project.createdBy)
-        : null;
 
       return {
         ...project,
+        customPipelineStages: project.customPipelineStages ?? [],
+        pipelineStageLabelOverrides: project.pipelineStageLabelOverrides ?? {},
+        hiddenPipelineStageKeys: project.hiddenPipelineStageKeys ?? [],
+        pipelineStageOrder: project.pipelineStageOrder ?? [],
+        pipelineStages: resolveProjectPipelineStages(project),
         creator: creator ? omitPasswordHash(creator) : null,
         stats: { total, todo, inProgress, review, done },
         hoursTracked: Math.round(hoursTracked * 10) / 10,
         memberCount: memberIds.size || 1,
-        dueDate: dueDates[0] ?? null,
+        dueDate,
         isMember: joined,
         canViewTasks,
       };
@@ -202,7 +275,7 @@ export const projectRouter = createRouter({
       await ensureSchema();
 
       const project = await findById<ProjectDoc>(Collections.projects, input.projectId);
-      if (!project) {
+      if (!project || !belongsToUserOrg(ctx.user, project.organizationId)) {
         throw new Error("Project not found");
       }
 
@@ -220,7 +293,9 @@ export const projectRouter = createRouter({
     .input(z.object({
       name: z.string().min(1),
       description: z.string().optional(),
+      clientName: z.string().max(200).optional(),
       color: z.string().optional(),
+      icon: z.string().max(50).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       assertPermission(ctx.user, "projects.manage");
@@ -229,8 +304,11 @@ export const projectRouter = createRouter({
       const project = await insertDoc<ProjectDoc>(Collections.projects, {
         name: input.name,
         description: input.description ?? null,
+        clientName: input.clientName?.trim() || null,
         status: "active",
         color: input.color ?? null,
+        icon: input.icon ?? null,
+        organizationId: requireOrganizationId(ctx.user),
         createdBy: ctx.user.id,
         createdAt: now,
         updatedAt: now,
@@ -255,17 +333,344 @@ export const projectRouter = createRouter({
       id: z.number(),
       name: z.string().optional(),
       description: z.string().optional(),
+      clientName: z.string().max(200).nullable().optional(),
       status: z.enum(["active", "archived", "completed"]).optional(),
       color: z.string().optional(),
+      icon: z.string().max(50).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       assertPermission(ctx.user, "projects.manage");
       await ensureSchema();
       const { id, ...data } = input;
-      return updateById<ProjectDoc>(Collections.projects, id, {
-        ...data,
+      const existing = await findById<ProjectDoc>(Collections.projects, id);
+      if (!existing || !belongsToUserOrg(ctx.user, existing.organizationId)) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+      }
+      const patch: Partial<ProjectDoc> = { updatedAt: new Date() };
+
+      if (data.name !== undefined) patch.name = data.name;
+      if (data.description !== undefined) patch.description = data.description ?? null;
+      if (data.clientName !== undefined) patch.clientName = data.clientName?.trim() || null;
+      if (data.status !== undefined) patch.status = data.status;
+      if (data.color !== undefined) patch.color = data.color ?? null;
+      if (data.icon !== undefined) patch.icon = data.icon ?? null;
+
+      return updateById<ProjectDoc>(Collections.projects, id, patch);
+    }),
+
+  addPipelineStage: authedQuery
+    .input(
+      z.object({
+        projectId: z.number(),
+        label: z.string().trim().min(1).max(80),
+        color: z
+          .string()
+          .regex(/^#[0-9A-Fa-f]{6}$/)
+          .optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (useMock()) {
+        return mock.mockAddPipelineStage(input.projectId, input.label, input.color);
+      }
+
+      const canAddSection =
+        ctx.user.role === "manager" ||
+        hasAnyPermission(ctx.user, ["projects.manage", "tasks.create", "tasks.edit_all"]);
+      if (!canAddSection) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You do not have permission to add sections",
+        });
+      }
+      await ensureSchema();
+
+      const project = await findById<ProjectDoc>(Collections.projects, input.projectId);
+      if (!project || !belongsToUserOrg(ctx.user, project.organizationId)) throw new Error("Project not found");
+
+      const joined = await isProjectMember(input.projectId, ctx.user.id, project.createdBy);
+      if (!canViewProjectTasks(ctx.user, project.createdBy, joined)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You do not have access to this project",
+        });
+      }
+
+      const existing = resolveProjectPipelineStages(project);
+      const key = createPipelineStageKey(
+        input.label,
+        existing.map((s) => s.key),
+      );
+      if (!PIPELINE_STAGE_KEY_REGEX.test(key)) {
+        throw new Error("Could not create a valid section key");
+      }
+
+      const custom = [...(project.customPipelineStages ?? [])];
+      const stage = {
+        key,
+        label: input.label.trim(),
+        color: input.color ?? nextCustomStageColor(custom.length),
+      };
+      custom.push(stage);
+
+      const currentOrder = resolveProjectPipelineStages(project).map((s) => s.key);
+      const pipelineStageOrder = [...currentOrder, stage.key];
+
+      const updated = await updateById<ProjectDoc>(Collections.projects, input.projectId, {
+        customPipelineStages: custom,
+        pipelineStageOrder,
         updatedAt: new Date(),
       });
+
+      return {
+        project: updated,
+        stage,
+        stages: resolveProjectPipelineStages({
+          ...project,
+          ...updated,
+          customPipelineStages: custom,
+          pipelineStageOrder,
+        }),
+        customPipelineStages: custom,
+        pipelineStageOrder,
+      };
+    }),
+
+  renamePipelineStage: authedQuery
+    .input(
+      z.object({
+        projectId: z.number(),
+        key: z.string().min(1).max(64).regex(PIPELINE_STAGE_KEY_REGEX),
+        label: z.string().trim().min(1).max(80),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (useMock()) {
+        return mock.mockRenamePipelineStage(input.projectId, input.key, input.label);
+      }
+
+      const canRename =
+        ctx.user.role === "manager" ||
+        hasAnyPermission(ctx.user, ["projects.manage", "tasks.create", "tasks.edit_all"]);
+      if (!canRename) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You do not have permission to rename sections",
+        });
+      }
+      await ensureSchema();
+
+      const project = await findById<ProjectDoc>(Collections.projects, input.projectId);
+      if (!project) throw new Error("Project not found");
+
+      const joined = await isProjectMember(input.projectId, ctx.user.id, project.createdBy);
+      if (!canViewProjectTasks(ctx.user, project.createdBy, joined)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You do not have access to this project",
+        });
+      }
+
+      const stages = resolveProjectPipelineStages(project);
+      if (!stages.some((s) => s.key === input.key)) {
+        throw new Error("Section not found on this project");
+      }
+
+      const label = input.label.trim();
+      const overrides = { ...(project.pipelineStageLabelOverrides ?? {}) };
+      overrides[input.key] = label;
+
+      // Keep custom stage label in sync when renaming a custom section.
+      const custom = (project.customPipelineStages ?? []).map((stage) =>
+        stage.key === input.key ? { ...stage, label } : stage,
+      );
+
+      const updated = await updateById<ProjectDoc>(Collections.projects, input.projectId, {
+        pipelineStageLabelOverrides: overrides,
+        customPipelineStages: custom,
+        updatedAt: new Date(),
+      });
+
+      return {
+        project: updated,
+        key: input.key,
+        label,
+        stages: resolveProjectPipelineStages({
+          customPipelineStages: custom,
+          pipelineStageLabelOverrides: overrides,
+        }),
+        pipelineStageLabelOverrides: overrides,
+      };
+    }),
+
+  deletePipelineStage: authedQuery
+    .input(
+      z.object({
+        projectId: z.number(),
+        key: z.string().min(1).max(64).regex(PIPELINE_STAGE_KEY_REGEX),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (useMock()) {
+        return mock.mockDeletePipelineStage(input.projectId, input.key);
+      }
+
+      const canDelete =
+        ctx.user.role === "manager" ||
+        hasAnyPermission(ctx.user, ["projects.manage", "tasks.create", "tasks.edit_all"]);
+      if (!canDelete) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You do not have permission to delete sections",
+        });
+      }
+      await ensureSchema();
+
+      const project = await findById<ProjectDoc>(Collections.projects, input.projectId);
+      if (!project) throw new Error("Project not found");
+
+      const joined = await isProjectMember(input.projectId, ctx.user.id, project.createdBy);
+      if (!canViewProjectTasks(ctx.user, project.createdBy, joined)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You do not have access to this project",
+        });
+      }
+
+      if (!isPipelineStageDeletable(input.key)) {
+        throw new Error("To Do and Finished sections cannot be deleted");
+      }
+
+      const stages = resolveProjectPipelineStages(project);
+      if (!stages.some((s) => s.key === input.key)) {
+        throw new Error("Section not found on this project");
+      }
+
+      // Move tasks out of the deleted section into To Do.
+      const taskCol = await getCollection<TaskDoc>(Collections.tasks);
+      const moveResult = await taskCol.updateMany(
+        { projectId: input.projectId, stage: input.key },
+        {
+          $set: {
+            stage: "new",
+            status: "todo",
+            updatedAt: new Date(),
+          },
+        },
+      );
+
+      const overrides = { ...(project.pipelineStageLabelOverrides ?? {}) };
+      delete overrides[input.key];
+
+      let custom = [...(project.customPipelineStages ?? [])];
+      let hidden = [...(project.hiddenPipelineStageKeys ?? [])];
+
+      if (isCustomPipelineStageKey(input.key)) {
+        custom = custom.filter((stage) => stage.key !== input.key);
+      } else if (!hidden.includes(input.key)) {
+        hidden.push(input.key);
+      }
+
+      const updated = await updateById<ProjectDoc>(Collections.projects, input.projectId, {
+        customPipelineStages: custom,
+        pipelineStageLabelOverrides: overrides,
+        hiddenPipelineStageKeys: hidden,
+        pipelineStageOrder: (project.pipelineStageOrder ?? []).filter((k) => k !== input.key),
+        updatedAt: new Date(),
+      });
+
+      const nextStages = resolveProjectPipelineStages({
+        customPipelineStages: custom,
+        pipelineStageLabelOverrides: overrides,
+        hiddenPipelineStageKeys: hidden,
+        pipelineStageOrder: updated?.pipelineStageOrder ?? null,
+      });
+
+      return {
+        project: updated,
+        key: input.key,
+        movedTaskCount: moveResult.modifiedCount,
+        stages: nextStages,
+        customPipelineStages: custom,
+        pipelineStageLabelOverrides: overrides,
+        hiddenPipelineStageKeys: hidden,
+        pipelineStageOrder: updated?.pipelineStageOrder ?? [],
+      };
+    }),
+
+  reorderPipelineStage: authedQuery
+    .input(
+      z.object({
+        projectId: z.number(),
+        key: z.string().min(1).max(64).regex(PIPELINE_STAGE_KEY_REGEX),
+        direction: z.enum(["left", "right"]),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (useMock()) {
+        return mock.mockReorderPipelineStage(input.projectId, input.key, input.direction);
+      }
+
+      const canReorder =
+        ctx.user.role === "manager" ||
+        hasAnyPermission(ctx.user, ["projects.manage", "tasks.create", "tasks.edit_all"]);
+      if (!canReorder) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You do not have permission to reorder sections",
+        });
+      }
+      await ensureSchema();
+
+      const project = await findById<ProjectDoc>(Collections.projects, input.projectId);
+      if (!project) throw new Error("Project not found");
+
+      const joined = await isProjectMember(input.projectId, ctx.user.id, project.createdBy);
+      if (!canViewProjectTasks(ctx.user, project.createdBy, joined)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You do not have access to this project",
+        });
+      }
+
+      const stages = resolveProjectPipelineStages(project);
+      if (!stages.some((s) => s.key === input.key)) {
+        throw new Error("Section not found on this project");
+      }
+
+      const pipelineStageOrder = movePipelineStageOrder(
+        stages.map((s) => s.key),
+        input.key,
+        input.direction,
+      );
+      if (!pipelineStageOrder) {
+        return {
+          project,
+          key: input.key,
+          direction: input.direction,
+          stages,
+          pipelineStageOrder: project.pipelineStageOrder ?? stages.map((s) => s.key),
+        };
+      }
+
+      const updated = await updateById<ProjectDoc>(Collections.projects, input.projectId, {
+        pipelineStageOrder,
+        updatedAt: new Date(),
+      });
+
+      const nextStages = resolveProjectPipelineStages({
+        ...project,
+        ...updated,
+        pipelineStageOrder,
+      });
+
+      return {
+        project: updated,
+        key: input.key,
+        direction: input.direction,
+        stages: nextStages,
+        pipelineStageOrder,
+      };
     }),
 
   delete: authedQuery

@@ -2,27 +2,25 @@ import { useMemo, useState } from "react";
 import { trpc } from "@/providers/trpc";
 import { useAuth } from "@/hooks/useAuth";
 import { UserAvatar } from "@/components/shared/UserAvatar";
-import { Timer, Calendar, Loader2 } from "lucide-react";
+import { Timer, Calendar, Loader2, Pencil } from "lucide-react";
 import { localDateKey, REQUIRED_DAILY_HOURS } from "@/lib/work-hours-policy";
 import { formatDuration } from "@/lib/utils";
+import { hasPermission } from "@/lib/permissions";
 import { BreaksPanel } from "@/components/time-tracking/BreaksPanel";
+import {
+  EditAttendanceEntryDialog,
+  formatEntryDateTimeRange,
+  type AttendanceEntryRow,
+} from "@/components/time-tracking/EditAttendanceEntryDialog";
+import { formatWorkZoneDateKey } from "@/lib/timezone";
 
 function formatEntryDuration(minutes: number | null | undefined) {
   if (minutes == null) return "—";
   return formatDuration(minutes);
 }
 
-function formatEntryTime(value: Date | string) {
-  return new Date(value).toLocaleTimeString("en-IN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: true,
-  });
-}
-
 function formatDisplayDate(dateStr: string) {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString("en-IN", {
+  return formatWorkZoneDateKey(dateStr, {
     weekday: "long",
     month: "long",
     day: "numeric",
@@ -39,21 +37,17 @@ function DayEntriesPanel({
   entries,
   isLoading,
   emptyMessage,
+  onEditEntry,
 }: {
   title: string;
   subtitle: string;
   avatarName?: string | null;
   avatarUrl?: string | null;
   totalHours: number;
-  entries: Array<{
-    id: number;
-    note?: string | null;
-    clockIn: Date;
-    clockOut?: Date | null;
-    duration?: number | null;
-  }>;
+  entries: AttendanceEntryRow[];
   isLoading: boolean;
   emptyMessage: string;
+  onEditEntry?: (entry: AttendanceEntryRow) => void;
 }) {
   return (
     <div className="border border-gray-200 rounded-xl overflow-hidden">
@@ -85,12 +79,24 @@ function DayEntriesPanel({
                   {entry.note || "Attendance"}
                 </div>
                 <div className="text-xs text-gray-400">
-                  {formatEntryTime(entry.clockIn)}
-                  {entry.clockOut ? ` – ${formatEntryTime(entry.clockOut)}` : " – In progress"}
+                  {formatEntryDateTimeRange(entry.clockIn, entry.clockOut)}
                 </div>
               </div>
-              <div className="text-sm font-medium text-[#1F2937] shrink-0">
-                {formatEntryDuration(entry.duration)}
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="text-sm font-medium text-[#1F2937]">
+                  {formatEntryDuration(entry.duration)}
+                </div>
+                {entry.clockOut && onEditEntry ? (
+                  <button
+                    type="button"
+                    onClick={() => onEditEntry(entry)}
+                    className="h-8 px-2.5 rounded-lg border border-gray-200 text-xs font-medium text-[#2563EB] hover:bg-blue-50 transition-colors flex items-center gap-1"
+                    aria-label="Edit clock in and clock out"
+                  >
+                    <Pencil size={12} />
+                    Edit
+                  </button>
+                ) : null}
               </div>
             </div>
           ))}
@@ -104,19 +110,22 @@ function DayEntriesPanel({
 
 export function DayHoursSection() {
   const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const canViewTeamHours = hasPermission(user, "time.view_team");
+  const utils = trpc.useUtils();
 
   const [selectedDate, setSelectedDate] = useState(() => localDateKey(new Date()));
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<number | "">("");
+  const [editOpen, setEditOpen] = useState(false);
+  const [editingEntry, setEditingEntry] = useState<AttendanceEntryRow | null>(null);
 
   const { data: usersData } = trpc.user.listForPicker.useQuery(
     { limit: 500 },
-    { enabled: isAdmin },
+    { enabled: canViewTeamHours },
   );
 
-  const viewingOtherEmployee = isAdmin && selectedEmployeeId !== "";
-  const showTeamTable = isAdmin && !viewingOtherEmployee;
-  const showDayDetail = !isAdmin || viewingOtherEmployee;
+  const viewingOtherEmployee = canViewTeamHours && selectedEmployeeId !== "";
+  const showTeamTable = canViewTeamHours && !viewingOtherEmployee;
+  const showDayDetail = !canViewTeamHours || viewingOtherEmployee;
   const breaksUserId = viewingOtherEmployee ? Number(selectedEmployeeId) : undefined;
 
   const { data: teamHours, isLoading: teamLoading } = trpc.timeEntry.getTeamHours.useQuery(
@@ -138,6 +147,13 @@ export function DayHoursSection() {
   );
 
   const dayHoursTotal = dayHours?.totalHours ?? 0;
+  const invalidateDayHours = () => {
+    utils.timeEntry.getDayHours.invalidate();
+    utils.timeEntry.getBreaks.invalidate();
+    utils.timeEntry.getStats.invalidate();
+    utils.timeEntry.getTeamHours.invalidate();
+    utils.dashboard.getStats.invalidate();
+  };
 
   const sectionSubtitle = showTeamTable
     ? `Team hours for ${formatDisplayDate(selectedDate)}`
@@ -166,13 +182,13 @@ export function DayHoursSection() {
           />
         </div>
 
-        {isAdmin ? (
+        {canViewTeamHours ? (
           <select
             value={selectedEmployeeId}
             onChange={(e) =>
               setSelectedEmployeeId(e.target.value ? Number(e.target.value) : "")
             }
-            className="h-9 px-3 border border-gray-200 rounded-lg text-sm bg-white min-w-[220px]"
+            className="h-9 px-3 border border-gray-200 rounded-lg text-sm bg-white w-full sm:w-auto sm:min-w-[220px]"
           >
             <option value="">All employees</option>
             {(usersData?.users ?? []).map((u) => (
@@ -206,8 +222,21 @@ export function DayHoursSection() {
                 ? "No attendance logged for this employee on the selected date."
                 : "No attendance logged for you on the selected date."
             }
+            onEditEntry={(entry) => {
+              setEditingEntry(entry);
+              setEditOpen(true);
+            }}
           />
           <BreaksPanel date={selectedDate} userId={breaksUserId} />
+          <EditAttendanceEntryDialog
+            open={editOpen}
+            onOpenChange={(open) => {
+              setEditOpen(open);
+              if (!open) setEditingEntry(null);
+            }}
+            entry={editingEntry}
+            onSuccess={invalidateDayHours}
+          />
         </>
       ) : (
         <div className="border border-gray-200 rounded-xl overflow-hidden">
@@ -215,13 +244,15 @@ export function DayHoursSection() {
             <h3 className="font-semibold text-[#1F2937]">Employee Hours</h3>
             <span className="text-xs text-gray-400">{teamHours?.length || 0} employees</span>
           </div>
-          <div className="grid grid-cols-[1fr_100px_100px_100px_120px] gap-4 px-5 py-3 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-            <span>Employee</span>
-            <span>Role</span>
-            <span>Entries</span>
-            <span>Total Hours</span>
-            <span>Utilization</span>
-          </div>
+          <div className="overflow-x-auto">
+            <div className="min-w-[640px]">
+              <div className="grid grid-cols-[minmax(140px,1fr)_80px_72px_88px_100px] sm:grid-cols-[1fr_100px_100px_100px_120px] gap-3 sm:gap-4 px-4 sm:px-5 py-3 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                <span>Employee</span>
+                <span>Role</span>
+                <span>Entries</span>
+                <span>Total Hours</span>
+                <span>Utilization</span>
+              </div>
           {teamLoading ? (
             <div className="flex items-center justify-center py-12">
               <Loader2 size={24} className="animate-spin text-gray-400" />
@@ -235,7 +266,7 @@ export function DayHoursSection() {
               return (
                 <div
                   key={member.userId}
-                  className="grid grid-cols-[1fr_100px_100px_100px_120px] gap-4 px-5 py-3 border-b border-gray-50 hover:bg-gray-50 transition-colors items-center"
+                  className="grid grid-cols-[minmax(140px,1fr)_80px_72px_88px_100px] sm:grid-cols-[1fr_100px_100px_100px_120px] gap-3 sm:gap-4 px-4 sm:px-5 py-3 border-b border-gray-50 hover:bg-gray-50 transition-colors items-center"
                 >
                   <div className="flex items-center gap-3">
                     <UserAvatar name={member.name} avatar={member.avatar} size={28} />
@@ -261,8 +292,10 @@ export function DayHoursSection() {
               );
             })
           ) : (
-            <div className="py-12 text-center text-gray-400 text-sm">No data for this date</div>
+                <div className="py-12 text-center text-gray-400 text-sm">No data for this date</div>
           )}
+            </div>
+          </div>
         </div>
       )}
     </div>

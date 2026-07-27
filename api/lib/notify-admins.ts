@@ -9,6 +9,8 @@ type NotifyAdminsInput = {
   message: string;
   approvalRequestId?: number | null;
   excludeUserIds?: number[];
+  /** Roles that should receive the notification. Defaults to admin only. */
+  roles?: Array<UserDoc["role"]>;
 };
 
 export async function notifyAdmins({
@@ -18,21 +20,27 @@ export async function notifyAdmins({
   message,
   approvalRequestId = null,
   excludeUserIds = [],
+  roles = ["admin"],
 }: NotifyAdminsInput) {
   const excluded = new Set([actor.id, ...excludeUserIds]);
   const usersCol = await getCollection<UserDoc>(Collections.users);
-  const admins = await usersCol
-    .find({ role: "admin", status: "active" })
+  const recipientsRaw = await usersCol
+    .find({
+      organizationId: actor.organizationId,
+      role: { $in: roles },
+      status: "active",
+    })
     .toArray();
 
-  const recipients = admins.filter((admin) => !excluded.has(admin.id));
+  const recipients = recipientsRaw.filter((user) => !excluded.has(user.id));
   if (recipients.length === 0) return;
 
   const now = new Date();
   await Promise.all(
-    recipients.map((admin) =>
+    recipients.map((recipient) =>
       insertDoc<NotificationDoc>(Collections.notifications, {
-        userId: admin.id,
+        userId: recipient.id,
+        organizationId: actor.organizationId,
         actorId: actor.id,
         type,
         title,

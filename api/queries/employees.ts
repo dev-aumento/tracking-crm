@@ -14,9 +14,17 @@ const PERSONAL_FIELD_DEFAULTS = {
   lastName: null,
   secondName: null,
   dateOfBirth: null,
+  dateOfJoining: null,
   sex: null,
   city: null,
+  address: null,
+  familyContactNumber: null,
+  personalEmail: null,
+  bloodGroup: null,
+  aadhaarCard: null,
+  panCard: null,
   notificationLanguage: null,
+  employmentType: "full_time" as const,
   headOfDepartmentUserIds: [] as number[],
 };
 
@@ -26,9 +34,17 @@ function personalPatchFromUser(user: UserDoc): Partial<EmployeeDoc> {
     lastName: user.lastName ?? null,
     secondName: user.secondName ?? null,
     dateOfBirth: user.dateOfBirth ?? null,
+    dateOfJoining: user.dateOfJoining ?? null,
     sex: user.sex ?? null,
     city: user.city ?? null,
+    address: user.address ?? null,
+    familyContactNumber: user.familyContactNumber ?? null,
+    personalEmail: user.personalEmail ?? null,
+    bloodGroup: user.bloodGroup ?? null,
+    aadhaarCard: user.aadhaarCard ?? null,
+    panCard: user.panCard ?? null,
     notificationLanguage: user.notificationLanguage ?? null,
+    employmentType: user.employmentType === "intern" ? "intern" : "full_time",
     headOfDepartmentUserIds: user.headOfDepartmentUserIds ?? [],
   };
 }
@@ -54,6 +70,7 @@ export async function createEmployeeFromUser(
   const now = new Date();
   return insertDoc<EmployeeDoc>(Collections.employees, {
     userId: user.id,
+    organizationId: user.organizationId,
     inviteId: options.inviteId ?? null,
     name: user.name ?? "",
     email: (user.email ?? "").toLowerCase(),
@@ -72,19 +89,65 @@ export async function createEmployeeFromUser(
   });
 }
 
+export async function deactivateEmployeeByUserId(userId: number) {
+  const existing = await findEmployeeByUserId(userId);
+  if (!existing) return null;
+
+  return updateById<EmployeeDoc>(Collections.employees, existing.id, {
+    status: "Inactive",
+    updatedAt: new Date(),
+  });
+}
+
+/** Permanently remove the employee profile linked to a user. */
+export async function deleteEmployeeByUserId(userId: number) {
+  const existing = await findEmployeeByUserId(userId);
+  if (!existing) return false;
+
+  const col = await getCollection<EmployeeDoc>(Collections.employees);
+  const result = await col.deleteOne({ id: existing.id });
+  return result.deletedCount > 0;
+}
+
+/** userIds that still have a row in the employees collection */
+export async function getEmployeeUserIdSet() {
+  const col = await getCollection<EmployeeDoc>(Collections.employees);
+  const docs = await col.find({}, { projection: { userId: 1, _id: 0 } }).toArray();
+  return new Set(docs.map((d) => d.userId));
+}
+
+/**
+ * Employees must exist in the employees collection to appear in the CRM.
+ * Admins/managers are listed from users even without an employee row.
+ */
+export function isListedInEmployeeDirectory(
+  user: Pick<UserDoc, "id" | "role">,
+  employeeUserIds: Set<number>,
+) {
+  // Clients are external accounts — never list them as company staff.
+  if (user.role === "client") return false;
+  if (user.role !== "employee") return true;
+  return employeeUserIds.has(user.id);
+}
+
 export async function syncEmployeeFromUser(
   user: UserDoc,
   inviteId?: number | null,
 ) {
   const existing = await findEmployeeByUserId(user.id);
-  const now = new Date();
+  if (!existing) {
+    // Do not recreate a deleted employee profile here — use createEmployeeFromUser.
+    return null;
+  }
 
+  const now = new Date();
   const patch: Partial<EmployeeDoc> = {
     name: user.name ?? "",
     email: (user.email ?? "").toLowerCase(),
     passwordHash: user.passwordHash ?? "",
     avatar: user.avatar,
     department: user.department,
+    organizationId: user.organizationId,
     position: user.position,
     phone: user.phone,
     ...personalPatchFromUser(user),
@@ -97,43 +160,8 @@ export async function syncEmployeeFromUser(
     patch.inviteId = inviteId;
   }
 
-  if (existing) {
-    await updateById<EmployeeDoc>(Collections.employees, existing.id, patch);
-    return findById<EmployeeDoc>(Collections.employees, existing.id);
-  }
-
-  if (user.role !== "employee") {
-    return null;
-  }
-
-  return insertDoc<EmployeeDoc>(Collections.employees, {
-    userId: user.id,
-    inviteId: inviteId ?? null,
-    name: user.name ?? "",
-    email: (user.email ?? "").toLowerCase(),
-    passwordHash: user.passwordHash ?? "",
-    avatar: user.avatar,
-    department: user.department,
-    position: user.position,
-    phone: user.phone,
-    ...PERSONAL_FIELD_DEFAULTS,
-    ...personalPatchFromUser(user),
-    status: user.status,
-    permissions: user.permissions ?? [],
-    joinedAt: user.createdAt ?? now,
-    createdAt: user.createdAt ?? now,
-    updatedAt: now,
-  });
-}
-
-export async function deactivateEmployeeByUserId(userId: number) {
-  const existing = await findEmployeeByUserId(userId);
-  if (!existing) return null;
-
-  return updateById<EmployeeDoc>(Collections.employees, existing.id, {
-    status: "inactive",
-    updatedAt: new Date(),
-  });
+  await updateById<EmployeeDoc>(Collections.employees, existing.id, patch);
+  return findById<EmployeeDoc>(Collections.employees, existing.id);
 }
 
 export async function backfillEmployeesFromUsers() {

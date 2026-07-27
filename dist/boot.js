@@ -689,7 +689,8 @@ var init_types = __esm({
         "tasks.view_own",
         "tasks.create",
         "tasks.edit_own",
-        "time.edit_own"
+        "time.edit_own",
+        "projects.view"
       ]
     };
   }
@@ -7792,8 +7793,8 @@ var require_utils = __commonJS({
     }
     function hasAtomicOperators(doc, options) {
       if (Array.isArray(doc)) {
-        for (const document of doc) {
-          if (hasAtomicOperators(document)) {
+        for (const document2 of doc) {
+          if (hasAtomicOperators(document2)) {
             return true;
           }
         }
@@ -8298,15 +8299,15 @@ var require_utils = __commonJS({
         abortListener?.[exports.kDispose]();
       }
     }
-    function maybeAddIdToDocuments(collection, document, options) {
+    function maybeAddIdToDocuments(collection, document2, options) {
       const forceServerObjectId = options.forceServerObjectId ?? collection.db.options?.forceServerObjectId ?? false;
       if (forceServerObjectId) {
-        return document;
+        return document2;
       }
-      if (document._id == null) {
-        document._id = collection.s.pkFactory.createPk();
+      if (document2._id == null) {
+        document2._id = collection.s.pkFactory.createPk();
       }
-      return document;
+      return document2;
     }
     async function fileIsAccessible(fileName, mode) {
       try {
@@ -10454,11 +10455,11 @@ var require_common2 = __commonJS({
        * await bulkOp.execute();
        * ```
        */
-      insert(document) {
-        (0, utils_1.maybeAddIdToDocuments)(this.collection, document, {
+      insert(document2) {
+        (0, utils_1.maybeAddIdToDocuments)(this.collection, document2, {
           forceServerObjectId: this.shouldForceServerObjectId()
         });
-        return this.addToOperationsList(exports.BatchType.INSERT, document);
+        return this.addToOperationsList(exports.BatchType.INSERT, document2);
       }
       /**
        * Builds a find operation for an update/updateOne/delete/deleteOne/replaceOne.
@@ -10511,12 +10512,12 @@ var require_common2 = __commonJS({
         }
         if ("insertOne" in op) {
           const forceServerObjectId = this.shouldForceServerObjectId();
-          const document = op.insertOne && op.insertOne.document == null ? (
+          const document2 = op.insertOne && op.insertOne.document == null ? (
             // TODO(NODE-6003): remove support for omitting the `documents` subdocument in bulk inserts
             op.insertOne
           ) : op.insertOne.document;
-          (0, utils_1.maybeAddIdToDocuments)(this.collection, document, { forceServerObjectId });
-          return this.addToOperationsList(exports.BatchType.INSERT, document);
+          (0, utils_1.maybeAddIdToDocuments)(this.collection, document2, { forceServerObjectId });
+          return this.addToOperationsList(exports.BatchType.INSERT, document2);
         }
         if ("replaceOne" in op || "updateOne" in op || "updateMany" in op) {
           if ("replaceOne" in op) {
@@ -10687,8 +10688,8 @@ var require_ordered = __commonJS({
       constructor(collection, options) {
         super(collection, options, true);
       }
-      addToOperationsList(batchType, document) {
-        const bsonSize = BSON.calculateObjectSize(document, {
+      addToOperationsList(batchType, document2) {
+        const bsonSize = BSON.calculateObjectSize(document2, {
           checkKeys: false,
           // Since we don't know what the user selected for BSON options here,
           // err on the safe side, and check the size with ignoreUndefined: false.
@@ -10715,14 +10716,14 @@ var require_ordered = __commonJS({
         if (batchType === common_1.BatchType.INSERT) {
           this.s.bulkResult.insertedIds.push({
             index: this.s.currentIndex,
-            _id: document._id
+            _id: document2._id
           });
         }
-        if (Array.isArray(document)) {
+        if (Array.isArray(document2)) {
           throw new error_1.MongoInvalidArgumentError("Operation passed in cannot be an Array");
         }
         this.s.currentBatch.originalIndexes.push(this.s.currentIndex);
-        this.s.currentBatch.operations.push(document);
+        this.s.currentBatch.operations.push(document2);
         this.s.currentBatchSize += 1;
         this.s.currentBatchSizeBytes += maxKeySize + bsonSize;
         this.s.currentIndex += 1;
@@ -10753,8 +10754,8 @@ var require_unordered = __commonJS({
         }
         return super.handleWriteError(writeResult);
       }
-      addToOperationsList(batchType, document) {
-        const bsonSize = BSON.calculateObjectSize(document, {
+      addToOperationsList(batchType, document2) {
+        const bsonSize = BSON.calculateObjectSize(document2, {
           checkKeys: false,
           // Since we don't know what the user selected for BSON options here,
           // err on the safe side, and check the size with ignoreUndefined: false.
@@ -10785,17 +10786,17 @@ var require_unordered = __commonJS({
           this.s.batches.push(this.s.currentBatch);
           this.s.currentBatch = new common_1.Batch(batchType, this.s.currentIndex);
         }
-        if (Array.isArray(document)) {
+        if (Array.isArray(document2)) {
           throw new error_1.MongoInvalidArgumentError("Operation passed in cannot be an Array");
         }
-        this.s.currentBatch.operations.push(document);
+        this.s.currentBatch.operations.push(document2);
         this.s.currentBatch.originalIndexes.push(this.s.currentIndex);
         this.s.currentIndex = this.s.currentIndex + 1;
         if (batchType === common_1.BatchType.INSERT) {
           this.s.currentInsertBatch = this.s.currentBatch;
           this.s.bulkResult.insertedIds.push({
             index: this.s.bulkResult.insertedIds.length,
-            _id: document._id
+            _id: document2._id
           });
         } else if (batchType === common_1.BatchType.UPDATE) {
           this.s.currentUpdateBatch = this.s.currentBatch;
@@ -10882,12 +10883,12 @@ var require_mongo_logger = __commonJS({
       }
       return null;
     }
-    function createStdioLogger(stream) {
+    function createStdioLogger(stream2) {
       return {
         write: (log) => {
           return new Promise((resolve, reject) => {
             const logLine = (0, util_1.inspect)(log, { compact: true, breakLength: Infinity });
-            stream.write(`${logLine}
+            stream2.write(`${logLine}
 `, "utf-8", (error51) => {
               if (error51)
                 return reject(error51);
@@ -12449,27 +12450,27 @@ var require_sessions = __commonJS({
       }
       return;
     }
-    function updateSessionFromResponse(session, document) {
-      if (document.$clusterTime) {
-        (0, common_1._advanceClusterTime)(session, document.$clusterTime);
+    function updateSessionFromResponse(session, document2) {
+      if (document2.$clusterTime) {
+        (0, common_1._advanceClusterTime)(session, document2.$clusterTime);
       }
-      if (document.operationTime && session && session.supports.causalConsistency) {
-        session.advanceOperationTime(document.operationTime);
+      if (document2.operationTime && session && session.supports.causalConsistency) {
+        session.advanceOperationTime(document2.operationTime);
       }
-      if (document.recoveryToken && session && session.inTransaction()) {
-        session.transaction._recoveryToken = document.recoveryToken;
+      if (document2.recoveryToken && session && session.inTransaction()) {
+        session.transaction._recoveryToken = document2.recoveryToken;
       }
       if (session?.snapshotEnabled && session.snapshotTime == null) {
-        const atClusterTime = document.atClusterTime;
+        const atClusterTime = document2.atClusterTime;
         if (atClusterTime) {
           session.snapshotTime = atClusterTime;
         }
       }
       if (session.transaction.state === transactions_1.TxnState.STARTING_TRANSACTION) {
-        if (document.ok === 1) {
+        if (document2.ok === 1) {
           session.transaction.transition(transactions_1.TxnState.TRANSACTION_IN_PROGRESS);
         } else {
-          const error51 = new error_1.MongoServerError(document.toObject());
+          const error51 = new error_1.MongoServerError(document2.toObject());
           const isRetryableError = error51.hasErrorLabel(error_1.MongoErrorLabel.RetryableError);
           if (!isRetryableError) {
             session.transaction.transition(transactions_1.TxnState.TRANSACTION_IN_PROGRESS);
@@ -12665,9 +12666,9 @@ var require_abstract_cursor = __commonJS({
         const bufferedDocs = [];
         const documentsToRead = Math.min(number4 ?? this.documents?.length ?? 0, this.documents?.length ?? 0);
         for (let count = 0; count < documentsToRead; count++) {
-          const document = this.documents?.shift(this.deserializationOptions);
-          if (document != null) {
-            bufferedDocs.push(document);
+          const document2 = this.documents?.shift(this.deserializationOptions);
+          if (document2 != null) {
+            bufferedDocs.push(document2);
           }
         }
         return bufferedDocs;
@@ -12688,11 +12689,11 @@ var require_abstract_cursor = __commonJS({
             if (this.cursorId != null && this.isDead && (this.documents?.length ?? 0) === 0) {
               return;
             }
-            const document = await this.next();
-            if (document === null) {
+            const document2 = await this.next();
+            if (document2 === null) {
               return;
             }
-            yield document;
+            yield document2;
             this.signal?.throwIfAborted();
           }
         } finally {
@@ -12808,8 +12809,8 @@ var require_abstract_cursor = __commonJS({
         if (typeof iterator !== "function") {
           throw new error_1.MongoInvalidArgumentError('Argument "iterator" must be a function');
         }
-        for await (const document of this) {
-          const result = iterator(document);
+        for await (const document2 of this) {
+          const result = iterator(document2);
           if (result === false) {
             break;
           }
@@ -12830,8 +12831,8 @@ var require_abstract_cursor = __commonJS({
       async toArray() {
         this.signal?.throwIfAborted();
         const array2 = [];
-        for await (const document of this) {
-          array2.push(document);
+        for await (const document2 of this) {
+          array2.push(document2);
           const docs = this.readBufferedDocuments();
           if (this.transform != null) {
             for (const doc of docs) {
@@ -13144,11 +13145,11 @@ var require_abstract_cursor = __commonJS({
         }
       }
       /** @internal */
-      async transformDocument(document) {
+      async transformDocument(document2) {
         if (this.transform == null)
-          return document;
+          return document2;
         try {
-          const transformedDocument = this.transform(document);
+          const transformedDocument = this.transform(document2);
           if (transformedDocument === null) {
             const TRANSFORM_TO_NULL_ERROR = "Cursor returned a `null` document, but the cursor is not exhausted.  Mapping documents to `null` is not supported in the cursor transform.";
             throw new error_1.MongoAPIError(TRANSFORM_TO_NULL_ERROR);
@@ -14460,9 +14461,9 @@ var require_find_and_modify = __commonJS({
         super(collection, filter, options);
       }
       buildCommandDocument(connection, session) {
-        const document = super.buildCommandDocument(connection, session);
-        document.remove = true;
-        return document;
+        const document2 = super.buildCommandDocument(connection, session);
+        document2.remove = true;
+        return document2;
       }
     };
     exports.FindOneAndDeleteOperation = FindOneAndDeleteOperation;
@@ -14481,10 +14482,10 @@ var require_find_and_modify = __commonJS({
         this.replacement = replacement;
       }
       buildCommandDocument(connection, session) {
-        const document = super.buildCommandDocument(connection, session);
-        document.update = this.replacement;
-        configureFindAndModifyCmdBaseUpdateOpts(document, this.options);
-        return document;
+        const document2 = super.buildCommandDocument(connection, session);
+        document2.update = this.replacement;
+        configureFindAndModifyCmdBaseUpdateOpts(document2, this.options);
+        return document2;
       }
     };
     exports.FindOneAndReplaceOperation = FindOneAndReplaceOperation;
@@ -14504,13 +14505,13 @@ var require_find_and_modify = __commonJS({
         this.options = options;
       }
       buildCommandDocument(connection, session) {
-        const document = super.buildCommandDocument(connection, session);
-        document.update = this.update;
-        configureFindAndModifyCmdBaseUpdateOpts(document, this.options);
+        const document2 = super.buildCommandDocument(connection, session);
+        document2.update = this.update;
+        configureFindAndModifyCmdBaseUpdateOpts(document2, this.options);
         if (this.options.arrayFilters) {
-          document.arrayFilters = this.options.arrayFilters;
+          document2.arrayFilters = this.options.arrayFilters;
         }
-        return document;
+        return document2;
       }
     };
     exports.FindOneAndUpdateOperation = FindOneAndUpdateOperation;
@@ -21433,9 +21434,9 @@ var require_commands = __commonJS({
        * @param buffer - The serialized document in raw BSON.
        * @returns The new total document sequence length.
        */
-      push(document, buffer) {
+      push(document2, buffer) {
         this.serializedDocumentsLength += buffer.length;
-        this.documents.push(document);
+        this.documents.push(document2);
         this.chunks.push(buffer);
         if (this.header) {
           bson_1.NumberUtils.setInt32LE(this.header, 1, 4 + this.field.length + 1 + this.serializedDocumentsLength);
@@ -21499,11 +21500,11 @@ var require_commands = __commonJS({
       /**
        * Add the sections to the OP_MSG request's buffers and returns the length.
        */
-      makeSections(buffers, document) {
-        const sequencesBuffer = this.extractDocumentSequences(document);
+      makeSections(buffers, document2) {
+        const sequencesBuffer = this.extractDocumentSequences(document2);
         const payloadTypeBuffer = bson_1.ByteUtils.allocateUnsafe(1);
         payloadTypeBuffer[0] = 0;
-        const documentBuffer = this.serializeBson(document);
+        const documentBuffer = this.serializeBson(document2);
         buffers.push(payloadTypeBuffer);
         buffers.push(documentBuffer);
         buffers.push(sequencesBuffer);
@@ -21514,12 +21515,12 @@ var require_commands = __commonJS({
        * a buffer to be added as multiple sections after the initial type 0
        * section in the message.
        */
-      extractDocumentSequences(document) {
+      extractDocumentSequences(document2) {
         const chunks = [];
-        for (const [key, value] of Object.entries(document)) {
+        for (const [key, value] of Object.entries(document2)) {
           if (value instanceof DocumentSequence) {
             chunks.push(value.toBin());
-            delete document[key];
+            delete document2[key];
           }
         }
         if (chunks.length > 0) {
@@ -21527,8 +21528,8 @@ var require_commands = __commonJS({
         }
         return bson_1.ByteUtils.allocate(0);
       }
-      serializeBson(document) {
-        return bson_1.BSON.serialize(document, {
+      serializeBson(document2) {
+        return bson_1.BSON.serialize(document2, {
           checkKeys: this.checkKeys,
           serializeFunctions: this.serializeFunctions,
           ignoreUndefined: this.ignoreUndefined
@@ -24447,11 +24448,11 @@ var require_connection = __commonJS({
       const description = conn.description;
       return description.logicalSessionTimeoutMinutes != null;
     }
-    function streamIdentifier(stream, options) {
+    function streamIdentifier(stream2, options) {
       if (options.proxyHost) {
         return options.hostAddress.toString();
       }
-      const { remoteAddress, remotePort } = stream;
+      const { remoteAddress, remotePort } = stream2;
       if (typeof remoteAddress === "string" && typeof remotePort === "number") {
         return utils_1.HostAddress.fromHostPort(remoteAddress, remotePort).toString();
       }
@@ -24479,7 +24480,7 @@ var require_connection = __commonJS({
       static {
         this.UNPINNED = constants_1.UNPINNED;
       }
-      constructor(stream, options) {
+      constructor(stream2, options) {
         super();
         this.lastHelloMS = -1;
         this.helloOk = false;
@@ -24489,9 +24490,9 @@ var require_connection = __commonJS({
         this.error = null;
         this.dataEvents = null;
         this.on("error", utils_1.noop);
-        this.socket = stream;
+        this.socket = stream2;
         this.id = options.id;
-        this.address = streamIdentifier(stream, options);
+        this.address = streamIdentifier(stream2, options);
         this.socketTimeoutMS = options.socketTimeoutMS ?? 0;
         this.monitorCommands = options.monitorCommands;
         this.serverApi = options.serverApi;
@@ -24654,8 +24655,8 @@ var require_connection = __commonJS({
           for await (const response of this.readMany(options)) {
             this.socket.setTimeout(0);
             const bson = response.parse();
-            const document = (responseType ?? responses_1.MongoDBResponse).make(bson);
-            yield document;
+            const document2 = (responseType ?? responses_1.MongoDBResponse).make(bson);
+            yield document2;
             this.throwIfAborted();
             this.socket.setTimeout(timeout);
           }
@@ -24676,34 +24677,34 @@ var require_connection = __commonJS({
           raw: false,
           fieldsAsRaw: { [options.documentsReturnedIn]: true }
         };
-        let document = void 0;
+        let document2 = void 0;
         let object2 = void 0;
         try {
           this.throwIfAborted();
-          for await (document of this.sendWire(message2, options, responseType)) {
+          for await (document2 of this.sendWire(message2, options, responseType)) {
             object2 = void 0;
             if (options.session != null) {
-              (0, sessions_1.updateSessionFromResponse)(options.session, document);
+              (0, sessions_1.updateSessionFromResponse)(options.session, document2);
             }
-            if (document.$clusterTime) {
-              this.clusterTime = document.$clusterTime;
-              this.emit(_Connection.CLUSTER_TIME_RECEIVED, document.$clusterTime);
+            if (document2.$clusterTime) {
+              this.clusterTime = document2.$clusterTime;
+              this.emit(_Connection.CLUSTER_TIME_RECEIVED, document2.$clusterTime);
             }
-            if (document.ok === 0) {
-              if (options.timeoutContext?.csotEnabled() && document.isMaxTimeExpiredError) {
+            if (document2.ok === 0) {
+              if (options.timeoutContext?.csotEnabled() && document2.isMaxTimeExpiredError) {
                 throw new error_1.MongoOperationTimeoutError("Server reported a timeout error", {
-                  cause: new error_1.MongoServerError(object2 ??= document.toObject(bsonOptions))
+                  cause: new error_1.MongoServerError(object2 ??= document2.toObject(bsonOptions))
                 });
               }
-              throw new error_1.MongoServerError(object2 ??= document.toObject(bsonOptions));
+              throw new error_1.MongoServerError(object2 ??= document2.toObject(bsonOptions));
             }
             if (this.shouldEmitAndLogCommand) {
-              this.emitAndLogCommand(this.monitorCommands, _Connection.COMMAND_SUCCEEDED, message2.databaseName, this.established, new command_monitoring_events_1.CommandSucceededEvent(this, message2, message2.moreToCome ? { ok: 1 } : object2 ??= document.toObject(bsonOptions), started, this.description.serverConnectionId));
+              this.emitAndLogCommand(this.monitorCommands, _Connection.COMMAND_SUCCEEDED, message2.databaseName, this.established, new command_monitoring_events_1.CommandSucceededEvent(this, message2, message2.moreToCome ? { ok: 1 } : object2 ??= document2.toObject(bsonOptions), started, this.description.serverConnectionId));
             }
             if (responseType == null) {
-              yield object2 ??= document.toObject(bsonOptions);
+              yield object2 ??= document2.toObject(bsonOptions);
             } else {
-              yield document;
+              yield document2;
             }
             this.throwIfAborted();
           }
@@ -24720,23 +24721,23 @@ var require_connection = __commonJS({
       async command(ns, command, options = {}, responseType) {
         this.throwIfAborted();
         options.signal?.throwIfAborted();
-        for await (const document of this.sendCommand(ns, command, options, responseType)) {
+        for await (const document2 of this.sendCommand(ns, command, options, responseType)) {
           if (options.timeoutContext?.csotEnabled()) {
-            if (responses_1.MongoDBResponse.is(document)) {
-              if (document.isMaxTimeExpiredError) {
+            if (responses_1.MongoDBResponse.is(document2)) {
+              if (document2.isMaxTimeExpiredError) {
                 throw new error_1.MongoOperationTimeoutError("Server reported a timeout error", {
-                  cause: new error_1.MongoServerError(document.toObject())
+                  cause: new error_1.MongoServerError(document2.toObject())
                 });
               }
             } else {
-              if (Array.isArray(document?.writeErrors) && document.writeErrors.some((error51) => error51?.code === error_1.MONGODB_ERROR_CODES.MaxTimeMSExpired) || document?.writeConcernError?.code === error_1.MONGODB_ERROR_CODES.MaxTimeMSExpired) {
+              if (Array.isArray(document2?.writeErrors) && document2.writeErrors.some((error51) => error51?.code === error_1.MONGODB_ERROR_CODES.MaxTimeMSExpired) || document2?.writeConcernError?.code === error_1.MONGODB_ERROR_CODES.MaxTimeMSExpired) {
                 throw new error_1.MongoOperationTimeoutError("Server reported a timeout error", {
-                  cause: new error_1.MongoServerError(document)
+                  cause: new error_1.MongoServerError(document2)
                 });
               }
             }
           }
-          return document;
+          return document2;
         }
         throw new error_1.MongoUnexpectedServerResponseError("Unable to get response from server");
       }
@@ -24870,8 +24871,8 @@ var require_connection = __commonJS({
     };
     exports.SizedMessageTransform = SizedMessageTransform;
     var CryptoConnection = class extends Connection {
-      constructor(stream, options) {
-        super(stream, options);
+      constructor(stream2, options) {
+        super(stream2, options);
         this.autoEncrypter = options.autoEncrypter;
       }
       async command(ns, cmd, options, responseType) {
@@ -28249,9 +28250,9 @@ var require_callback_workflow = __commonJS({
         if (this.cache.hasAccessToken) {
           const accessToken = this.cache.getAccessToken();
           connection.accessToken = accessToken;
-          const document = (0, command_builders_1.finishCommandDocument)(accessToken);
-          document.db = credentials.source;
-          return { speculativeAuthenticate: document };
+          const document2 = (0, command_builders_1.finishCommandDocument)(accessToken);
+          document2.db = credentials.source;
+          return { speculativeAuthenticate: document2 };
         }
         return {};
       }
@@ -29740,12 +29741,12 @@ var require_command_builder = __commonJS({
       }
     }
     var buildInsertOneOperation = (model, index, pkFactory) => {
-      const document = {
+      const document2 = {
         insert: index,
         document: model.document
       };
-      document.document._id = model.document._id ?? pkFactory.createPk();
-      return document;
+      document2.document._id = model.document._id ?? pkFactory.createPk();
+      return document2;
     };
     exports.buildInsertOneOperation = buildInsertOneOperation;
     var buildDeleteOneOperation = (model, index) => {
@@ -29757,18 +29758,18 @@ var require_command_builder = __commonJS({
     };
     exports.buildDeleteManyOperation = buildDeleteManyOperation;
     function createDeleteOperation(model, index, multi) {
-      const document = {
+      const document2 = {
         delete: index,
         multi,
         filter: model.filter
       };
       if (model.hint) {
-        document.hint = model.hint;
+        document2.hint = model.hint;
       }
       if (model.collation) {
-        document.collation = model.collation;
+        document2.collation = model.collation;
       }
-      return document;
+      return document2;
     }
     var buildUpdateOneOperation = (model, index, options) => {
       return createUpdateOperation(model, index, false, options);
@@ -29785,52 +29786,52 @@ var require_command_builder = __commonJS({
     }
     function createUpdateOperation(model, index, multi, options) {
       validateUpdate(model.update, options);
-      const document = {
+      const document2 = {
         update: index,
         multi,
         filter: model.filter,
         updateMods: model.update
       };
       if (model.hint) {
-        document.hint = model.hint;
+        document2.hint = model.hint;
       }
       if (model.upsert) {
-        document.upsert = model.upsert;
+        document2.upsert = model.upsert;
       }
       if (model.arrayFilters) {
-        document.arrayFilters = model.arrayFilters;
+        document2.arrayFilters = model.arrayFilters;
       }
       if (model.collation) {
-        document.collation = model.collation;
+        document2.collation = model.collation;
       }
       if (!multi && "sort" in model && model.sort != null) {
-        document.sort = (0, sort_1.formatSort)(model.sort);
+        document2.sort = (0, sort_1.formatSort)(model.sort);
       }
-      return document;
+      return document2;
     }
     var buildReplaceOneOperation = (model, index) => {
       if ((0, utils_1.hasAtomicOperators)(model.replacement)) {
         throw new error_1.MongoAPIError("Client bulk write replace models must not contain atomic modifiers (start with $) and must not be empty.");
       }
-      const document = {
+      const document2 = {
         update: index,
         multi: false,
         filter: model.filter,
         updateMods: model.replacement
       };
       if (model.hint) {
-        document.hint = model.hint;
+        document2.hint = model.hint;
       }
       if (model.upsert) {
-        document.upsert = model.upsert;
+        document2.upsert = model.upsert;
       }
       if (model.collation) {
-        document.collation = model.collation;
+        document2.collation = model.collation;
       }
       if (model.sort != null) {
-        document.sort = (0, sort_1.formatSort)(model.sort);
+        document2.sort = (0, sort_1.formatSort)(model.sort);
       }
-      return document;
+      return document2;
     };
     exports.buildReplaceOneOperation = buildReplaceOneOperation;
     function buildOperation(model, index, pkFactory, options) {
@@ -29930,26 +29931,26 @@ var require_results_merger = __commonJS({
       async merge(cursor) {
         let writeConcernErrorResult;
         try {
-          for await (const document of cursor) {
-            if (document.ok === 1) {
+          for await (const document2 of cursor) {
+            if (document2.ok === 1) {
               if (this.options.verboseResults) {
-                this.processDocument(cursor, document);
+                this.processDocument(cursor, document2);
               }
             } else {
               if (this.options.ordered) {
                 const error51 = new error_1.MongoClientBulkWriteError({
                   message: "Mongo client ordered bulk write encountered a write error."
                 });
-                error51.writeErrors.set(document.idx + this.currentBatchOffset, {
-                  code: document.code,
-                  message: document.errmsg
+                error51.writeErrors.set(document2.idx + this.currentBatchOffset, {
+                  code: document2.code,
+                  message: document2.errmsg
                 });
                 error51.partialResult = this.result;
                 throw error51;
               } else {
-                this.writeErrors.set(document.idx + this.currentBatchOffset, {
-                  code: document.code,
-                  message: document.errmsg
+                this.writeErrors.set(document2.idx + this.currentBatchOffset, {
+                  code: document2.code,
+                  message: document2.errmsg
                 });
               }
             }
@@ -29966,9 +29967,9 @@ var require_results_merger = __commonJS({
               writeConcernError: result.writeConcernError
             };
             if (this.options.verboseResults && result.cursor.firstBatch) {
-              for (const document of result.cursor.firstBatch) {
-                if (document.ok === 1) {
-                  this.processDocument(cursor, document);
+              for (const document2 of result.cursor.firstBatch) {
+                if (document2.ok === 1) {
+                  this.processDocument(cursor, document2);
                 }
               }
             }
@@ -29997,28 +29998,28 @@ var require_results_merger = __commonJS({
        * @param cursor - The cursor.
        * @param document - The document to process.
        */
-      processDocument(cursor, document) {
-        const operation = cursor.operations[document.idx];
+      processDocument(cursor, document2) {
+        const operation = cursor.operations[document2.idx];
         if ("insert" in operation) {
-          this.result.insertResults?.set(document.idx + this.currentBatchOffset, {
+          this.result.insertResults?.set(document2.idx + this.currentBatchOffset, {
             insertedId: operation.document._id
           });
         }
         if ("update" in operation) {
           const result = {
-            matchedCount: document.n,
-            modifiedCount: document.nModified ?? 0,
+            matchedCount: document2.n,
+            modifiedCount: document2.nModified ?? 0,
             // Check if the bulk did actually upsert.
-            didUpsert: document.upserted != null
+            didUpsert: document2.upserted != null
           };
-          if (document.upserted) {
-            result.upsertedId = document.upserted._id;
+          if (document2.upserted) {
+            result.upsertedId = document2.upserted._id;
           }
-          this.result.updateResults?.set(document.idx + this.currentBatchOffset, result);
+          this.result.updateResults?.set(document2.idx + this.currentBatchOffset, result);
         }
         if ("delete" in operation) {
-          this.result.deleteResults?.set(document.idx + this.currentBatchOffset, {
-            deletedCount: document.n
+          this.result.deleteResults?.set(document2.idx + this.currentBatchOffset, {
+            deletedCount: document2.n
           });
         }
       }
@@ -30026,12 +30027,12 @@ var require_results_merger = __commonJS({
        * Increment the result counts.
        * @param document - The document with the results.
        */
-      incrementCounts(document) {
-        this.result.insertedCount += document.insertedCount;
-        this.result.upsertedCount += document.upsertedCount;
-        this.result.matchedCount += document.matchedCount;
-        this.result.modifiedCount += document.modifiedCount;
-        this.result.deletedCount += document.deletedCount;
+      incrementCounts(document2) {
+        this.result.insertedCount += document2.insertedCount;
+        this.result.upsertedCount += document2.upsertedCount;
+        this.result.matchedCount += document2.matchedCount;
+        this.result.modifiedCount += document2.modifiedCount;
+        this.result.deletedCount += document2.deletedCount;
       }
     };
     exports.ClientBulkWriteResultsMerger = ClientBulkWriteResultsMerger;
@@ -31750,9 +31751,9 @@ var require_change_stream = __commonJS({
       /** @internal */
       _streamEvents(cursor) {
         this._setIsEmitter();
-        const stream = this.cursorStream ?? cursor.stream();
-        this.cursorStream = stream;
-        stream.on("data", (change) => {
+        const stream2 = this.cursorStream ?? cursor.stream();
+        this.cursorStream = stream2;
+        stream2.on("data", (change) => {
           try {
             const processedChange = this._processChange(change);
             this.emit(_ChangeStream.CHANGE, processedChange);
@@ -31761,7 +31762,7 @@ var require_change_stream = __commonJS({
           }
           this.timeoutContext?.refresh();
         });
-        stream.on("error", (error51) => this._processErrorStreamMode(error51, this.cursor.id != null));
+        stream2.on("error", (error51) => this._processErrorStreamMode(error51, this.cursor.id != null));
       }
       /** @internal */
       _endStream() {
@@ -31977,165 +31978,165 @@ var require_download = __commonJS({
       }
     };
     exports.GridFSBucketReadStream = GridFSBucketReadStream;
-    function throwIfInitialized(stream) {
-      if (stream.s.init) {
+    function throwIfInitialized(stream2) {
+      if (stream2.s.init) {
         throw new error_1.MongoGridFSStreamError("Options cannot be changed after the stream is initialized");
       }
     }
-    function doRead(stream) {
-      if (stream.destroyed)
+    function doRead(stream2) {
+      if (stream2.destroyed)
         return;
-      if (!stream.s.cursor)
+      if (!stream2.s.cursor)
         return;
-      if (!stream.s.file)
+      if (!stream2.s.file)
         return;
       const handleReadResult = (doc) => {
-        if (stream.destroyed)
+        if (stream2.destroyed)
           return;
         if (!doc) {
-          stream.push(null);
-          stream.s.cursor?.close().then(void 0, (error51) => stream.destroy(error51));
+          stream2.push(null);
+          stream2.s.cursor?.close().then(void 0, (error51) => stream2.destroy(error51));
           return;
         }
-        if (!stream.s.file)
+        if (!stream2.s.file)
           return;
-        const bytesRemaining = stream.s.file.length - stream.s.bytesRead;
-        const expectedN = stream.s.expected++;
-        const expectedLength = Math.min(stream.s.file.chunkSize, bytesRemaining);
+        const bytesRemaining = stream2.s.file.length - stream2.s.bytesRead;
+        const expectedN = stream2.s.expected++;
+        const expectedLength = Math.min(stream2.s.file.chunkSize, bytesRemaining);
         if (doc.n > expectedN) {
-          return stream.destroy(new error_1.MongoGridFSChunkError(`ChunkIsMissing: Got unexpected n: ${doc.n}, expected: ${expectedN}`));
+          return stream2.destroy(new error_1.MongoGridFSChunkError(`ChunkIsMissing: Got unexpected n: ${doc.n}, expected: ${expectedN}`));
         }
         if (doc.n < expectedN) {
-          return stream.destroy(new error_1.MongoGridFSChunkError(`ExtraChunk: Got unexpected n: ${doc.n}, expected: ${expectedN}`));
+          return stream2.destroy(new error_1.MongoGridFSChunkError(`ExtraChunk: Got unexpected n: ${doc.n}, expected: ${expectedN}`));
         }
         let buf = bson_1.ByteUtils.isUint8Array(doc.data) ? doc.data : doc.data.buffer;
         if (buf.byteLength !== expectedLength) {
           if (bytesRemaining <= 0) {
-            return stream.destroy(new error_1.MongoGridFSChunkError(`ExtraChunk: Got unexpected n: ${doc.n}, expected file length ${stream.s.file.length} bytes but already read ${stream.s.bytesRead} bytes`));
+            return stream2.destroy(new error_1.MongoGridFSChunkError(`ExtraChunk: Got unexpected n: ${doc.n}, expected file length ${stream2.s.file.length} bytes but already read ${stream2.s.bytesRead} bytes`));
           }
-          return stream.destroy(new error_1.MongoGridFSChunkError(`ChunkIsWrongSize: Got unexpected length: ${buf.byteLength}, expected: ${expectedLength}`));
+          return stream2.destroy(new error_1.MongoGridFSChunkError(`ChunkIsWrongSize: Got unexpected length: ${buf.byteLength}, expected: ${expectedLength}`));
         }
-        stream.s.bytesRead += buf.byteLength;
+        stream2.s.bytesRead += buf.byteLength;
         if (buf.byteLength === 0) {
-          return stream.push(null);
+          return stream2.push(null);
         }
         let sliceStart = null;
         let sliceEnd = null;
-        if (stream.s.bytesToSkip != null) {
-          sliceStart = stream.s.bytesToSkip;
-          stream.s.bytesToSkip = 0;
+        if (stream2.s.bytesToSkip != null) {
+          sliceStart = stream2.s.bytesToSkip;
+          stream2.s.bytesToSkip = 0;
         }
-        const atEndOfStream = expectedN === stream.s.expectedEnd - 1;
-        const bytesLeftToRead = stream.s.options.end - stream.s.bytesToSkip;
-        if (atEndOfStream && stream.s.bytesToTrim != null) {
-          sliceEnd = stream.s.file.chunkSize - stream.s.bytesToTrim;
-        } else if (stream.s.options.end && bytesLeftToRead < doc.data.byteLength) {
+        const atEndOfStream = expectedN === stream2.s.expectedEnd - 1;
+        const bytesLeftToRead = stream2.s.options.end - stream2.s.bytesToSkip;
+        if (atEndOfStream && stream2.s.bytesToTrim != null) {
+          sliceEnd = stream2.s.file.chunkSize - stream2.s.bytesToTrim;
+        } else if (stream2.s.options.end && bytesLeftToRead < doc.data.byteLength) {
           sliceEnd = bytesLeftToRead;
         }
         if (sliceStart != null || sliceEnd != null) {
           buf = buf.slice(sliceStart || 0, sliceEnd || buf.byteLength);
         }
-        stream.push(buf);
+        stream2.push(buf);
         return;
       };
-      stream.s.cursor.next().then(handleReadResult, (error51) => {
-        if (stream.destroyed)
+      stream2.s.cursor.next().then(handleReadResult, (error51) => {
+        if (stream2.destroyed)
           return;
-        stream.destroy(error51);
+        stream2.destroy(error51);
       });
     }
-    function init(stream) {
+    function init(stream2) {
       const findOneOptions = {};
-      if (stream.s.readPreference) {
-        findOneOptions.readPreference = stream.s.readPreference;
+      if (stream2.s.readPreference) {
+        findOneOptions.readPreference = stream2.s.readPreference;
       }
-      if (stream.s.options && stream.s.options.sort) {
-        findOneOptions.sort = stream.s.options.sort;
+      if (stream2.s.options && stream2.s.options.sort) {
+        findOneOptions.sort = stream2.s.options.sort;
       }
-      if (stream.s.options && stream.s.options.skip) {
-        findOneOptions.skip = stream.s.options.skip;
+      if (stream2.s.options && stream2.s.options.skip) {
+        findOneOptions.skip = stream2.s.options.skip;
       }
       const handleReadResult = (doc) => {
-        if (stream.destroyed)
+        if (stream2.destroyed)
           return;
         if (!doc) {
-          const identifier = stream.s.filter._id ? stream.s.filter._id.toString() : stream.s.filter.filename;
+          const identifier = stream2.s.filter._id ? stream2.s.filter._id.toString() : stream2.s.filter.filename;
           const errmsg = `FileNotFound: file ${identifier} was not found`;
           const err = new error_1.MongoRuntimeError(errmsg);
           err.code = "ENOENT";
-          return stream.destroy(err);
+          return stream2.destroy(err);
         }
         if (doc.length <= 0) {
-          stream.push(null);
+          stream2.push(null);
           return;
         }
-        if (stream.destroyed) {
-          stream.destroy();
+        if (stream2.destroyed) {
+          stream2.destroy();
           return;
         }
         try {
-          stream.s.bytesToSkip = handleStartOption(stream, doc, stream.s.options);
+          stream2.s.bytesToSkip = handleStartOption(stream2, doc, stream2.s.options);
         } catch (error51) {
-          return stream.destroy(error51);
+          return stream2.destroy(error51);
         }
         const filter = { files_id: doc._id };
-        if (stream.s.options && stream.s.options.start != null) {
-          const skip = Math.floor(stream.s.options.start / doc.chunkSize);
+        if (stream2.s.options && stream2.s.options.start != null) {
+          const skip = Math.floor(stream2.s.options.start / doc.chunkSize);
           if (skip > 0) {
             filter["n"] = { $gte: skip };
           }
         }
         let remainingTimeMS2;
         try {
-          remainingTimeMS2 = stream.s.timeoutContext?.getRemainingTimeMSOrThrow(`Download timed out after ${stream.s.timeoutContext?.timeoutMS}ms`);
+          remainingTimeMS2 = stream2.s.timeoutContext?.getRemainingTimeMSOrThrow(`Download timed out after ${stream2.s.timeoutContext?.timeoutMS}ms`);
         } catch (error51) {
-          return stream.destroy(error51);
+          return stream2.destroy(error51);
         }
-        stream.s.cursor = stream.s.chunks.find(filter, {
-          timeoutMode: stream.s.options.timeoutMS != null ? abstract_cursor_1.CursorTimeoutMode.LIFETIME : void 0,
+        stream2.s.cursor = stream2.s.chunks.find(filter, {
+          timeoutMode: stream2.s.options.timeoutMS != null ? abstract_cursor_1.CursorTimeoutMode.LIFETIME : void 0,
           timeoutMS: remainingTimeMS2
         }).sort({ n: 1 });
-        if (stream.s.readPreference) {
-          stream.s.cursor.withReadPreference(stream.s.readPreference);
+        if (stream2.s.readPreference) {
+          stream2.s.cursor.withReadPreference(stream2.s.readPreference);
         }
-        stream.s.expectedEnd = Math.ceil(doc.length / doc.chunkSize);
-        stream.s.file = doc;
+        stream2.s.expectedEnd = Math.ceil(doc.length / doc.chunkSize);
+        stream2.s.file = doc;
         try {
-          stream.s.bytesToTrim = handleEndOption(stream, doc, stream.s.cursor, stream.s.options);
+          stream2.s.bytesToTrim = handleEndOption(stream2, doc, stream2.s.cursor, stream2.s.options);
         } catch (error51) {
-          return stream.destroy(error51);
+          return stream2.destroy(error51);
         }
-        stream.emit(GridFSBucketReadStream.FILE, doc);
+        stream2.emit(GridFSBucketReadStream.FILE, doc);
         return;
       };
       let remainingTimeMS;
       try {
-        remainingTimeMS = stream.s.timeoutContext?.getRemainingTimeMSOrThrow(`Download timed out after ${stream.s.timeoutContext?.timeoutMS}ms`);
+        remainingTimeMS = stream2.s.timeoutContext?.getRemainingTimeMSOrThrow(`Download timed out after ${stream2.s.timeoutContext?.timeoutMS}ms`);
       } catch (error51) {
-        if (!stream.destroyed)
-          stream.destroy(error51);
+        if (!stream2.destroyed)
+          stream2.destroy(error51);
         return;
       }
       findOneOptions.timeoutMS = remainingTimeMS;
-      stream.s.files.findOne(stream.s.filter, findOneOptions).then(handleReadResult, (error51) => {
-        if (stream.destroyed)
+      stream2.s.files.findOne(stream2.s.filter, findOneOptions).then(handleReadResult, (error51) => {
+        if (stream2.destroyed)
           return;
-        stream.destroy(error51);
+        stream2.destroy(error51);
       });
     }
-    function waitForFile(stream, callback) {
-      if (stream.s.file) {
+    function waitForFile(stream2, callback) {
+      if (stream2.s.file) {
         return callback();
       }
-      if (!stream.s.init) {
-        init(stream);
-        stream.s.init = true;
+      if (!stream2.s.init) {
+        init(stream2);
+        stream2.s.init = true;
       }
-      stream.once("file", () => {
+      stream2.once("file", () => {
         callback();
       });
     }
-    function handleStartOption(stream, doc, options) {
+    function handleStartOption(stream2, doc, options) {
       if (options && options.start != null) {
         if (options.start > doc.length) {
           throw new error_1.MongoInvalidArgumentError(`Stream start (${options.start}) must not be more than the length of the file (${doc.length})`);
@@ -32146,13 +32147,13 @@ var require_download = __commonJS({
         if (options.end != null && options.end < options.start) {
           throw new error_1.MongoInvalidArgumentError(`Stream start (${options.start}) must not be greater than stream end (${options.end})`);
         }
-        stream.s.bytesRead = Math.floor(options.start / doc.chunkSize) * doc.chunkSize;
-        stream.s.expected = Math.floor(options.start / doc.chunkSize);
-        return options.start - stream.s.bytesRead;
+        stream2.s.bytesRead = Math.floor(options.start / doc.chunkSize) * doc.chunkSize;
+        stream2.s.expected = Math.floor(options.start / doc.chunkSize);
+        return options.start - stream2.s.bytesRead;
       }
       throw new error_1.MongoInvalidArgumentError("Start option must be defined");
     }
-    function handleEndOption(stream, doc, cursor, options) {
+    function handleEndOption(stream2, doc, cursor, options) {
       if (options && options.end != null) {
         if (options.end > doc.length) {
           throw new error_1.MongoInvalidArgumentError(`Stream end (${options.end}) must not be more than the length of the file (${doc.length})`);
@@ -32162,7 +32163,7 @@ var require_download = __commonJS({
         }
         const start = options.start != null ? Math.floor(options.start / doc.chunkSize) : 0;
         cursor.limit(Math.ceil(options.end / doc.chunkSize) - start);
-        stream.s.expectedEnd = Math.ceil(options.end / doc.chunkSize);
+        stream2.s.expectedEnd = Math.ceil(options.end / doc.chunkSize);
         return Math.ceil(options.end / doc.chunkSize) * doc.chunkSize - options.end;
       }
       throw new error_1.MongoInvalidArgumentError("End option must be defined");
@@ -32278,12 +32279,12 @@ var require_upload = __commonJS({
       }
     };
     exports.GridFSBucketWriteStream = GridFSBucketWriteStream;
-    function handleError(stream, error51, callback) {
-      if (stream.state.errored) {
+    function handleError(stream2, error51, callback) {
+      if (stream2.state.errored) {
         queueMicrotask(callback);
         return;
       }
-      stream.state.errored = true;
+      stream2.state.errored = true;
       queueMicrotask(() => callback(error51));
     }
     function createChunkDoc(filesId, n, data) {
@@ -32294,13 +32295,13 @@ var require_upload = __commonJS({
         data
       };
     }
-    async function checkChunksIndex(stream) {
+    async function checkChunksIndex(stream2) {
       const index = { files_id: 1, n: 1 };
       let remainingTimeMS;
-      remainingTimeMS = stream.timeoutContext?.getRemainingTimeMSOrThrow(`Upload timed out after ${stream.timeoutContext?.timeoutMS}ms`);
+      remainingTimeMS = stream2.timeoutContext?.getRemainingTimeMSOrThrow(`Upload timed out after ${stream2.timeoutContext?.timeoutMS}ms`);
       let indexes;
       try {
-        indexes = await stream.chunks.listIndexes({
+        indexes = await stream2.chunks.listIndexes({
           timeoutMode: remainingTimeMS != null ? abstract_cursor_1.CursorTimeoutMode.LIFETIME : void 0,
           timeoutMS: remainingTimeMS
         }).toArray();
@@ -32319,42 +32320,42 @@ var require_upload = __commonJS({
         return false;
       });
       if (!hasChunksIndex) {
-        remainingTimeMS = stream.timeoutContext?.getRemainingTimeMSOrThrow(`Upload timed out after ${stream.timeoutContext?.timeoutMS}ms`);
-        await stream.chunks.createIndex(index, {
-          ...stream.writeConcern,
+        remainingTimeMS = stream2.timeoutContext?.getRemainingTimeMSOrThrow(`Upload timed out after ${stream2.timeoutContext?.timeoutMS}ms`);
+        await stream2.chunks.createIndex(index, {
+          ...stream2.writeConcern,
           background: true,
           unique: true,
           timeoutMS: remainingTimeMS
         });
       }
     }
-    function checkDone(stream, callback) {
-      if (stream.done) {
+    function checkDone(stream2, callback) {
+      if (stream2.done) {
         return queueMicrotask(callback);
       }
-      if (stream.state.streamEnd && stream.state.outstandingRequests === 0 && !stream.state.errored) {
-        stream.done = true;
-        const gridFSFile = createFilesDoc(stream.id, stream.length, stream.chunkSizeBytes, stream.filename, stream.options.metadata);
-        if (isAborted(stream, callback)) {
+      if (stream2.state.streamEnd && stream2.state.outstandingRequests === 0 && !stream2.state.errored) {
+        stream2.done = true;
+        const gridFSFile = createFilesDoc(stream2.id, stream2.length, stream2.chunkSizeBytes, stream2.filename, stream2.options.metadata);
+        if (isAborted(stream2, callback)) {
           return;
         }
-        const remainingTimeMS = stream.timeoutContext?.remainingTimeMS;
+        const remainingTimeMS = stream2.timeoutContext?.remainingTimeMS;
         if (remainingTimeMS != null && remainingTimeMS <= 0) {
-          return handleError(stream, new error_1.MongoOperationTimeoutError(`Upload timed out after ${stream.timeoutContext?.timeoutMS}ms`), callback);
+          return handleError(stream2, new error_1.MongoOperationTimeoutError(`Upload timed out after ${stream2.timeoutContext?.timeoutMS}ms`), callback);
         }
-        stream.files.insertOne(gridFSFile, { writeConcern: stream.writeConcern, timeoutMS: remainingTimeMS }).then(() => {
-          stream.gridFSFile = gridFSFile;
+        stream2.files.insertOne(gridFSFile, { writeConcern: stream2.writeConcern, timeoutMS: remainingTimeMS }).then(() => {
+          stream2.gridFSFile = gridFSFile;
           callback();
         }, (error51) => {
-          return handleError(stream, error51, callback);
+          return handleError(stream2, error51, callback);
         });
         return;
       }
       queueMicrotask(callback);
     }
-    async function checkIndexes(stream) {
-      let remainingTimeMS = stream.timeoutContext?.getRemainingTimeMSOrThrow(`Upload timed out after ${stream.timeoutContext?.timeoutMS}ms`);
-      const doc = await stream.files.findOne({}, {
+    async function checkIndexes(stream2) {
+      let remainingTimeMS = stream2.timeoutContext?.getRemainingTimeMSOrThrow(`Upload timed out after ${stream2.timeoutContext?.timeoutMS}ms`);
+      const doc = await stream2.files.findOne({}, {
         projection: { _id: 1 },
         timeoutMS: remainingTimeMS
       });
@@ -32363,13 +32364,13 @@ var require_upload = __commonJS({
       }
       const index = { filename: 1, uploadDate: 1 };
       let indexes;
-      remainingTimeMS = stream.timeoutContext?.getRemainingTimeMSOrThrow(`Upload timed out after ${stream.timeoutContext?.timeoutMS}ms`);
+      remainingTimeMS = stream2.timeoutContext?.getRemainingTimeMSOrThrow(`Upload timed out after ${stream2.timeoutContext?.timeoutMS}ms`);
       const listIndexesOptions = {
         timeoutMode: remainingTimeMS != null ? abstract_cursor_1.CursorTimeoutMode.LIFETIME : void 0,
         timeoutMS: remainingTimeMS
       };
       try {
-        indexes = await stream.files.listIndexes(listIndexesOptions).toArray();
+        indexes = await stream2.files.listIndexes(listIndexesOptions).toArray();
       } catch (error51) {
         if (error51 instanceof error_1.MongoError && error51.code === error_1.MONGODB_ERROR_CODES.NamespaceNotFound) {
           indexes = [];
@@ -32385,10 +32386,10 @@ var require_upload = __commonJS({
         return false;
       });
       if (!hasFileIndex) {
-        remainingTimeMS = stream.timeoutContext?.getRemainingTimeMSOrThrow(`Upload timed out after ${stream.timeoutContext?.timeoutMS}ms`);
-        await stream.files.createIndex(index, { background: false, timeoutMS: remainingTimeMS });
+        remainingTimeMS = stream2.timeoutContext?.getRemainingTimeMSOrThrow(`Upload timed out after ${stream2.timeoutContext?.timeoutMS}ms`);
+        await stream2.files.createIndex(index, { background: false, timeoutMS: remainingTimeMS });
       }
-      await checkChunksIndex(stream);
+      await checkChunksIndex(stream2);
     }
     function createFilesDoc(_id, length, chunkSize, filename, metadata) {
       const ret = {
@@ -32403,80 +32404,80 @@ var require_upload = __commonJS({
       }
       return ret;
     }
-    function doWrite(stream, chunk, encoding, callback) {
-      if (isAborted(stream, callback)) {
+    function doWrite(stream2, chunk, encoding, callback) {
+      if (isAborted(stream2, callback)) {
         return;
       }
       const inputBuf = typeof chunk === "string" ? bson_1.ByteUtils.fromUTF8(chunk) : bson_1.ByteUtils.toLocalBufferType(chunk);
-      stream.length += inputBuf.length;
-      if (stream.pos + inputBuf.length < stream.chunkSizeBytes) {
-        bson_1.ByteUtils.copy(inputBuf, stream.bufToStore, stream.pos);
-        stream.pos += inputBuf.length;
+      stream2.length += inputBuf.length;
+      if (stream2.pos + inputBuf.length < stream2.chunkSizeBytes) {
+        bson_1.ByteUtils.copy(inputBuf, stream2.bufToStore, stream2.pos);
+        stream2.pos += inputBuf.length;
         queueMicrotask(callback);
         return;
       }
       let inputBufRemaining = inputBuf.length;
-      let spaceRemaining = stream.chunkSizeBytes - stream.pos;
+      let spaceRemaining = stream2.chunkSizeBytes - stream2.pos;
       let numToCopy = Math.min(spaceRemaining, inputBuf.length);
       let outstandingRequests = 0;
       while (inputBufRemaining > 0) {
         const inputBufPos = inputBuf.length - inputBufRemaining;
-        bson_1.ByteUtils.copy(inputBuf, stream.bufToStore, stream.pos, inputBufPos, inputBufPos + numToCopy);
-        stream.pos += numToCopy;
+        bson_1.ByteUtils.copy(inputBuf, stream2.bufToStore, stream2.pos, inputBufPos, inputBufPos + numToCopy);
+        stream2.pos += numToCopy;
         spaceRemaining -= numToCopy;
         let doc;
         if (spaceRemaining === 0) {
-          doc = createChunkDoc(stream.id, stream.n, new Uint8Array(stream.bufToStore));
-          const remainingTimeMS = stream.timeoutContext?.remainingTimeMS;
+          doc = createChunkDoc(stream2.id, stream2.n, new Uint8Array(stream2.bufToStore));
+          const remainingTimeMS = stream2.timeoutContext?.remainingTimeMS;
           if (remainingTimeMS != null && remainingTimeMS <= 0) {
-            return handleError(stream, new error_1.MongoOperationTimeoutError(`Upload timed out after ${stream.timeoutContext?.timeoutMS}ms`), callback);
+            return handleError(stream2, new error_1.MongoOperationTimeoutError(`Upload timed out after ${stream2.timeoutContext?.timeoutMS}ms`), callback);
           }
-          ++stream.state.outstandingRequests;
+          ++stream2.state.outstandingRequests;
           ++outstandingRequests;
-          if (isAborted(stream, callback)) {
+          if (isAborted(stream2, callback)) {
             return;
           }
-          stream.chunks.insertOne(doc, { writeConcern: stream.writeConcern, timeoutMS: remainingTimeMS }).then(() => {
-            --stream.state.outstandingRequests;
+          stream2.chunks.insertOne(doc, { writeConcern: stream2.writeConcern, timeoutMS: remainingTimeMS }).then(() => {
+            --stream2.state.outstandingRequests;
             --outstandingRequests;
             if (!outstandingRequests) {
-              checkDone(stream, callback);
+              checkDone(stream2, callback);
             }
           }, (error51) => {
-            return handleError(stream, error51, callback);
+            return handleError(stream2, error51, callback);
           });
-          spaceRemaining = stream.chunkSizeBytes;
-          stream.pos = 0;
-          ++stream.n;
+          spaceRemaining = stream2.chunkSizeBytes;
+          stream2.pos = 0;
+          ++stream2.n;
         }
         inputBufRemaining -= numToCopy;
         numToCopy = Math.min(spaceRemaining, inputBufRemaining);
       }
     }
-    function writeRemnant(stream, callback) {
-      if (stream.pos === 0) {
-        return checkDone(stream, callback);
+    function writeRemnant(stream2, callback) {
+      if (stream2.pos === 0) {
+        return checkDone(stream2, callback);
       }
-      const remnant = bson_1.ByteUtils.allocate(stream.pos);
-      bson_1.ByteUtils.copy(stream.bufToStore, remnant, 0, 0, stream.pos);
-      const doc = createChunkDoc(stream.id, stream.n, remnant);
-      if (isAborted(stream, callback)) {
+      const remnant = bson_1.ByteUtils.allocate(stream2.pos);
+      bson_1.ByteUtils.copy(stream2.bufToStore, remnant, 0, 0, stream2.pos);
+      const doc = createChunkDoc(stream2.id, stream2.n, remnant);
+      if (isAborted(stream2, callback)) {
         return;
       }
-      const remainingTimeMS = stream.timeoutContext?.remainingTimeMS;
+      const remainingTimeMS = stream2.timeoutContext?.remainingTimeMS;
       if (remainingTimeMS != null && remainingTimeMS <= 0) {
-        return handleError(stream, new error_1.MongoOperationTimeoutError(`Upload timed out after ${stream.timeoutContext?.timeoutMS}ms`), callback);
+        return handleError(stream2, new error_1.MongoOperationTimeoutError(`Upload timed out after ${stream2.timeoutContext?.timeoutMS}ms`), callback);
       }
-      ++stream.state.outstandingRequests;
-      stream.chunks.insertOne(doc, { writeConcern: stream.writeConcern, timeoutMS: remainingTimeMS }).then(() => {
-        --stream.state.outstandingRequests;
-        checkDone(stream, callback);
+      ++stream2.state.outstandingRequests;
+      stream2.chunks.insertOne(doc, { writeConcern: stream2.writeConcern, timeoutMS: remainingTimeMS }).then(() => {
+        --stream2.state.outstandingRequests;
+        checkDone(stream2, callback);
       }, (error51) => {
-        return handleError(stream, error51, callback);
+        return handleError(stream2, error51, callback);
       });
     }
-    function isAborted(stream, callback) {
-      if (stream.state.aborted) {
+    function isAborted(stream2, callback) {
+      if (stream2.state.aborted) {
         queueMicrotask(() => callback(new error_1.MongoAPIError("Stream has been aborted")));
         return true;
       }
@@ -33154,13 +33155,13 @@ function writeFromReadableStreamDefaultReader(reader, writable, currentReadPromi
     }
   }
 }
-function writeFromReadableStream(stream, writable) {
-  if (stream.locked) {
+function writeFromReadableStream(stream2, writable) {
+  if (stream2.locked) {
     throw new TypeError("ReadableStream is locked.");
   } else if (writable.destroyed) {
     return;
   }
-  return writeFromReadableStreamDefaultReader(stream.getReader(), writable);
+  return writeFromReadableStreamDefaultReader(stream2.getReader(), writable);
 }
 var RequestError, toRequestError, GlobalRequest, Request2, newHeadersFromIncoming, wrapBodyStream, newRequestFromIncoming, getRequestCache, requestCache, incomingKey, urlKey, headersKey, abortControllerKey, getAbortController, requestPrototype, newRequest, responseCache, getResponseCache, cacheKey, GlobalResponse, Response2, buildOutgoingHttpHeaders, X_ALREADY_SENT, outgoingEnded, incomingDraining, DRAIN_TIMEOUT_MS, MAX_DRAIN_BYTES, drainIncoming, handleRequestError, handleFetchError, handleResponseError, flushHeaders, responseViaCache, isPromise2, responseViaResponseObject, getRequestListener, createAdaptorServer, serve;
 var init_dist = __esm({
@@ -33852,24 +33853,24 @@ var init_serve_static = __esm({
       return major >= 23 || major === 22 && minor >= 7 || major === 20 && minor >= 18;
     };
     useReadableToWeb = pr54206Applied();
-    createStreamBody = (stream) => {
+    createStreamBody = (stream2) => {
       if (useReadableToWeb) {
-        return Readable2.toWeb(stream);
+        return Readable2.toWeb(stream2);
       }
       const body = new ReadableStream({
         start(controller) {
-          stream.on("data", (chunk) => {
+          stream2.on("data", (chunk) => {
             controller.enqueue(chunk);
           });
-          stream.on("error", (err) => {
+          stream2.on("error", (err) => {
             controller.error(err);
           });
-          stream.on("end", () => {
+          stream2.on("end", () => {
             controller.close();
           });
         },
         cancel() {
-          stream.destroy();
+          stream2.destroy();
         }
       });
       return body;
@@ -33974,10 +33975,10 @@ var init_serve_static = __esm({
             end = size - 1;
           }
           const chunksize = end - start + 1;
-          const stream = createReadStream(path2, { start, end });
+          const stream2 = createReadStream(path2, { start, end });
           c.header("Content-Length", chunksize.toString());
           c.header("Content-Range", `bytes ${start}-${end}/${stats.size}`);
-          result = c.body(createStreamBody(stream), 206);
+          result = c.body(createStreamBody(stream2), 206);
         }
         await options.onFound?.(path2, c);
         return result;
@@ -35544,7 +35545,7 @@ function compareKey(a, b) {
   }
   return a.length === b.length ? a < b ? -1 : 1 : b.length - a.length;
 }
-var Node = class _Node {
+var Node2 = class _Node {
   #index;
   #varIndex;
   #children = /* @__PURE__ */ Object.create(null);
@@ -35630,7 +35631,7 @@ var Node = class _Node {
 // node_modules/hono/dist/router/reg-exp-router/trie.js
 var Trie = class {
   #context = { varIndex: 0 };
-  #root = new Node();
+  #root = new Node2();
   insert(path2, index, pathErrorCheckOnly) {
     const paramAssoc = [];
     const groups = [];
@@ -35925,7 +35926,7 @@ var hasChildren = (children) => {
   }
   return false;
 };
-var Node2 = class _Node2 {
+var Node3 = class _Node2 {
   #methods;
   #children;
   #patterns;
@@ -36097,7 +36098,7 @@ var TrieRouter = class {
   name = "TrieRouter";
   #node;
   constructor() {
-    this.#node = new Node2();
+    this.#node = new Node3();
   }
   add(method, path2, handler) {
     const results = checkOptionalParameter(path2);
@@ -36765,8 +36766,8 @@ function observableToReadableStream(observable$1, signal) {
   });
 }
 function observableToAsyncIterable(observable$1, signal) {
-  const stream = observableToReadableStream(observable$1, signal);
-  const reader = stream.getReader();
+  const stream2 = observableToReadableStream(observable$1, signal);
+  const reader = stream2.getReader();
   const iterator = {
     async next() {
       const value = await reader.read();
@@ -37873,13 +37874,13 @@ function _createBatchStreamProducer() {
   return _createBatchStreamProducer.apply(this, arguments);
 }
 function jsonlStreamProducer(opts) {
-  let stream = readableStreamFrom(createBatchStreamProducer(opts));
+  let stream2 = readableStreamFrom(createBatchStreamProducer(opts));
   const { serialize: serialize3 } = opts;
-  if (serialize3) stream = stream.pipeThrough(new TransformStream({ transform(chunk, controller) {
+  if (serialize3) stream2 = stream2.pipeThrough(new TransformStream({ transform(chunk, controller) {
     if (chunk === PING_SYM) controller.enqueue(PING_SYM);
     else controller.enqueue(serialize3(chunk));
   } }));
-  return stream.pipeThrough(new TransformStream({ transform(chunk, controller) {
+  return stream2.pipeThrough(new TransformStream({ transform(chunk, controller) {
     if (chunk === PING_SYM) controller.enqueue(" ");
     else controller.enqueue(JSON.stringify(chunk) + "\n");
   } })).pipeThrough(new TextEncoderStream());
@@ -38005,8 +38006,8 @@ function sseStreamProducer(opts) {
     });
     return _generatorWithErrorHandling.apply(this, arguments);
   }
-  const stream = readableStreamFrom(generatorWithErrorHandling());
-  return stream.pipeThrough(new TransformStream({ transform(chunk, controller) {
+  const stream2 = readableStreamFrom(generatorWithErrorHandling());
+  return stream2.pipeThrough(new TransformStream({ transform(chunk, controller) {
     if ("event" in chunk) controller.enqueue(`event: ${chunk.event}
 `);
     if ("data" in chunk) controller.enqueue(`data: ${chunk.data}
@@ -38273,7 +38274,7 @@ async function resolveResponse(opts) {
             const dataAsIterable = isObservable(result.data) ? observableToAsyncIterable(result.data, opts.req.signal) : result.data;
             return dataAsIterable;
           });
-          const stream = sseStreamProducer((0, import_objectSpread23.default)((0, import_objectSpread23.default)({}, config2.sse), {}, {
+          const stream2 = sseStreamProducer((0, import_objectSpread23.default)((0, import_objectSpread23.default)({}, config2.sse), {}, {
             data: iterable,
             serialize: (v) => config2.transformer.output.serialize(v),
             formatError(errorOpts) {
@@ -38311,9 +38312,9 @@ async function resolveResponse(opts) {
             untransformedJSON: null
           });
           const abortSignal = result === null || result === void 0 ? void 0 : result.signal;
-          let responseBody = stream;
+          let responseBody = stream2;
           if (abortSignal) {
-            const reader = stream.getReader();
+            const reader = stream2.getReader();
             const onAbort = () => void reader.cancel();
             if (abortSignal.aborted) onAbort();
             else abortSignal.addEventListener("abort", onAbort, { once: true });
@@ -38349,7 +38350,7 @@ async function resolveResponse(opts) {
         headers,
         untransformedJSON: null
       });
-      const stream = jsonlStreamProducer((0, import_objectSpread23.default)((0, import_objectSpread23.default)({}, config2.jsonl), {}, {
+      const stream2 = jsonlStreamProducer((0, import_objectSpread23.default)((0, import_objectSpread23.default)({}, config2.jsonl), {}, {
         maxDepth: Infinity,
         data: rpcCalls.map(async (res, index) => {
           const [error51, result] = await res;
@@ -38398,7 +38399,7 @@ async function resolveResponse(opts) {
           return shape;
         }
       }));
-      return new Response(stream, {
+      return new Response(stream2, {
         headers,
         status: headResponse$1.status
       });
@@ -53339,6 +53340,7 @@ var Collections = {
   employees: "employees",
   employeeInvites: "employee_invites",
   projects: "projects",
+  projectMembers: "project_members",
   tasks: "tasks",
   taskParticipants: "task_participants",
   subtasks: "subtasks",
@@ -53349,6 +53351,8 @@ var Collections = {
   taskAttachments: "task_attachments",
   notifications: "notifications",
   workSessions: "work_sessions",
+  workBreaks: "work_breaks",
+  timeApprovalRequests: "time_approval_requests",
   appSettings: "app_settings"
 };
 
@@ -53362,7 +53366,7 @@ var ErrorMessages = {
   insufficientRole: "Insufficient permissions"
 };
 var Workspace = {
-  name: "Aumento Track",
+  name: "AumentoX26",
   tagline: "Your work. Your pace."
 };
 var Invite = {
@@ -53466,8 +53470,8 @@ function find(record2, predicate) {
   }
   return void 0;
 }
-function forEach(record2, run2) {
-  Object.entries(record2).forEach(([key, value]) => run2(value, key));
+function forEach(record2, run3) {
+  Object.entries(record2).forEach(([key, value]) => run3(value, key));
 }
 function includes(arr, value) {
   return arr.indexOf(value) !== -1;
@@ -54428,13 +54432,12 @@ var ALL_PERMISSION_KEYS = PERMISSION_GROUPS.flatMap(
 // api/lib/employee-defaults.ts
 init_types();
 var SETTINGS_KEY = "employee_default_permissions";
+var CORE_EMPLOYEE_PERMISSIONS = ["projects.view"];
 async function getEmployeeDefaultPermissions() {
   const col = await getCollection(Collections.appSettings);
   const doc = await col.findOne({ key: SETTINGS_KEY });
-  if (doc?.permissions?.length) {
-    return doc.permissions.filter((p) => ALL_PERMISSION_KEYS.includes(p));
-  }
-  return DEFAULT_PERMISSIONS_BY_ROLE.employee;
+  const base = doc?.permissions?.length ? doc.permissions.filter((p) => ALL_PERMISSION_KEYS.includes(p)) : DEFAULT_PERMISSIONS_BY_ROLE.employee;
+  return [.../* @__PURE__ */ new Set([...CORE_EMPLOYEE_PERMISSIONS, ...base])];
 }
 async function setEmployeeDefaultPermissions(permissions) {
   const filtered = permissions.filter((p) => ALL_PERMISSION_KEYS.includes(p));
@@ -54454,6 +54457,28 @@ async function setEmployeeDefaultPermissions(permissions) {
 }
 
 // api/queries/employees.ts
+var PERSONAL_FIELD_DEFAULTS = {
+  firstName: null,
+  lastName: null,
+  secondName: null,
+  dateOfBirth: null,
+  sex: null,
+  city: null,
+  notificationLanguage: null,
+  headOfDepartmentUserIds: []
+};
+function personalPatchFromUser(user) {
+  return {
+    firstName: user.firstName ?? null,
+    lastName: user.lastName ?? null,
+    secondName: user.secondName ?? null,
+    dateOfBirth: user.dateOfBirth ?? null,
+    sex: user.sex ?? null,
+    city: user.city ?? null,
+    notificationLanguage: user.notificationLanguage ?? null,
+    headOfDepartmentUserIds: user.headOfDepartmentUserIds ?? []
+  };
+}
 async function findEmployeeByUserId(userId) {
   const col = await getCollection(Collections.employees);
   return col.findOne({ userId });
@@ -54474,6 +54499,8 @@ async function createEmployeeFromUser(user, options = {}) {
     department: user.department,
     position: user.position,
     phone: user.phone,
+    ...PERSONAL_FIELD_DEFAULTS,
+    ...personalPatchFromUser(user),
     status: user.status,
     permissions: user.permissions ?? [],
     joinedAt: now2,
@@ -54492,6 +54519,7 @@ async function syncEmployeeFromUser(user, inviteId) {
     department: user.department,
     position: user.position,
     phone: user.phone,
+    ...personalPatchFromUser(user),
     status: user.status,
     permissions: user.permissions ?? [],
     updatedAt: now2
@@ -54516,6 +54544,8 @@ async function syncEmployeeFromUser(user, inviteId) {
     department: user.department,
     position: user.position,
     phone: user.phone,
+    ...PERSONAL_FIELD_DEFAULTS,
+    ...personalPatchFromUser(user),
     status: user.status,
     permissions: user.permissions ?? [],
     joinedAt: user.createdAt ?? now2,
@@ -54554,6 +54584,14 @@ async function createUser(data, options) {
   const now2 = /* @__PURE__ */ new Date();
   const permissions = data.permissions ?? (data.role === "employee" ? await getEmployeeDefaultPermissions() : DEFAULT_PERMISSIONS_BY_ROLE[data.role] ?? DEFAULT_PERMISSIONS_BY_ROLE.employee);
   const user = await insertDoc(Collections.users, {
+    firstName: null,
+    lastName: null,
+    secondName: null,
+    dateOfBirth: null,
+    sex: null,
+    city: null,
+    notificationLanguage: null,
+    headOfDepartmentUserIds: [],
     ...data,
     permissions,
     createdAt: now2,
@@ -56040,6 +56078,14 @@ async function ensureIndexes() {
     },
     { name: Collections.projects, indexes: [{ key: { id: 1 }, unique: true }] },
     {
+      name: Collections.projectMembers,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { projectId: 1, userId: 1 }, unique: true },
+        { key: { userId: 1 } }
+      ]
+    },
+    {
       name: Collections.tasks,
       indexes: [{ key: { id: 1 }, unique: true }, { key: { projectId: 1 } }]
     },
@@ -56066,6 +56112,23 @@ async function ensureIndexes() {
     {
       name: Collections.workSessions,
       indexes: [{ key: { id: 1 }, unique: true }, { key: { userId: 1, active: 1 } }]
+    },
+    {
+      name: Collections.workBreaks,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { userId: 1, startTime: -1 } },
+        { key: { workSessionId: 1 } }
+      ]
+    },
+    {
+      name: Collections.timeApprovalRequests,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { userId: 1, status: 1 } },
+        { key: { workSessionId: 1, type: 1, status: 1 } },
+        { key: { workBreakId: 1, status: 1 } }
+      ]
     }
   ];
   for (const { name, indexes } of specs) {
@@ -56081,6 +56144,18 @@ async function ensureIndexes() {
 async function bootstrapMongo() {
   await ensureCollections();
   await ensureIndexes();
+  await ensureEmployeeProjectViewPermission();
+}
+async function ensureEmployeeProjectViewPermission() {
+  const col = await getCollection(Collections.users);
+  const employees = await col.find({ role: "employee" }).toArray();
+  for (const employee of employees) {
+    if (employee.permissions?.includes("projects.view")) continue;
+    await updateById(Collections.users, employee.id, {
+      permissions: [...employee.permissions ?? [], "projects.view"],
+      updatedAt: /* @__PURE__ */ new Date()
+    });
+  }
 }
 
 // api/lib/migrate.ts
@@ -56111,6 +56186,14 @@ var DEV_USER = {
   department: "Management",
   position: "Project Manager",
   phone: "+1-555-0101",
+  firstName: "Sandeep",
+  lastName: null,
+  secondName: null,
+  dateOfBirth: null,
+  sex: null,
+  city: null,
+  notificationLanguage: "en",
+  headOfDepartmentUserIds: [],
   permissions: [
     "dashboard.view",
     "tasks.view_all",
@@ -56129,9 +56212,76 @@ var DEV_USER = {
   lastSignInAt: now
 };
 
+// src/lib/task-kanban.ts
+var PROJECT_PIPELINE_STAGES = [
+  { key: "new", label: "To Do", color: "#6B7280" },
+  { key: "in_designing", label: "In Designing", color: "#8B5CF6" },
+  { key: "in_developing", label: "In Developing", color: "#2563EB" },
+  { key: "in_qa_1st_round", label: "In QA (1st Round)", color: "#D97706" },
+  { key: "backlog", label: "Backlog", color: "#9CA3AF" },
+  { key: "client_1st_round", label: "Client (1st Round)", color: "#0EA5E9" },
+  { key: "backlog_from_client", label: "Backlog from Client", color: "#64748B" },
+  { key: "client_2nd_round", label: "Client (2nd Round)", color: "#0284C7" },
+  { key: "publish_live", label: "Publish Live", color: "#059669" },
+  { key: "finished", label: "Finished", color: "#10B981" }
+];
+var PROJECT_PIPELINE_STAGE_KEYS = PROJECT_PIPELINE_STAGES.map((s) => s.key);
+function normalizeTaskStage(stage) {
+  if (stage && PROJECT_PIPELINE_STAGES.some((s) => s.key === stage)) {
+    return stage;
+  }
+  return "new";
+}
+function legacyStatusToStage(status) {
+  switch (status) {
+    case "in_progress":
+      return "in_developing";
+    case "review":
+      return "in_qa_1st_round";
+    case "done":
+      return "finished";
+    default:
+      return "new";
+  }
+}
+function taskPipelineStage(task) {
+  if (task.stage) return normalizeTaskStage(task.stage);
+  return legacyStatusToStage(task.status ?? "todo");
+}
+function isCompletedTask(task) {
+  return task.status === "done" || taskPipelineStage(task) === "finished";
+}
+function isTodoTask(task) {
+  if (isCompletedTask(task)) return false;
+  return taskPipelineStage(task) === "new";
+}
+function countTodoTasks(tasks2) {
+  return tasks2.filter(isTodoTask).length;
+}
+function countCompletedTasks(tasks2) {
+  return tasks2.filter(isCompletedTask).length;
+}
+
 // src/lib/work-hours-policy.ts
-var REQUIRED_WEEKLY_HOURS = 42;
+var REQUIRED_WEEKLY_HOURS = 42.5;
 var REQUIRED_DAILY_HOURS = 8.5;
+function attendanceEntrySeconds(entry) {
+  if (entry.durationSeconds != null) {
+    return Math.max(0, entry.durationSeconds);
+  }
+  if (entry.duration != null) {
+    return Math.max(0, entry.duration * 60);
+  }
+  if (entry.clockIn && entry.clockOut) {
+    return Math.max(
+      0,
+      Math.floor(
+        (new Date(entry.clockOut).getTime() - new Date(entry.clockIn).getTime()) / 1e3
+      )
+    );
+  }
+  return 0;
+}
 function startOfCalendarWeek(date5 = /* @__PURE__ */ new Date()) {
   const d = new Date(date5);
   const day2 = d.getDay();
@@ -56139,6 +56289,12 @@ function startOfCalendarWeek(date5 = /* @__PURE__ */ new Date()) {
   d.setDate(d.getDate() + diff);
   d.setHours(0, 0, 0, 0);
   return d;
+}
+function endOfCalendarWeek(date5 = /* @__PURE__ */ new Date()) {
+  const end = startOfCalendarWeek(date5);
+  end.setDate(end.getDate() + 6);
+  end.setHours(23, 59, 59, 999);
+  return end;
 }
 function roundHours(hours) {
   return Math.round(hours * 10) / 10;
@@ -56153,6 +56309,100 @@ function localDateKey(date5) {
   const m = String(date5.getMonth() + 1).padStart(2, "0");
   const d = String(date5.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
+}
+var AUTO_CLOCK_OUT_HOUR = 22;
+function getAutoClockOutDeadline(sessionStart) {
+  const start = new Date(sessionStart);
+  const [y, m, d] = localDateKey(start).split("-").map(Number);
+  const sameDayDeadline = new Date(y, m - 1, d, AUTO_CLOCK_OUT_HOUR, 0, 0, 0);
+  if (start.getTime() >= sameDayDeadline.getTime()) {
+    return new Date(y, m - 1, d + 1, AUTO_CLOCK_OUT_HOUR, 0, 0, 0);
+  }
+  return sameDayDeadline;
+}
+function isPastAutoClockOutDeadline(sessionStart, now2 = /* @__PURE__ */ new Date()) {
+  return now2.getTime() >= getAutoClockOutDeadline(sessionStart).getTime();
+}
+function breakOverlapSeconds(breakStart, breakEnd, windowStart, windowEnd, now2 = /* @__PURE__ */ new Date()) {
+  const startMs = Math.max(new Date(breakStart).getTime(), windowStart.getTime());
+  const rawEndMs = breakEnd ? new Date(breakEnd).getTime() : Math.min(now2.getTime(), windowEnd.getTime());
+  const endMs = Math.min(rawEndMs, windowEnd.getTime());
+  return Math.max(0, Math.floor((endMs - startMs) / 1e3));
+}
+function sumBreakSecondsInWindow(breaks, windowStart, windowEnd, now2 = /* @__PURE__ */ new Date()) {
+  return breaks.reduce(
+    (sum, item) => sum + breakOverlapSeconds(item.startTime, item.endTime, windowStart, windowEnd, now2),
+    0
+  );
+}
+function computeAttendanceWorkSeconds(clockIn, clockOut, breaks, now2 = /* @__PURE__ */ new Date()) {
+  const start = new Date(clockIn);
+  const end = clockOut ? new Date(clockOut) : now2;
+  if (end.getTime() <= start.getTime()) return 0;
+  const spanSeconds = Math.floor((end.getTime() - start.getTime()) / 1e3);
+  const breakSeconds = sumBreakSecondsInWindow(breaks, start, end, now2);
+  return Math.max(0, spanSeconds - breakSeconds);
+}
+function resolveAttendanceDisplaySeconds(entry, breaks, now2 = /* @__PURE__ */ new Date()) {
+  if (!entry.clockOut) return 0;
+  const spanSeconds = Math.floor(
+    (new Date(entry.clockOut).getTime() - new Date(entry.clockIn).getTime()) / 1e3
+  );
+  const stored = attendanceEntrySeconds(entry);
+  const computed = computeAttendanceWorkSeconds(entry.clockIn, entry.clockOut, breaks, now2);
+  if (stored < spanSeconds) {
+    return stored;
+  }
+  return computed;
+}
+function computeSessionWorkSeconds(state, now2 = /* @__PURE__ */ new Date()) {
+  const accumulated = state.accumulatedWorkSeconds ?? 0;
+  const hasPauseState = state.workSegmentStartedAt != null || !!state.paused || accumulated > 0 || state.breakStartedAt != null;
+  if (!hasPauseState && state.startTime) {
+    return Math.floor(
+      (now2.getTime() - new Date(state.startTime).getTime()) / 1e3
+    );
+  }
+  let workSeconds = accumulated;
+  if (state.workSegmentStartedAt) {
+    workSeconds += Math.floor(
+      (now2.getTime() - new Date(state.workSegmentStartedAt).getTime()) / 1e3
+    );
+  }
+  return workSeconds;
+}
+function periodClockInBounds(period, referenceDate = /* @__PURE__ */ new Date()) {
+  const start = periodRangeStart(period, referenceDate);
+  let end;
+  if (period === "today") {
+    end = new Date(referenceDate);
+    end.setHours(23, 59, 59, 999);
+  } else if (period === "week") {
+    end = endOfCalendarWeek(referenceDate);
+  } else {
+    end = new Date(referenceDate);
+  }
+  return { start, end };
+}
+function dayBounds(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return {
+    start: new Date(y, m - 1, d, 0, 0, 0, 0),
+    end: new Date(y, m - 1, d, 23, 59, 59, 999)
+  };
+}
+function periodRangeStart(period, referenceDate = /* @__PURE__ */ new Date()) {
+  const start = new Date(referenceDate);
+  if (period === "today") {
+    start.setHours(0, 0, 0, 0);
+    return start;
+  }
+  if (period === "week") {
+    return startOfCalendarWeek(referenceDate);
+  }
+  start.setMonth(start.getMonth() - 1);
+  start.setHours(0, 0, 0, 0);
+  return start;
 }
 function buildDailyBreakdown(dailyMinutes) {
   return Array.from(dailyMinutes.entries()).map(([date5, minutes]) => {
@@ -56213,45 +56463,9 @@ function buildTimeStatsSummary(totalMinutes, dailyMinutes, period) {
 }
 
 // src/lib/project-funnel.ts
-function resolveProjectRole(projectCreatedBy, currentUserId, currentUserAppRole) {
-  if (currentUserId && projectCreatedBy === currentUserId) {
-    return "project_manager";
-  }
-  if (currentUserAppRole === "manager" || currentUserAppRole === "admin") {
-    return "assistant_manager";
-  }
-  return "member";
-}
 function projectPerformancePercent(taskCount, completedCount) {
   if (taskCount === 0) return 0;
   return Math.round(completedCount / taskCount * 100);
-}
-
-// src/lib/task-kanban.ts
-var PROJECT_PIPELINE_STAGES = [
-  { key: "new", label: "To Do", color: "#6B7280" },
-  { key: "in_designing", label: "In Designing", color: "#8B5CF6" },
-  { key: "in_developing", label: "In Developing", color: "#2563EB" },
-  { key: "in_qa_1st_round", label: "In QA (1st Round)", color: "#D97706" },
-  { key: "backlog", label: "Backlog", color: "#9CA3AF" },
-  { key: "client_1st_round", label: "Client (1st Round)", color: "#0EA5E9" },
-  { key: "backlog_from_client", label: "Backlog from Client", color: "#64748B" },
-  { key: "client_2nd_round", label: "Client (2nd Round)", color: "#0284C7" },
-  { key: "publish_live", label: "Publish Live", color: "#059669" },
-  { key: "finished", label: "Finished", color: "#10B981" }
-];
-var PROJECT_PIPELINE_STAGE_KEYS = PROJECT_PIPELINE_STAGES.map((s) => s.key);
-function legacyStatusToStage(status) {
-  switch (status) {
-    case "in_progress":
-      return "in_developing";
-    case "review":
-      return "in_qa_1st_round";
-    case "done":
-      return "finished";
-    default:
-      return "new";
-  }
 }
 
 // src/lib/task-search-filter.ts
@@ -56294,6 +56508,73 @@ function taskMatchesUnifiedSearch(task, query, ctx) {
   const matchedProjects = projectsMatchingQuery(q, ctx.projects);
   const projectMatch = task.projectId != null && matchedProjects.some((p) => p.id === task.projectId);
   return titleMatch || descMatch || assigneeMatch || userMatch || projectMatch;
+}
+
+// src/lib/task-comment-mentions.ts
+var MENTION_TOKEN_REGEX = /«(\d+)\|([^»]+)»/g;
+function extractMentionedUserIds(message2) {
+  const ids = /* @__PURE__ */ new Set();
+  const regex = new RegExp(MENTION_TOKEN_REGEX.source, "g");
+  let match2;
+  while ((match2 = regex.exec(message2)) !== null) {
+    const id = Number(match2[1]);
+    if (Number.isFinite(id) && id > 0) ids.add(id);
+  }
+  return [...ids];
+}
+function formatCommentPreview(message2, maxLength = 120) {
+  const readable = message2.replace(new RegExp(MENTION_TOKEN_REGEX.source, "g"), (_match, _id, name) => name).replace(/\s+/g, " ").trim();
+  if (!readable) return "";
+  return readable.length > maxLength ? `${readable.slice(0, maxLength)}\u2026` : readable;
+}
+
+// src/lib/rich-comment.ts
+var RICH_COMMENT_MARKER = "<!--rich-comment-->";
+var MEDIA_TOKEN_REGEX = /«media:(\d+)\|([^|»]+)\|([^»]+)»/g;
+function parseStoredCommentMessage(message2) {
+  const markerIndex = message2.indexOf(RICH_COMMENT_MARKER);
+  const media = [];
+  if (markerIndex === -1) {
+    return {
+      mentionPrefix: message2,
+      isRich: false,
+      body: message2,
+      media
+    };
+  }
+  const mentionPrefix = message2.slice(0, markerIndex).trim();
+  const body = message2.slice(markerIndex + RICH_COMMENT_MARKER.length).trim();
+  const mediaMatches = [...body.matchAll(MEDIA_TOKEN_REGEX)];
+  for (const match2 of mediaMatches) {
+    media.push({
+      id: Number(match2[1]),
+      fileName: match2[2],
+      mimeType: match2[3]
+    });
+  }
+  return {
+    mentionPrefix,
+    isRich: true,
+    body,
+    media
+  };
+}
+function stripMediaTokens(content) {
+  return content.replace(MEDIA_TOKEN_REGEX, "").trim();
+}
+function richCommentPlainText(message2) {
+  const parsed = parseStoredCommentMessage(message2);
+  const source = parsed.isRich ? stripMediaTokens(parsed.body) : parsed.body;
+  if (typeof document === "undefined") {
+    return source.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  }
+  const div = document.createElement("div");
+  div.innerHTML = source;
+  return div.textContent?.replace(/\s+/g, " ").trim() ?? "";
+}
+function extractMentionedUserIdsFromComment(message2) {
+  const parsed = parseStoredCommentMessage(message2);
+  return extractMentionedUserIds(parsed.mentionPrefix || message2);
 }
 
 // api/lib/mock-store.ts
@@ -56355,6 +56636,8 @@ var projects = [
     description: "Complete overhaul of the company website with modern design.",
     status: "active",
     color: "#2563EB",
+    icon: "folder-kanban",
+    clientName: "Aumento Infoway",
     createdBy: 1,
     createdAt: daysAgo(30),
     updatedAt: daysAgo(2),
@@ -56368,6 +56651,8 @@ var projects = [
     description: "Second version of the mobile app with offline support.",
     status: "active",
     color: "#3B82F6",
+    icon: "rocket",
+    clientName: "Mobile Labs",
     createdBy: 2,
     createdAt: daysAgo(20),
     updatedAt: daysAgo(1),
@@ -56381,6 +56666,8 @@ var projects = [
     description: "Refresh public website content and branding for AGPL.",
     status: "active",
     color: "#10B981",
+    icon: "globe",
+    clientName: "AGPL",
     createdBy: 1,
     createdAt: daysAgo(45),
     updatedAt: daysAgo(0),
@@ -56394,6 +56681,8 @@ var projects = [
     description: "AI integration and automation for CyperX platform.",
     status: "active",
     color: "#8B5CF6",
+    icon: "laptop",
+    clientName: "CyperX",
     createdBy: 2,
     createdAt: daysAgo(60),
     updatedAt: daysAgo(3),
@@ -56407,6 +56696,8 @@ var projects = [
     description: "Self-service portal for enterprise clients.",
     status: "active",
     color: "#F59E0B",
+    icon: "building-2",
+    clientName: "Enterprise Clients",
     createdBy: 1,
     createdAt: daysAgo(15),
     updatedAt: daysAgo(5),
@@ -56420,6 +56711,8 @@ var projects = [
     description: "HR onboarding and leave management modules.",
     status: "archived",
     color: "#6B7280",
+    icon: "users",
+    clientName: "Internal",
     createdBy: 2,
     createdAt: daysAgo(120),
     updatedAt: daysAgo(30),
@@ -56428,6 +56721,25 @@ var projects = [
     creator: users[1]
   }
 ];
+var projectMemberKeys = /* @__PURE__ */ new Set();
+function mockMemberKey(projectId, userId) {
+  return `${projectId}:${userId}`;
+}
+function mockIsProjectMember(projectId, userId, createdBy) {
+  if (createdBy != null && createdBy === userId) return true;
+  return projectMemberKeys.has(mockMemberKey(projectId, userId));
+}
+function mockCanViewProjectTasks(user, projectCreatedBy, joined) {
+  if (user.role === "admin" || user.role === "manager") return true;
+  if (user.role === "employee") {
+    if (projectCreatedBy != null && projectCreatedBy === user.id) return true;
+    return joined;
+  }
+  if (user.permissions?.includes("projects.manage")) return true;
+  if (user.permissions?.includes("tasks.view_all")) return true;
+  if (projectCreatedBy != null && projectCreatedBy === user.id) return true;
+  return joined;
+}
 var tasks = [
   {
     id: 1,
@@ -56635,18 +56947,15 @@ var notifications = [
   }
 ];
 function mockDashboardStats(userId) {
-  const userTasks = tasks.filter((t2) => t2.assigneeId === userId);
-  const ongoing = userTasks.filter((t2) => t2.status === "in_progress").length;
-  const completed = userTasks.filter((t2) => t2.status === "done").length;
-  const total = userTasks.length || 1;
-  const done = userTasks.filter((t2) => t2.status === "done").length;
-  const weekAgo = new Date(Date.now() - 7 * 864e5);
-  const weekMinutes = allUserTimeEntries(userId).filter((e) => e.clockOut && e.clockIn >= weekAgo).reduce((sum, e) => sum + (e.duration ?? 0), 0);
+  const ongoing = countTodoTasks(tasks);
+  const completed = countCompletedTasks(tasks);
+  const startOfToday = /* @__PURE__ */ new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const todayMinutes = allUserTimeEntries(userId).filter((e) => e.clockOut && e.clockIn >= startOfToday).reduce((sum, e) => sum + (e.duration ?? 0), 0);
   return {
     ongoingTasks: ongoing,
     completedTasks: completed,
-    hoursTracked: Math.round(weekMinutes / 60 * 10) / 10,
-    teamPerformance: Math.round(done / total * 100)
+    hoursTracked: Math.round(todayMinutes / 60 * 10) / 10
   };
 }
 function mockRecentTasks(userId, limit = 10) {
@@ -56672,12 +56981,20 @@ function mockWorkload() {
     };
   });
 }
-function mockTaskList(input) {
+function mockTaskList(input, currentUser) {
   let result = [...tasks];
   if (input?.status) result = result.filter((t2) => t2.status === input.status);
   if (input?.priority) result = result.filter((t2) => t2.priority === input.priority);
   if (input?.assigneeId) result = result.filter((t2) => t2.assigneeId === input.assigneeId);
-  if (input?.projectId) result = result.filter((t2) => t2.projectId === input.projectId);
+  if (input?.projectId) {
+    const project = projects.find((p) => p.id === input.projectId);
+    const user = currentUser ?? DEV_USER;
+    const joined = project ? mockIsProjectMember(project.id, user.id, project.createdBy) : false;
+    if (project && !mockCanViewProjectTasks(user, project.createdBy, joined)) {
+      return { tasks: [], total: 0 };
+    }
+    result = result.filter((t2) => t2.projectId === input.projectId);
+  }
   if (input?.search) {
     const ctx = {
       users,
@@ -56687,11 +57004,16 @@ function mockTaskList(input) {
   }
   const limit = input?.limit ?? 50;
   return {
-    tasks: result.slice(0, limit).map((t2) => ({
-      ...t2,
-      participantIds: (taskParticipants[t2.id] ?? []).map((p) => p.id),
-      observerIds: (taskObservers[t2.id] ?? []).map((p) => p.id)
-    })),
+    tasks: result.slice(0, limit).map((t2) => {
+      const project = t2.projectId ? projects.find((p) => p.id === t2.projectId) : null;
+      return {
+        ...t2,
+        creator: t2.createdBy ? userById(t2.createdBy) ?? null : null,
+        project: project ? { id: project.id, name: project.name, color: project.color } : null,
+        participantIds: (taskParticipants[t2.id] ?? []).map((p) => p.id),
+        observerIds: (taskObservers[t2.id] ?? []).map((p) => p.id)
+      };
+    }),
     total: result.length
   };
 }
@@ -56747,18 +57069,84 @@ var taskTimeEntries = {
 };
 var nextWorkEntryId = 1e3;
 var workSessionsByUser = {};
-function workSessionTiming(session) {
-  let workElapsedSeconds = session.accumulatedWorkSeconds;
-  if (session.workSegmentStartedAt) {
-    workElapsedSeconds += Math.floor(
-      (Date.now() - session.workSegmentStartedAt.getTime()) / 1e3
-    );
+var nextWorkBreakId = 5e3;
+var workBreaksByUser = {};
+var nextApprovalId = 9e3;
+var timeApprovalRequests = [];
+function mockNotifyAdmins(actor, title, message2, approvalRequestId) {
+  const admin = users.find((u) => u.role === "admin");
+  if (!admin || admin.id === actor.id) return;
+  notifications.unshift({
+    id: Date.now() + Math.random(),
+    userId: admin.id,
+    actorId: actor.id,
+    taskId: null,
+    type: "time_approval_pending",
+    title,
+    message: message2,
+    approvalRequestId,
+    read: false,
+    createdAt: /* @__PURE__ */ new Date()
+  });
+}
+function mockActorLabel(actor) {
+  return actor.name || actor.email || "Someone";
+}
+function mockNotifyTaskMembers({
+  taskId,
+  actor,
+  type,
+  title,
+  message: message2,
+  activityId = null,
+  extraRecipientIds = [],
+  excludeUserIds = [],
+  includeAssignee = true
+}) {
+  const task = tasks.find((t2) => t2.id === taskId);
+  const excluded = /* @__PURE__ */ new Set([actor.id, ...excludeUserIds]);
+  const recipientIds = /* @__PURE__ */ new Set();
+  if (includeAssignee && task?.assigneeId != null) recipientIds.add(task.assigneeId);
+  for (const id of extraRecipientIds) recipientIds.add(id);
+  const recipients = [...recipientIds].filter((id) => !excluded.has(id));
+  if (recipients.length === 0) return;
+  const now2 = /* @__PURE__ */ new Date();
+  for (const userId of recipients) {
+    notifications.unshift({
+      id: Date.now() + Math.floor(Math.random() * 1e4),
+      userId,
+      actorId: actor.id,
+      taskId,
+      activityId,
+      type,
+      title,
+      message: message2,
+      read: false,
+      link: activityId ? `/tasks?task=${taskId}&activity=${activityId}` : `/tasks?task=${taskId}`,
+      createdAt: now2
+    });
   }
+}
+function mockApplyClockInApproval(request, session, entry) {
+  if (!request.requestedClockIn || !request.originalClockIn) return;
+  const deltaSeconds = Math.floor(
+    (request.originalClockIn.getTime() - request.requestedClockIn.getTime()) / 1e3
+  );
+  session.startTime = request.requestedClockIn;
+  session.accumulatedWorkSeconds += deltaSeconds;
+  if (entry) entry.clockIn = request.requestedClockIn;
+}
+function workSessionTiming(session) {
+  const workElapsedSeconds = computeSessionWorkSeconds({
+    ...session,
+    startTime: session.startTime
+  });
   const breakElapsedSeconds = session.breakStartedAt ? Math.floor((Date.now() - session.breakStartedAt.getTime()) / 1e3) : 0;
   return { workElapsedSeconds, breakElapsedSeconds };
 }
 function mockWorkSessionView(session) {
   const { workElapsedSeconds, breakElapsedSeconds } = workSessionTiming(session);
+  const priorDayWorkSeconds = mockPriorDayWorkSeconds(session.userId, session.startTime);
   return {
     id: session.id,
     userId: session.userId,
@@ -56767,8 +57155,16 @@ function mockWorkSessionView(session) {
     active: session.active,
     paused: session.paused,
     workElapsedSeconds,
-    breakElapsedSeconds
+    breakElapsedSeconds,
+    priorDayWorkSeconds
   };
+}
+function mockPriorDayWorkSeconds(userId, sessionStart) {
+  const dateStr = localDateKey(sessionStart);
+  const { start, end } = dayBounds(dateStr);
+  return userWorkEntries.filter(
+    (e) => e.userId === userId && e.taskId == null && e.clockOut && e.clockIn >= start && e.clockIn <= end
+  ).reduce((sum, entry) => sum + attendanceEntrySeconds(entry), 0);
 }
 var userWorkEntries = [
   {
@@ -56779,26 +57175,13 @@ var userWorkEntries = [
     clockIn: daysAgo(1),
     clockOut: new Date(daysAgo(1).getTime() + 4 * 36e5),
     duration: 240,
+    durationSeconds: 240 * 60,
     note: "Homepage design work",
     source: "web",
     createdAt: daysAgo(1),
     updatedAt: daysAgo(1)
   }
 ];
-function periodStart(period) {
-  const now2 = /* @__PURE__ */ new Date();
-  if (period === "today") {
-    const start2 = new Date(now2);
-    start2.setHours(0, 0, 0, 0);
-    return start2;
-  }
-  if (period === "week") {
-    return startOfCalendarWeek(now2);
-  }
-  const start = new Date(now2);
-  start.setMonth(start.getMonth() - 1);
-  return start;
-}
 function allUserTimeEntries(userId) {
   const general = userWorkEntries.filter((e) => e.userId === userId);
   const fromTasks = [];
@@ -56818,6 +57201,7 @@ function allUserTimeEntries(userId) {
           1,
           Math.floor((e.clockOut.getTime() - e.clockIn.getTime()) / 6e4)
         ),
+        durationSeconds: null,
         note: e.note,
         source: "web",
         createdAt: e.clockIn,
@@ -56855,6 +57239,86 @@ function mockTaskTimeTracked(taskId) {
     totalSeconds,
     entries
   };
+}
+function mockUpdateTaskTimeEntry(actor, input) {
+  const list = taskTimeEntries[input.taskId];
+  if (!list) throw new Error("Time entry not found");
+  const entry = list.find((e) => e.id === input.entryId);
+  if (!entry) throw new Error("Time entry not found");
+  if (!entry.clockOut) throw new Error("Cannot edit an active timer session");
+  const clockIn = new Date(input.clockIn);
+  const clockOut = new Date(input.clockOut);
+  if (clockOut <= clockIn) throw new Error("End time must be after start time");
+  entry.clockIn = clockIn;
+  entry.clockOut = clockOut;
+  entry.duration = Math.floor((clockOut.getTime() - clockIn.getTime()) / 6e4);
+  const noteSuffix = `(edited: ${input.reason.trim()})`;
+  entry.note = entry.note ? `${entry.note} ${noteSuffix}` : noteSuffix;
+  const activities = taskActivities[input.taskId] ?? (taskActivities[input.taskId] = []);
+  activities.unshift({
+    id: Date.now(),
+    taskId: input.taskId,
+    userId: actor.id,
+    action: "time_logged",
+    oldValue: null,
+    newValue: `Time entry edited \u2014 ${entry.duration} min`,
+    metadata: { entryId: input.entryId, reason: input.reason.trim() },
+    createdAt: /* @__PURE__ */ new Date(),
+    user: actor
+  });
+  const task = tasks.find((t2) => t2.id === input.taskId);
+  mockNotifyTaskMembers({
+    taskId: input.taskId,
+    actor,
+    type: "task_updated",
+    title: "Time entry updated",
+    message: `${mockActorLabel(actor)} edited time logged on "${task?.title ?? "a task"}"`
+  });
+  return entry;
+}
+function mockAddManualTaskTimeEntry(actor, input) {
+  const userId = input.userId ?? actor.id;
+  const clockIn = new Date(input.clockIn);
+  const clockOut = new Date(input.clockOut);
+  if (clockOut <= clockIn) throw new Error("End time must be after start time");
+  const duration3 = Math.floor((clockOut.getTime() - clockIn.getTime()) / 6e4);
+  const list = taskTimeEntries[input.taskId] ?? (taskTimeEntries[input.taskId] = []);
+  const entry = {
+    id: Date.now(),
+    userId,
+    taskId: input.taskId,
+    clockIn,
+    clockOut,
+    duration: duration3,
+    note: input.note?.trim() || "Manual entry",
+    user: userById(userId)
+  };
+  list.unshift(entry);
+  const task = tasks.find((t2) => t2.id === input.taskId);
+  if (task) {
+    const currentHours = parseFloat(task.actualHours ?? "0");
+    task.actualHours = (currentHours + duration3 / 60).toFixed(2);
+  }
+  const activities = taskActivities[input.taskId] ?? (taskActivities[input.taskId] = []);
+  activities.unshift({
+    id: Date.now() + 1,
+    taskId: input.taskId,
+    userId: actor.id,
+    action: "time_logged",
+    oldValue: null,
+    newValue: `Manual time added \u2014 ${duration3} min`,
+    metadata: { entryId: entry.id, targetUserId: userId },
+    createdAt: /* @__PURE__ */ new Date(),
+    user: actor
+  });
+  mockNotifyTaskMembers({
+    taskId: input.taskId,
+    actor,
+    type: "task_updated",
+    title: "Time logged",
+    message: `${mockActorLabel(actor)} added ${duration3} min of time on "${task?.title ?? "a task"}"`
+  });
+  return entry;
 }
 var activeTaskTimers = {};
 function timerElapsedSeconds(active) {
@@ -56909,6 +57373,9 @@ function mockGetActiveTaskTimer(userId, taskId) {
   };
 }
 function mockStartTaskTimer(userId, taskId, actor) {
+  const task = tasks.find((t2) => t2.id === taskId);
+  const label = mockActorLabel(actor);
+  const taskTitle = task?.title ?? "a task";
   const existing = activeTaskTimers[userId];
   if (existing?.taskId === taskId && existing.paused) {
     existing.paused = false;
@@ -56924,6 +57391,13 @@ function mockStartTaskTimer(userId, taskId, actor) {
       metadata: null,
       createdAt: /* @__PURE__ */ new Date(),
       user: actor
+    });
+    mockNotifyTaskMembers({
+      taskId,
+      actor,
+      type: "task_updated",
+      title: "Timer started",
+      message: `${label} resumed the timer on "${taskTitle}"`
     });
     return { taskId, startedAt: existing.clockIn, resumed: true };
   }
@@ -56945,6 +57419,13 @@ function mockStartTaskTimer(userId, taskId, actor) {
     metadata: null,
     createdAt: /* @__PURE__ */ new Date(),
     user: actor
+  });
+  mockNotifyTaskMembers({
+    taskId,
+    actor,
+    type: "task_updated",
+    title: "Timer started",
+    message: `${label} started the timer on "${taskTitle}"`
   });
   return { taskId, startedAt: activeTaskTimers[userId].clockIn };
 }
@@ -56973,6 +57454,14 @@ function mockPauseTaskTimer(userId, taskId, actor) {
     createdAt: /* @__PURE__ */ new Date(),
     user: actor
   });
+  const task = tasks.find((t2) => t2.id === taskId);
+  mockNotifyTaskMembers({
+    taskId,
+    actor,
+    type: "task_updated",
+    title: "Timer paused",
+    message: `${mockActorLabel(actor)} paused the timer on "${task?.title ?? "a task"}"`
+  });
   return { accumulatedSeconds: active.accumulatedSeconds, savedSeconds: secondsToSave };
 }
 function mockStopTaskTimer(userId, taskId, actor) {
@@ -56986,6 +57475,14 @@ function mockStopTaskTimer(userId, taskId, actor) {
   }
   delete activeTaskTimers[userId];
   const durationMinutes = totalSeconds >= 1 ? persistTaskTimeEntry(taskId, userId, actor, totalSeconds) : 0;
+  const task = tasks.find((t2) => t2.id === taskId);
+  mockNotifyTaskMembers({
+    taskId,
+    actor,
+    type: "task_updated",
+    title: "Timer stopped",
+    message: `${mockActorLabel(actor)} stopped the timer on "${task?.title ?? "a task"}" (${durationMinutes} min)`
+  });
   return { durationMinutes };
 }
 function mockAddTaskComment(taskId, message2, actor) {
@@ -57005,7 +57502,67 @@ function mockAddTaskComment(taskId, message2, actor) {
   };
   list.unshift(activity);
   task.updatedAt = /* @__PURE__ */ new Date();
+  const previewSource = richCommentPlainText(message2) || formatCommentPreview(message2);
+  const preview = previewSource.length > 120 ? `${previewSource.slice(0, 120)}\u2026` : previewSource;
+  const mentionedUserIds = extractMentionedUserIdsFromComment(message2);
+  if (mentionedUserIds.length > 0) {
+    mockNotifyTaskMembers({
+      taskId,
+      actor,
+      type: "mention",
+      title: "You were mentioned in a comment",
+      message: `${mockActorLabel(actor)} mentioned you on "${task.title}": ${preview}`,
+      activityId: activity.id,
+      extraRecipientIds: mentionedUserIds,
+      includeAssignee: false
+    });
+  } else {
+    mockNotifyTaskMembers({
+      taskId,
+      actor,
+      type: "mention",
+      title: "New comment on task",
+      message: `${mockActorLabel(actor)}: ${preview}`,
+      activityId: activity.id
+    });
+  }
   return activity;
+}
+function mockEditTaskComment(taskId, activityId, message2, actor) {
+  const task = tasks.find((t2) => t2.id === taskId);
+  if (!task) throw new Error("Task not found");
+  const list = taskActivities[taskId] ?? [];
+  const activity = list.find((item) => item.id === activityId);
+  if (!activity) throw new Error("Comment not found");
+  if (activity.action !== "commented") throw new Error("Only comments can be edited");
+  if (activity.userId !== actor.id) throw new Error("You can only edit your own comments");
+  if (activity.metadata && typeof activity.metadata === "object" && "subtaskId" in activity.metadata) {
+    throw new Error("This message cannot be edited");
+  }
+  activity.oldValue = activity.newValue;
+  activity.newValue = message2;
+  activity.metadata = {
+    ...activity.metadata && typeof activity.metadata === "object" ? activity.metadata : {},
+    editedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  task.updatedAt = /* @__PURE__ */ new Date();
+  return activity;
+}
+function mockDeleteTaskComment(taskId, activityId, actor) {
+  const task = tasks.find((t2) => t2.id === taskId);
+  if (!task) throw new Error("Task not found");
+  const list = taskActivities[taskId] ?? [];
+  const index = list.findIndex((item) => item.id === activityId);
+  if (index < 0) throw new Error("Comment not found");
+  const activity = list[index];
+  if (activity.action !== "commented") throw new Error("Only comments can be deleted");
+  if (activity.userId !== actor.id) throw new Error("You can only delete your own comments");
+  if (activity.metadata && typeof activity.metadata === "object" && "subtaskId" in activity.metadata) {
+    throw new Error("This message cannot be deleted");
+  }
+  list.splice(index, 1);
+  task.updatedAt = /* @__PURE__ */ new Date();
+  return { success: true };
 }
 function mockCreateSubtask(taskId, title, actor) {
   const list = taskSubtasks[taskId] ?? (taskSubtasks[taskId] = []);
@@ -57072,6 +57629,15 @@ function mockCreateTask(input, actor) {
       user: actor
     }
   ];
+  if (input.assigneeId && input.assigneeId !== actor.id) {
+    mockNotifyTaskMembers({
+      taskId: id,
+      actor,
+      type: "task_assigned",
+      title: "New task assigned",
+      message: `${mockActorLabel(actor)} created "${input.title}" and assigned it to you`
+    });
+  }
   return newTask;
 }
 function mockDeleteTask(id, actor) {
@@ -57096,7 +57662,8 @@ function mockDeleteTask(id, actor) {
 function mockUpdateTask(id, data, actor) {
   const task = tasks.find((t2) => t2.id === id);
   if (!task) return null;
-  if (data.title) task.title = data.title;
+  const label = mockActorLabel(actor);
+  const taskTitle = task.title;
   if (data.description !== void 0) task.description = data.description;
   if (data.createdBy !== void 0 && data.createdBy !== null) {
     task.createdBy = data.createdBy;
@@ -57121,6 +57688,13 @@ function mockUpdateTask(id, data, actor) {
       user: actor
     });
     task.status = data.status;
+    mockNotifyTaskMembers({
+      taskId: id,
+      actor,
+      type: "task_updated",
+      title: "Task status changed",
+      message: `${label} changed "${taskTitle}" to ${data.status.replace(/_/g, " ")}`
+    });
   }
   if (data.stage) {
     const oldStage = task.stage ?? legacyStatusToStage(task.status);
@@ -57142,6 +57716,53 @@ function mockUpdateTask(id, data, actor) {
       createdAt: /* @__PURE__ */ new Date(),
       user: actor
     });
+    mockNotifyTaskMembers({
+      taskId: id,
+      actor,
+      type: "task_updated",
+      title: "Task stage changed",
+      message: `${label} moved "${taskTitle}" to ${data.stage}`
+    });
+  }
+  if (data.priority !== void 0 && data.priority !== task.priority) {
+    const oldPriority = task.priority;
+    task.priority = data.priority;
+    const formatPriority = (value) => value.charAt(0).toUpperCase() + value.slice(1);
+    const priorityTitle = data.priority === "urgent" ? "Task marked urgent" : "Task priority changed";
+    const priorityMessage = data.priority === "urgent" ? `${label} marked "${taskTitle}" as urgent` : `${label} changed priority on "${taskTitle}" from ${formatPriority(oldPriority)} to ${formatPriority(data.priority)}`;
+    const list = taskActivities[id] ?? (taskActivities[id] = []);
+    list.unshift({
+      id: Date.now() + 3,
+      taskId: id,
+      userId: actor.id,
+      action: "priority_changed",
+      oldValue: oldPriority,
+      newValue: data.priority,
+      metadata: null,
+      createdAt: /* @__PURE__ */ new Date(),
+      user: actor
+    });
+    mockNotifyTaskMembers({
+      taskId: id,
+      actor,
+      type: "task_updated",
+      title: priorityTitle,
+      message: priorityMessage
+    });
+    for (const lead of users.filter((u) => u.role === "admin" || u.role === "manager")) {
+      if (lead.id === actor.id || lead.id === task.assigneeId) continue;
+      notifications.unshift({
+        id: Date.now() + Math.floor(Math.random() * 1e4),
+        userId: lead.id,
+        actorId: actor.id,
+        taskId: id,
+        type: "task_updated",
+        title: priorityTitle,
+        message: priorityMessage,
+        read: false,
+        createdAt: /* @__PURE__ */ new Date()
+      });
+    }
   }
   if (data.assigneeId !== void 0) {
     const oldAssigneeId = task.assigneeId ?? null;
@@ -57167,9 +57788,58 @@ function mockUpdateTask(id, data, actor) {
       createdAt: /* @__PURE__ */ new Date(),
       user: actor
     });
+    if (newAssigneeId) {
+      mockNotifyTaskMembers({
+        taskId: id,
+        actor,
+        type: "task_assigned",
+        title: "Task reassigned",
+        message: `${label} assigned "${taskTitle}" to ${newAssignee?.name ?? newAssignee?.email ?? "someone"}`
+      });
+    } else {
+      mockNotifyTaskMembers({
+        taskId: id,
+        actor,
+        type: "task_updated",
+        title: "Task updated",
+        message: `${label} removed the assignee from "${taskTitle}"`
+      });
+    }
+    if (oldAssigneeId && oldAssigneeId !== newAssigneeId && oldAssigneeId !== actor.id) {
+      notifications.unshift({
+        id: Date.now() + Math.floor(Math.random() * 1e4),
+        userId: oldAssigneeId,
+        actorId: actor.id,
+        taskId: id,
+        type: "task_updated",
+        title: "Task reassigned",
+        message: `${label} reassigned "${taskTitle}" to another team member`,
+        read: false,
+        createdAt: /* @__PURE__ */ new Date()
+      });
+    }
+    for (const lead of users.filter((u) => u.role === "admin" || u.role === "manager")) {
+      if (lead.id === actor.id || lead.id === newAssigneeId || lead.id === oldAssigneeId) {
+        continue;
+      }
+      notifications.unshift({
+        id: Date.now() + Math.floor(Math.random() * 1e4),
+        userId: lead.id,
+        actorId: actor.id,
+        taskId: id,
+        type: "task_updated",
+        title: "Task assignee changed",
+        message: `${label} updated assignee on "${taskTitle}"`,
+        read: false,
+        createdAt: /* @__PURE__ */ new Date()
+      });
+    }
   }
   if (data.projectId !== void 0) {
     task.projectId = data.projectId ?? void 0;
+  }
+  if (data.estimatedHours !== void 0) {
+    task.estimatedHours = data.estimatedHours != null ? String(data.estimatedHours) : null;
   }
   task.updatedAt = /* @__PURE__ */ new Date();
   return task;
@@ -57194,6 +57864,16 @@ function mockAddParticipant(taskId, userId, actor) {
       metadata: null,
       createdAt: /* @__PURE__ */ new Date(),
       user: actor
+    });
+    const task = tasks.find((t2) => t2.id === taskId);
+    mockNotifyTaskMembers({
+      taskId,
+      actor,
+      type: "task_updated",
+      title: "Added as participant",
+      message: `${mockActorLabel(actor)} added you as a participant on "${task?.title ?? "a task"}"`,
+      extraRecipientIds: [userId],
+      includeAssignee: false
     });
   }
   return { success: true };
@@ -57225,6 +57905,15 @@ function mockAddObserver(taskId, userId, actor, logActivity = true) {
       createdAt: /* @__PURE__ */ new Date(),
       user: actor
     });
+    mockNotifyTaskMembers({
+      taskId,
+      actor,
+      type: "task_updated",
+      title: "Added as observer",
+      message: `${mockActorLabel(actor)} added you as an observer on "${task.title}"`,
+      extraRecipientIds: [userId],
+      includeAssignee: false
+    });
   }
   return { success: true };
 }
@@ -57243,16 +57932,16 @@ function mockProjectList(currentUserId = DEV_USER.id) {
         memberMap.set(t2.assigneeId, t2.assignee ?? userById(t2.assigneeId) ?? DEV_USER);
       }
       if (t2.createdBy) {
-        const creator = userById(t2.createdBy);
-        if (creator) memberMap.set(t2.createdBy, creator);
+        const creator2 = userById(t2.createdBy);
+        if (creator2) memberMap.set(t2.createdBy, creator2);
       }
       for (const participant of taskParticipants[t2.id] ?? []) {
         memberMap.set(participant.id, participant);
       }
     }
     if (p.createdBy) {
-      const creator = userById(p.createdBy);
-      if (creator) memberMap.set(p.createdBy, creator);
+      const creator2 = userById(p.createdBy);
+      if (creator2) memberMap.set(p.createdBy, creator2);
     }
     const lastTaskUpdate = projectTasks.reduce((max, t2) => {
       const d = new Date(t2.updatedAt);
@@ -57262,12 +57951,18 @@ function mockProjectList(currentUserId = DEV_USER.id) {
     const lastActiveAt = lastTaskUpdate ?? new Date(p.updatedAt);
     const taskCount = projectTasks.length;
     const completedCount = projectTasks.filter((t2) => t2.status === "done").length;
-    const currentUser = userById(currentUserId);
+    const creator = userById(p.createdBy);
     return {
       ...p,
       taskCount,
       completedCount,
-      creator: userById(p.createdBy),
+      creator: creator ? {
+        id: creator.id,
+        name: creator.name,
+        avatar: creator.avatar,
+        department: creator.department,
+        position: creator.position
+      } : null,
       performance: projectPerformancePercent(taskCount, completedCount),
       lastActiveAt: lastActiveAt.toISOString(),
       members: [...memberMap.values()].slice(0, 6).map((u) => ({
@@ -57275,16 +57970,23 @@ function mockProjectList(currentUserId = DEV_USER.id) {
         name: u.name,
         avatar: u.avatar
       })),
-      userRole: resolveProjectRole(p.createdBy, currentUserId, currentUser?.role),
       privacyType: "Public"
     };
   });
 }
-function mockProjectById(id) {
+function mockProjectById(id, currentUserId = DEV_USER.id) {
   const project = projects.find((p) => p.id === id);
   if (!project) return null;
-  const projectTasks = tasks.filter((t2) => t2.projectId === id);
+  const user = userById(currentUserId) ?? DEV_USER;
+  const joined = mockIsProjectMember(id, currentUserId, project.createdBy);
+  const canViewTasks = mockCanViewProjectTasks(user, project.createdBy, joined);
+  const projectTasks = canViewTasks ? tasks.filter((t2) => t2.projectId === id) : [];
   const memberIds = /* @__PURE__ */ new Set();
+  if (project.createdBy) memberIds.add(project.createdBy);
+  for (const key of projectMemberKeys) {
+    const [pid, uid] = key.split(":").map(Number);
+    if (pid === id) memberIds.add(uid);
+  }
   for (const t2 of projectTasks) {
     if (t2.assigneeId) memberIds.add(t2.assigneeId);
     if (t2.createdBy) memberIds.add(t2.createdBy);
@@ -57308,8 +58010,59 @@ function mockProjectById(id) {
     },
     hoursTracked: Math.round(hoursTracked * 10) / 10,
     memberCount: memberIds.size || 1,
-    dueDate: dueDates[0] ?? null
+    dueDate: dueDates[0] ?? null,
+    isMember: joined,
+    canViewTasks
   };
+}
+function mockJoinProject(projectId, userId) {
+  const project = projects.find((p) => p.id === projectId);
+  if (!project) throw new Error("Project not found");
+  projectMemberKeys.add(mockMemberKey(projectId, userId));
+  const user = userById(userId) ?? DEV_USER;
+  const joined = mockIsProjectMember(projectId, userId, project.createdBy);
+  return {
+    success: true,
+    isMember: joined,
+    canViewTasks: mockCanViewProjectTasks(user, project.createdBy, joined)
+  };
+}
+function mockBulkTaskAction(input, _user) {
+  const ids = new Set(input.taskIds);
+  if (input.action === "delete") {
+    for (let i = tasks.length - 1; i >= 0; i--) {
+      if (ids.has(tasks[i].id)) tasks.splice(i, 1);
+    }
+    return { success: true, affected: input.taskIds.length };
+  }
+  for (const task of tasks) {
+    if (!ids.has(task.id)) continue;
+    if (input.action === "status" && input.status) {
+      task.status = input.status;
+    }
+    if (input.action === "move_project") {
+      task.projectId = input.projectId ?? null;
+    }
+    task.updatedAt = /* @__PURE__ */ new Date();
+  }
+  return { success: true, affected: input.taskIds.length };
+}
+function mockDeleteProject(id) {
+  const projectIndex = projects.findIndex((p) => p.id === id);
+  if (projectIndex === -1) return { success: false };
+  projects.splice(projectIndex, 1);
+  for (const key of [...projectMemberKeys]) {
+    if (key.startsWith(`${id}:`)) projectMemberKeys.delete(key);
+  }
+  for (let i = tasks.length - 1; i >= 0; i--) {
+    if (tasks[i].projectId === id) {
+      const taskId = tasks[i].id;
+      delete taskParticipants[taskId];
+      delete taskObservers[taskId];
+      tasks.splice(i, 1);
+    }
+  }
+  return { success: true };
 }
 function mockNotificationList(userId, unreadOnly = false) {
   const notifs = notifications.filter((n) => n.userId === userId);
@@ -57318,6 +58071,14 @@ function mockNotificationList(userId, unreadOnly = false) {
     notifications: filtered,
     unreadCount: notifs.filter((n) => !n.read).length
   };
+}
+function mockLatestNotificationId(userId) {
+  const userNotifs = notifications.filter((n) => n.userId === userId);
+  if (userNotifs.length === 0) return 0;
+  return Math.max(...userNotifs.map((n) => n.id));
+}
+function mockNotificationsSince(userId, sinceId) {
+  return notifications.filter((n) => n.userId === userId && n.id > sinceId).sort((a, b) => a.id - b.id);
 }
 function mockMarkAllNotificationsRead(userId) {
   for (const n of notifications) {
@@ -57352,15 +58113,92 @@ function mockUpdateUserProfile(userId, data) {
   user.updatedAt = /* @__PURE__ */ new Date();
   return { ...user };
 }
+function mockPersonalRecord(user) {
+  const parts = (user.name ?? "").trim().split(/\s+/);
+  const firstName = user.firstName ?? parts[0] ?? null;
+  const lastName = user.lastName ?? (parts.length > 1 ? parts.slice(1).join(" ") : null);
+  const headIds = user.headOfDepartmentUserIds ?? [];
+  return {
+    firstName,
+    lastName,
+    secondName: user.secondName ?? null,
+    email: user.email ?? null,
+    position: user.position ?? null,
+    department: user.department ?? null,
+    phone: user.phone ?? null,
+    city: user.city ?? null,
+    dateOfBirth: user.dateOfBirth ?? null,
+    sex: user.sex ?? null,
+    notificationLanguage: user.notificationLanguage ?? "en",
+    headOfDepartmentUserIds: headIds,
+    headsOfDepartment: headIds.map((id) => userById(id)).filter((u) => Boolean(u)).map((u) => ({ id: u.id, name: u.name }))
+  };
+}
+function mockGetPersonalInfo(userId) {
+  const user = userById(userId);
+  if (!user) throw new Error("User not found");
+  return mockPersonalRecord(user);
+}
+function mockUpdatePersonalInfo(userId, data) {
+  const user = userById(userId);
+  if (!user) throw new Error("User not found");
+  if (data.firstName !== void 0) user.firstName = data.firstName;
+  if (data.lastName !== void 0) user.lastName = data.lastName;
+  if (data.secondName !== void 0) user.secondName = data.secondName;
+  if (data.email !== void 0) user.email = data.email;
+  if (data.department !== void 0) user.department = data.department;
+  if (data.position !== void 0) user.position = data.position;
+  if (data.phone !== void 0) user.phone = data.phone;
+  if (data.city !== void 0) user.city = data.city;
+  if (data.sex !== void 0) user.sex = data.sex;
+  if (data.notificationLanguage !== void 0) {
+    user.notificationLanguage = data.notificationLanguage;
+  }
+  if (data.headOfDepartmentUserIds !== void 0) {
+    user.headOfDepartmentUserIds = data.headOfDepartmentUserIds;
+  }
+  if (data.dateOfBirth !== void 0) {
+    user.dateOfBirth = data.dateOfBirth ? new Date(data.dateOfBirth) : null;
+  }
+  if (data.firstName !== void 0 || data.lastName !== void 0) {
+    const combined = [user.firstName, user.lastName].filter(Boolean).join(" ");
+    if (combined) user.name = combined;
+  }
+  user.updatedAt = /* @__PURE__ */ new Date();
+  return mockPersonalRecord(user);
+}
 function mockCurrentSession(userId) {
+  mockRunAutoClockOutForUser(userId);
   const session = workSessionsByUser[userId];
-  return session?.active ? mockWorkSessionView(session) : null;
+  if (!session?.active) return null;
+  const view = mockWorkSessionView(session);
+  const existing = timeApprovalRequests.find(
+    (r) => r.workSessionId === session.id && r.type === "clock_in"
+  );
+  return {
+    ...view,
+    clockInRequest: existing ? {
+      id: existing.id,
+      requestedClockIn: existing.requestedClockIn,
+      reason: existing.reason,
+      status: existing.status
+    } : null,
+    pendingClockInRequest: existing?.status === "pending" ? {
+      id: existing.id,
+      requestedClockIn: existing.requestedClockIn,
+      reason: existing.reason
+    } : null
+  };
 }
 function mockClockIn(userId, note) {
   const now2 = /* @__PURE__ */ new Date();
   const existing = workSessionsByUser[userId];
   if (existing?.active) {
-    mockClockOut(userId);
+    if (isPastAutoClockOutDeadline(existing.startTime, now2)) {
+      mockRunAutoClockOutForUser(userId, now2);
+    } else {
+      mockClockOut(userId);
+    }
   }
   const sessionId = nextWorkEntryId++;
   workSessionsByUser[userId] = {
@@ -57382,6 +58220,7 @@ function mockClockIn(userId, note) {
     clockIn: now2,
     clockOut: null,
     duration: null,
+    durationSeconds: null,
     note: note || "Clocked in",
     source: "web",
     createdAt: now2,
@@ -57390,38 +58229,109 @@ function mockClockIn(userId, note) {
   userWorkEntries.unshift(entry);
   return { entry, session: mockWorkSessionView(workSessionsByUser[userId]) };
 }
-function mockClockOut(userId, note) {
+function mockClockOut(userId, input) {
   const now2 = /* @__PURE__ */ new Date();
+  const clockOutTime = input?.clockOut ? new Date(input.clockOut) : now2;
+  const clockInTime = input?.clockIn ? new Date(input.clockIn) : void 0;
+  if (Number.isNaN(clockOutTime.getTime())) {
+    throw new Error("Invalid clock out time");
+  }
+  if (clockInTime && Number.isNaN(clockInTime.getTime())) {
+    throw new Error("Invalid clock in time");
+  }
+  if (clockOutTime.getTime() > now2.getTime()) {
+    throw new Error("Clock out time cannot be in the future");
+  }
   const session = workSessionsByUser[userId];
   const openEntry = userWorkEntries.find(
     (e) => e.userId === userId && !e.clockOut && e.taskId == null
   );
-  let duration3 = 0;
+  const effectiveClockIn = clockInTime ?? openEntry?.clockIn ?? session?.startTime;
+  if (!effectiveClockIn) {
+    throw new Error("No active clock-in session found");
+  }
+  if (clockOutTime.getTime() <= effectiveClockIn.getTime()) {
+    throw new Error("Clock out time must be after clock in time");
+  }
+  let durationSeconds = 0;
   if (session?.active) {
-    const { workElapsedSeconds } = workSessionTiming(session);
-    duration3 = Math.max(1, Math.floor(workElapsedSeconds / 60));
+    if (session.paused) {
+      const openBreak = (workBreaksByUser[userId] ?? []).find(
+        (b) => b.workSessionId === session.id && !b.endTime
+      );
+      if (openBreak) {
+        openBreak.endTime = clockOutTime;
+        openBreak.updatedAt = now2;
+      }
+    }
+    if (clockInTime || input?.clockOut) {
+      const breaks = mockFindBreaksOverlappingWindow(
+        userId,
+        effectiveClockIn,
+        clockOutTime
+      );
+      durationSeconds = computeAttendanceWorkSeconds(
+        effectiveClockIn,
+        clockOutTime,
+        breaks,
+        now2
+      );
+    } else {
+      const { workElapsedSeconds } = workSessionTiming(session);
+      durationSeconds = Math.max(0, workElapsedSeconds);
+    }
     session.active = false;
-    session.endTime = now2;
+    session.endTime = clockOutTime;
     session.paused = false;
     session.workSegmentStartedAt = null;
     session.breakStartedAt = null;
+    if (clockInTime) session.startTime = clockInTime;
   }
   if (openEntry) {
-    if (!duration3) {
-      duration3 = Math.max(
-        1,
-        Math.floor((now2.getTime() - openEntry.clockIn.getTime()) / 6e4)
+    if (clockInTime) openEntry.clockIn = clockInTime;
+    if (!durationSeconds) {
+      const breaks = mockFindBreaksOverlappingWindow(
+        userId,
+        openEntry.clockIn,
+        clockOutTime
+      );
+      durationSeconds = computeAttendanceWorkSeconds(
+        openEntry.clockIn,
+        clockOutTime,
+        breaks,
+        now2
       );
     }
-    openEntry.clockOut = now2;
-    openEntry.duration = duration3;
+    openEntry.clockOut = clockOutTime;
+    openEntry.durationSeconds = durationSeconds;
+    openEntry.duration = Math.floor(durationSeconds / 60);
     openEntry.updatedAt = now2;
-    if (note) openEntry.note = `${openEntry.note || ""} - ${note}`.trim();
+    if (input?.note) openEntry.note = `${openEntry.note || ""} - ${input.note}`.trim();
   }
   return {
-    duration: duration3,
+    durationSeconds,
+    duration: Math.floor(durationSeconds / 60),
     entry: openEntry ? { ...openEntry } : null
   };
+}
+function mockRunAutoClockOutForUser(userId, now2 = /* @__PURE__ */ new Date()) {
+  const session = workSessionsByUser[userId];
+  if (!session?.active) return null;
+  if (!isPastAutoClockOutDeadline(session.startTime, now2)) return null;
+  const deadline = getAutoClockOutDeadline(session.startTime);
+  return mockClockOut(userId, {
+    clockOut: deadline.toISOString(),
+    note: "Auto clock-out at 10:00 PM"
+  });
+}
+function mockRunAutoClockOutJob(now2 = /* @__PURE__ */ new Date()) {
+  const results = [];
+  for (const session of Object.values(workSessionsByUser)) {
+    if (!session.active) continue;
+    const result = mockRunAutoClockOutForUser(session.userId, now2);
+    if (result) results.push(result);
+  }
+  return results;
 }
 function mockPauseWorkSession(userId) {
   const session = workSessionsByUser[userId];
@@ -57431,9 +58341,26 @@ function mockPauseWorkSession(userId) {
   session.accumulatedWorkSeconds += Math.floor(
     (Date.now() - session.workSegmentStartedAt.getTime()) / 1e3
   );
+  const breakStart = /* @__PURE__ */ new Date();
   session.workSegmentStartedAt = null;
-  session.breakStartedAt = /* @__PURE__ */ new Date();
+  session.breakStartedAt = breakStart;
   session.paused = true;
+  const openEntry = userWorkEntries.find(
+    (e) => e.userId === userId && !e.clockOut && e.taskId == null
+  );
+  const list = workBreaksByUser[userId] ?? (workBreaksByUser[userId] = []);
+  list.push({
+    id: nextWorkBreakId++,
+    userId,
+    workSessionId: session.id,
+    timeEntryId: openEntry?.id ?? null,
+    startTime: breakStart,
+    endTime: null,
+    reason: null,
+    manuallyEdited: false,
+    createdAt: breakStart,
+    updatedAt: breakStart
+  });
   return mockWorkSessionView(session);
 }
 function mockResumeWorkSession(userId) {
@@ -57441,9 +58368,17 @@ function mockResumeWorkSession(userId) {
   if (!session?.active || !session.paused) {
     throw new Error("Work session is not paused");
   }
-  session.workSegmentStartedAt = /* @__PURE__ */ new Date();
+  const resumeTime = /* @__PURE__ */ new Date();
+  session.workSegmentStartedAt = resumeTime;
   session.breakStartedAt = null;
   session.paused = false;
+  const openBreak = (workBreaksByUser[userId] ?? []).find(
+    (b) => b.workSessionId === session.id && !b.endTime
+  );
+  if (openBreak) {
+    openBreak.endTime = resumeTime;
+    openBreak.updatedAt = resumeTime;
+  }
   return mockWorkSessionView(session);
 }
 function mockTimeEntryList(userId, opts) {
@@ -57459,33 +58394,367 @@ function mockTimeEntryList(userId, opts) {
   };
 }
 function mockTimeStats(userId, period = "week") {
-  const start = periodStart(period);
+  const now2 = /* @__PURE__ */ new Date();
+  const { start, end } = periodClockInBounds(period, now2);
   const entries = allUserTimeEntries(userId).filter(
-    (e) => e.clockOut && e.clockIn >= start && e.duration != null
+    (e) => e.taskId == null && e.clockOut && e.clockIn >= start && e.clockIn <= end
   );
-  const totalMinutes = entries.reduce((sum, e) => sum + (e.duration ?? 0), 0);
-  const dailyMap = /* @__PURE__ */ new Map();
+  const dailyMapSeconds = /* @__PURE__ */ new Map();
   for (const e of entries) {
     const date5 = localDateKey(e.clockIn);
-    dailyMap.set(date5, (dailyMap.get(date5) ?? 0) + (e.duration ?? 0));
+    dailyMapSeconds.set(date5, (dailyMapSeconds.get(date5) ?? 0) + attendanceEntrySeconds(e));
   }
-  const summary = buildTimeStatsSummary(totalMinutes, dailyMap, period);
+  const session = workSessionsByUser[userId];
+  let activeSession = null;
+  if (session?.active && session.startTime >= start && session.startTime <= end) {
+    const sessionDate = localDateKey(session.startTime);
+    const workSeconds = computeSessionWorkSeconds({
+      ...session,
+      startTime: session.startTime
+    }, now2);
+    dailyMapSeconds.set(
+      sessionDate,
+      (dailyMapSeconds.get(sessionDate) ?? 0) + workSeconds
+    );
+    activeSession = { date: sessionDate, workSeconds };
+  }
+  const totalSeconds = Array.from(dailyMapSeconds.values()).reduce((sum, s) => sum + s, 0);
+  const dailyMapMinutes = new Map(
+    Array.from(dailyMapSeconds.entries()).map(([date5, seconds]) => [date5, seconds / 60])
+  );
+  const summary = buildTimeStatsSummary(totalSeconds / 60, dailyMapMinutes, period);
   return {
     ...summary,
+    totalSeconds,
+    entriesCount: entries.length,
+    activeSession
+  };
+}
+function mockDayEntriesForUser(userId, dateStr, now2 = /* @__PURE__ */ new Date()) {
+  const { start, end } = dayBounds(dateStr);
+  const completed = userWorkEntries.filter(
+    (e) => e.userId === userId && e.taskId == null && e.clockIn >= start && e.clockIn <= end
+  );
+  const openAttendance = userWorkEntries.find(
+    (e) => e.userId === userId && !e.clockOut && e.taskId == null && e.clockIn >= start && e.clockIn <= end
+  );
+  const entries = [...completed];
+  if (openAttendance && !entries.some((e) => e.id === openAttendance.id)) {
+    entries.push(openAttendance);
+  }
+  entries.sort((a, b) => a.clockIn.getTime() - b.clockIn.getTime());
+  let attendanceLiveSeconds2 = 0;
+  const session = workSessionsByUser[userId];
+  if (session?.active && localDateKey(session.startTime) === dateStr) {
+    attendanceLiveSeconds2 = computeSessionWorkSeconds(
+      { ...session, startTime: session.startTime },
+      now2
+    );
+  } else if (openAttendance) {
+    attendanceLiveSeconds2 = Math.max(
+      0,
+      Math.floor((now2.getTime() - openAttendance.clockIn.getTime()) / 1e3)
+    );
+  }
+  const enrichedEntries = entries.map((entry) => {
+    let durationSeconds;
+    if (entry.clockOut) {
+      const entryBreaks = mockFindBreaksOverlappingWindow(
+        userId,
+        entry.clockIn,
+        entry.clockOut
+      );
+      durationSeconds = resolveAttendanceDisplaySeconds(entry, entryBreaks, now2);
+    } else {
+      durationSeconds = displayAttendanceDurationSeconds(entry, attendanceLiveSeconds2);
+    }
+    return {
+      id: entry.id,
+      clockIn: entry.clockIn,
+      clockOut: entry.clockOut,
+      durationSeconds,
+      duration: durationSeconds != null ? Math.floor(durationSeconds / 60) : null,
+      note: entry.note
+    };
+  });
+  const totalSeconds = enrichedEntries.reduce(
+    (sum, entry) => sum + (entry.durationSeconds ?? 0),
+    0
+  );
+  return {
+    entries: enrichedEntries,
+    totalMinutes: totalSeconds / 60,
+    totalSeconds,
+    totalHours: roundHours(totalSeconds / 3600),
     entriesCount: entries.length
   };
 }
-function mockTeamHours() {
+function displayAttendanceDurationSeconds(entry, attendanceLiveSeconds2) {
+  if (entry.clockOut) return attendanceEntrySeconds(entry);
+  if (!entry.clockOut && attendanceLiveSeconds2 > 0) {
+    return attendanceLiveSeconds2;
+  }
+  return null;
+}
+function mockFindBreaksOverlappingWindow(userId, windowStart, windowEnd) {
+  return (workBreaksByUser[userId] ?? []).filter(
+    (b) => b.startTime.getTime() < windowEnd.getTime() && (b.endTime && b.endTime.getTime() > windowStart.getTime() || !b.endTime)
+  );
+}
+function mockGetBreaksForWindow(userId, windowStart, windowEnd) {
+  const breaks = mockFindBreaksOverlappingWindow(userId, windowStart, windowEnd);
+  const pendingByBreakId = new Map(
+    timeApprovalRequests.filter(
+      (r) => r.userId === userId && r.type === "break" && r.status === "pending" && r.workBreakId
+    ).map((r) => [r.workBreakId, r])
+  );
+  return {
+    breaks: breaks.sort((a, b) => a.startTime.getTime() - b.startTime.getTime()).map((b) => {
+      const pending = pendingByBreakId.get(b.id);
+      return {
+        ...b,
+        pendingEdit: pending ? {
+          id: pending.id,
+          requestedBreakStart: pending.requestedBreakStart,
+          requestedBreakEnd: pending.requestedBreakEnd,
+          reason: pending.reason
+        } : null
+      };
+    })
+  };
+}
+function mockRequestBreakEdit(actor, input) {
+  const list = workBreaksByUser[actor.id] ?? [];
+  const existing = list.find((b) => b.id === input.id);
+  if (!existing) throw new Error("Break not found");
+  const startTime = new Date(input.startTime);
+  const endTime = input.endTime ? new Date(input.endTime) : null;
+  if (endTime && endTime <= startTime) {
+    throw new Error("Break end must be after break start");
+  }
+  if (actor.role === "admin") {
+    existing.startTime = startTime;
+    existing.endTime = endTime;
+    existing.reason = input.reason.trim();
+    existing.manuallyEdited = true;
+    existing.updatedAt = /* @__PURE__ */ new Date();
+    return { ...existing, requiresApproval: false };
+  }
+  const existingPending = timeApprovalRequests.find(
+    (r) => r.workBreakId === input.id && r.type === "break" && r.status === "pending"
+  );
+  if (existingPending) throw new Error("A break edit request is already pending approval");
+  const now2 = /* @__PURE__ */ new Date();
+  const request = {
+    id: nextApprovalId++,
+    userId: actor.id,
+    type: "break",
+    status: "pending",
+    reason: input.reason.trim(),
+    workSessionId: existing.workSessionId,
+    timeEntryId: existing.timeEntryId,
+    workBreakId: existing.id,
+    originalClockIn: null,
+    originalBreakStart: existing.startTime,
+    originalBreakEnd: existing.endTime,
+    requestedClockIn: null,
+    requestedBreakStart: startTime,
+    requestedBreakEnd: endTime,
+    reviewedBy: null,
+    reviewedAt: null,
+    reviewNote: null,
+    createdAt: now2,
+    updatedAt: now2
+  };
+  timeApprovalRequests.unshift(request);
+  const actorName = actor.name || actor.email || "An employee";
+  mockNotifyAdmins(
+    actor,
+    "Break edit needs approval",
+    `${actorName} requested a break time change: ${input.reason.trim()}`,
+    request.id
+  );
+  return { ...request, requiresApproval: true };
+}
+function mockUpdateAttendanceEntry(actor, input) {
+  const entry = userWorkEntries.find(
+    (e) => e.id === input.id && e.taskId == null
+  );
+  if (!entry) throw new Error("Attendance entry not found");
+  if (entry.userId !== actor.id && actor.role !== "admin") {
+    throw new Error("Not allowed to edit this attendance entry");
+  }
+  if (!entry.clockOut) {
+    throw new Error("Cannot edit an active session \u2014 clock out first");
+  }
+  const clockIn = new Date(input.clockIn);
+  const clockOut = new Date(input.clockOut);
+  if (Number.isNaN(clockIn.getTime()) || Number.isNaN(clockOut.getTime())) {
+    throw new Error("Invalid clock in or clock out time");
+  }
+  if (clockOut <= clockIn) {
+    throw new Error("Clock out must be after clock in");
+  }
+  if (clockOut.getTime() > Date.now()) {
+    throw new Error("Clock out time cannot be in the future");
+  }
+  let durationSeconds;
+  if (input.breakMinutes != null) {
+    const spanSeconds = Math.floor((clockOut.getTime() - clockIn.getTime()) / 1e3);
+    const breakSeconds = Math.min(input.breakMinutes * 60, spanSeconds);
+    durationSeconds = Math.max(0, spanSeconds - breakSeconds);
+  } else {
+    durationSeconds = computeAttendanceWorkSeconds(
+      clockIn,
+      clockOut,
+      mockFindBreaksOverlappingWindow(entry.userId, clockIn, clockOut),
+      /* @__PURE__ */ new Date()
+    );
+  }
+  const now2 = /* @__PURE__ */ new Date();
+  const originalClockIn = entry.clockIn;
+  entry.clockIn = clockIn;
+  entry.clockOut = clockOut;
+  entry.durationSeconds = durationSeconds;
+  entry.duration = Math.floor(durationSeconds / 60);
+  entry.note = entry.note ? `${entry.note} \u2014 ${input.reason.trim()}` : input.reason.trim();
+  entry.updatedAt = now2;
+  const session = Object.values(workSessionsByUser).find(
+    (s) => s.userId === entry.userId && !s.active && s.startTime.getTime() === originalClockIn.getTime()
+  );
+  if (session) {
+    session.startTime = clockIn;
+    session.endTime = clockOut;
+  }
+  return { ...entry };
+}
+function mockRequestManualClockIn(actor, input) {
+  const session = workSessionsByUser[actor.id];
+  if (!session?.active) throw new Error("You must be clocked in to request a manual clock-in time");
+  const openEntry = userWorkEntries.find(
+    (e) => e.userId === actor.id && !e.clockOut && e.taskId == null
+  );
+  const actualClockIn = openEntry?.clockIn ?? session.startTime;
+  const requestedClockIn = new Date(input.requestedClockIn);
+  if (requestedClockIn >= actualClockIn) {
+    throw new Error("Manual clock-in time must be earlier than your actual clock-in time");
+  }
+  if (localDateKey(requestedClockIn) !== localDateKey(actualClockIn)) {
+    throw new Error("Manual clock-in must be on the same day as your session");
+  }
+  const existingRequest = timeApprovalRequests.find(
+    (r) => r.workSessionId === session.id && r.type === "clock_in"
+  );
+  if (existingRequest) {
+    throw new Error("You have already submitted a manual clock-in request for this session");
+  }
+  const now2 = /* @__PURE__ */ new Date();
+  const request = {
+    id: nextApprovalId++,
+    userId: actor.id,
+    type: "clock_in",
+    status: "pending",
+    reason: input.reason.trim(),
+    workSessionId: session.id,
+    timeEntryId: openEntry?.id ?? null,
+    workBreakId: null,
+    originalClockIn: actualClockIn,
+    originalBreakStart: null,
+    originalBreakEnd: null,
+    requestedClockIn,
+    requestedBreakStart: null,
+    requestedBreakEnd: null,
+    reviewedBy: null,
+    reviewedAt: null,
+    reviewNote: null,
+    createdAt: now2,
+    updatedAt: now2
+  };
+  timeApprovalRequests.unshift(request);
+  const actorName = actor.name || actor.email || "An employee";
+  const requestedLabel = requestedClockIn.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit"
+  });
+  const actualLabel = actualClockIn.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit"
+  });
+  mockNotifyAdmins(
+    actor,
+    "Manual clock-in needs approval",
+    `${actorName} requests clock-in at ${requestedLabel} instead of ${actualLabel}: ${input.reason.trim()}`,
+    request.id
+  );
+  return { ...request, requiresApproval: true };
+}
+function mockListPendingApprovals() {
+  return {
+    requests: timeApprovalRequests.filter((r) => r.status === "pending").map((r) => ({
+      ...r,
+      user: userById(r.userId)
+    }))
+  };
+}
+function mockReviewTimeApproval(actor, input) {
+  const request = timeApprovalRequests.find((r) => r.id === input.id);
+  if (!request) throw new Error("Approval request not found");
+  if (request.status !== "pending") throw new Error("This request has already been reviewed");
+  const approved = input.action === "approve";
+  if (approved) {
+    if (request.type === "clock_in") {
+      const session = request.workSessionId ? workSessionsByUser[request.userId] : void 0;
+      if (!session) throw new Error("Work session not found");
+      const entry = request.timeEntryId ? userWorkEntries.find((e) => e.id === request.timeEntryId) : void 0;
+      mockApplyClockInApproval(request, session, entry);
+    } else if (request.type === "break") {
+      const list = workBreaksByUser[request.userId] ?? [];
+      const breakItem = list.find((b) => b.id === request.workBreakId);
+      if (!breakItem || !request.requestedBreakStart) throw new Error("Break not found");
+      breakItem.startTime = request.requestedBreakStart;
+      breakItem.endTime = request.requestedBreakEnd;
+      breakItem.reason = request.reason;
+      breakItem.manuallyEdited = true;
+      breakItem.updatedAt = /* @__PURE__ */ new Date();
+      const session = workSessionsByUser[request.userId];
+      if (session?.active && session.paused && session.breakStartedAt && !breakItem.endTime) {
+        session.breakStartedAt = request.requestedBreakStart;
+      }
+    }
+  }
+  request.status = approved ? "approved" : "rejected";
+  request.reviewedBy = actor.id;
+  request.reviewedAt = /* @__PURE__ */ new Date();
+  request.reviewNote = input.reviewNote?.trim() || null;
+  request.updatedAt = /* @__PURE__ */ new Date();
+  const employee = userById(request.userId);
+  notifications.unshift({
+    id: Date.now() + Math.random(),
+    userId: request.userId,
+    actorId: actor.id,
+    taskId: null,
+    type: approved ? "time_approved" : "time_rejected",
+    title: approved ? "Time adjustment approved" : "Time adjustment rejected",
+    message: approved ? `Your ${request.type === "clock_in" ? "manual clock-in" : "break edit"} request was approved.` : `Your ${request.type === "clock_in" ? "manual clock-in" : "break edit"} request was rejected.${input.reviewNote ? ` Note: ${input.reviewNote.trim()}` : ""}`,
+    read: false,
+    createdAt: /* @__PURE__ */ new Date()
+  });
+  return { success: true, approved, employeeName: employee?.name || "Employee" };
+}
+function mockGetDayHours(userId, dateStr) {
+  return mockDayEntriesForUser(userId, dateStr);
+}
+function mockTeamHours(input) {
+  const dateStr = input?.date ?? localDateKey(/* @__PURE__ */ new Date());
   return users.map((user) => {
-    const entries = allUserTimeEntries(user.id).filter((e) => e.clockOut);
-    const totalMinutes = entries.reduce((sum, e) => sum + (e.duration ?? 0), 0);
+    const day2 = mockDayEntriesForUser(user.id, dateStr);
     return {
       userId: user.id,
       name: user.name,
       avatar: user.avatar,
       role: user.role,
-      totalHours: Math.round(totalMinutes / 60 * 10) / 10,
-      entriesCount: entries.length
+      totalHours: day2.totalHours,
+      entriesCount: day2.entriesCount
     };
   });
 }
@@ -57563,6 +58832,51 @@ async function verifyPassword(password, storedHash) {
   return timingSafeEqual(expected, derived);
 }
 
+// api/queries/personal-info.ts
+function splitDisplayName(name) {
+  const trimmed = name?.trim() ?? "";
+  if (!trimmed) return { firstName: "", lastName: "" };
+  const parts = trimmed.split(/\s+/);
+  if (parts.length === 1) return { firstName: parts[0], lastName: "" };
+  return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
+}
+function buildDisplayName(firstName, lastName, fallback) {
+  const combined = [firstName?.trim(), lastName?.trim()].filter(Boolean).join(" ");
+  return combined || fallback?.trim() || null;
+}
+function personalFieldsFromUser(user) {
+  const split = splitDisplayName(user.name);
+  return {
+    firstName: user.firstName ?? split.firstName ?? null,
+    lastName: user.lastName ?? split.lastName ?? null,
+    secondName: user.secondName ?? null,
+    email: user.email ?? null,
+    position: user.position ?? null,
+    department: user.department ?? null,
+    phone: user.phone ?? null,
+    city: user.city ?? null,
+    dateOfBirth: user.dateOfBirth ?? null,
+    sex: user.sex ?? null,
+    notificationLanguage: user.notificationLanguage ?? null,
+    headOfDepartmentUserIds: user.headOfDepartmentUserIds ?? []
+  };
+}
+async function resolveHeadsOfDepartment(userIds) {
+  const unique = [...new Set(userIds.filter((id) => id > 0))];
+  const heads = await Promise.all(
+    unique.map(async (id) => {
+      const user = await findById(Collections.users, id);
+      return user ? { id: user.id, name: user.name } : null;
+    })
+  );
+  return heads.filter((h) => h != null);
+}
+async function toPersonalInfoView(user) {
+  const record2 = personalFieldsFromUser(user);
+  const headsOfDepartment = await resolveHeadsOfDepartment(record2.headOfDepartmentUserIds);
+  return { ...record2, headsOfDepartment };
+}
+
 // api/auth-router.ts
 var profileUpdateSchema = external_exports.object({
   name: external_exports.string().min(1).max(255).optional(),
@@ -57572,8 +58886,67 @@ var profileUpdateSchema = external_exports.object({
   phone: external_exports.string().max(20).nullable().optional(),
   avatar: external_exports.string().max(3e6).nullable().optional()
 });
+var personalInfoUpdateSchema = external_exports.object({
+  firstName: external_exports.string().max(100).nullable().optional(),
+  lastName: external_exports.string().max(100).nullable().optional(),
+  secondName: external_exports.string().max(100).nullable().optional(),
+  email: external_exports.string().email().max(320).optional(),
+  department: external_exports.string().max(200).nullable().optional(),
+  position: external_exports.string().max(100).nullable().optional(),
+  phone: external_exports.string().max(30).nullable().optional(),
+  city: external_exports.string().max(100).nullable().optional(),
+  dateOfBirth: external_exports.string().nullable().optional(),
+  sex: external_exports.enum(["male", "female", "other", "prefer_not_to_say"]).nullable().optional(),
+  notificationLanguage: external_exports.string().max(20).nullable().optional(),
+  headOfDepartmentUserIds: external_exports.array(external_exports.number()).optional()
+});
 var authRouter = createRouter({
   me: publicQuery.query(({ ctx }) => ctx.user ?? null),
+  getPersonalInfo: authedQuery.query(async ({ ctx }) => {
+    if (isAuthDisabled()) {
+      return mockGetPersonalInfo(ctx.user.id);
+    }
+    await ensureSchema();
+    return toPersonalInfoView(ctx.user);
+  }),
+  updatePersonalInfo: authedQuery.input(personalInfoUpdateSchema).mutation(async ({ ctx, input }) => {
+    if (isAuthDisabled()) {
+      return mockUpdatePersonalInfo(ctx.user.id, input);
+    }
+    await ensureSchema();
+    const patch = {
+      updatedAt: /* @__PURE__ */ new Date()
+    };
+    if (input.firstName !== void 0) patch.firstName = input.firstName;
+    if (input.lastName !== void 0) patch.lastName = input.lastName;
+    if (input.secondName !== void 0) patch.secondName = input.secondName;
+    if (input.email !== void 0) patch.email = input.email;
+    if (input.department !== void 0) patch.department = input.department;
+    if (input.position !== void 0) patch.position = input.position;
+    if (input.phone !== void 0) patch.phone = input.phone;
+    if (input.city !== void 0) patch.city = input.city;
+    if (input.sex !== void 0) patch.sex = input.sex;
+    if (input.notificationLanguage !== void 0) {
+      patch.notificationLanguage = input.notificationLanguage;
+    }
+    if (input.headOfDepartmentUserIds !== void 0) {
+      patch.headOfDepartmentUserIds = input.headOfDepartmentUserIds;
+    }
+    if (input.dateOfBirth !== void 0) {
+      patch.dateOfBirth = input.dateOfBirth ? new Date(input.dateOfBirth) : null;
+    }
+    const nextFirst = input.firstName !== void 0 ? input.firstName : ctx.user.firstName;
+    const nextLast = input.lastName !== void 0 ? input.lastName : ctx.user.lastName;
+    if (input.firstName !== void 0 || input.lastName !== void 0) {
+      patch.name = buildDisplayName(nextFirst, nextLast, ctx.user.name);
+    }
+    const updated = await updateById(Collections.users, ctx.user.id, patch);
+    if (!updated) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+    }
+    await syncEmployeeFromUser(updated);
+    return toPersonalInfoView(omitPasswordHash(updated));
+  }),
   updateProfile: authedQuery.input(profileUpdateSchema).mutation(async ({ ctx, input }) => {
     if (isAuthDisabled()) {
       return mockUpdateUserProfile(ctx.user.id, input);
@@ -57647,15 +59020,19 @@ function escapeRegex2(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 var userRouter = createRouter({
-  listForPicker: authedQuery.input(external_exports.object({ limit: external_exports.number().default(100) }).optional()).query(async ({ input }) => {
+  listForPicker: authedQuery.input(external_exports.object({ limit: external_exports.number().default(500) }).optional()).query(async ({ input }) => {
     if (isAuthDisabled() || !hasMongoConfigured()) return mockUserList();
     await ensureSchema();
-    const limit = input?.limit ?? 100;
+    const limit = input?.limit ?? 500;
+    const filter = { status: "active" };
     const col = await getCollection(Collections.users);
-    const allUsers = await col.find({ status: "active" }).sort({ createdAt: -1 }).limit(limit).toArray();
+    const [allUsers, total] = await Promise.all([
+      col.find(filter).sort({ name: 1, id: 1 }).limit(limit).toArray(),
+      countDocs(Collections.users, filter)
+    ]);
     return {
       users: allUsers.map(omitPasswordHash),
-      total: allUsers.length
+      total
     };
   }),
   list: adminQuery.input(
@@ -57768,6 +59145,49 @@ var userRouter = createRouter({
   })
 });
 
+// api/queries/project-members.ts
+async function findProjectMember(projectId, userId) {
+  const col = await getCollection(Collections.projectMembers);
+  return col.findOne({ projectId, userId });
+}
+async function isProjectMember(projectId, userId, projectCreatedBy) {
+  if (projectCreatedBy != null && projectCreatedBy === userId) {
+    return true;
+  }
+  const member = await findProjectMember(projectId, userId);
+  return Boolean(member);
+}
+async function joinProject(projectId, userId) {
+  const existing = await findProjectMember(projectId, userId);
+  if (existing) return existing;
+  const now2 = /* @__PURE__ */ new Date();
+  return insertDoc(Collections.projectMembers, {
+    projectId,
+    userId,
+    joinedAt: now2
+  });
+}
+async function getProjectMemberUserIds(projectId) {
+  const col = await getCollection(Collections.projectMembers);
+  const members = await col.find({ projectId }).toArray();
+  return members.map((m) => m.userId);
+}
+async function deleteProjectMembers(projectId) {
+  const col = await getCollection(Collections.projectMembers);
+  await col.deleteMany({ projectId });
+}
+function canViewProjectTasks(user, projectCreatedBy, joined) {
+  if (user.role === "admin" || user.role === "manager") return true;
+  if (user.role === "employee") {
+    if (projectCreatedBy != null && projectCreatedBy === user.id) return true;
+    return joined;
+  }
+  if (user.permissions?.includes("projects.manage")) return true;
+  if (user.permissions?.includes("tasks.view_all")) return true;
+  if (projectCreatedBy != null && projectCreatedBy === user.id) return true;
+  return joined;
+}
+
 // api/lib/notify-leads.ts
 async function notifyLeads({
   actor,
@@ -57854,7 +59274,7 @@ var projectRouter = createRouter({
       if (project.createdBy) memberIds.add(project.createdBy);
     }
     const userCol = await getCollection(Collections.users);
-    const memberUsers = memberIds.size > 0 ? await userCol.find({ id: { $in: [...memberIds] } }).project({ id: 1, name: 1, avatar: 1 }).toArray() : [];
+    const memberUsers = memberIds.size > 0 ? await userCol.find({ id: { $in: [...memberIds] } }).project({ id: 1, name: 1, avatar: 1, department: 1, position: 1 }).toArray() : [];
     const userMap = new Map(memberUsers.map((u) => [u.id, u]));
     return allProjects.map((project) => {
       const projectTasks = tasksByProject.get(project.id) ?? [];
@@ -57872,34 +59292,42 @@ var projectRouter = createRouter({
         if (t2.createdBy) projectMemberIds.add(t2.createdBy);
       }
       const members = [...projectMemberIds].map((id) => userMap.get(id)).filter((u) => Boolean(u)).slice(0, 6);
+      const creatorUser = project.createdBy ? userMap.get(project.createdBy) : null;
       return {
         ...project,
         taskCount,
         completedCount,
-        creator: project.createdBy ? userMap.get(project.createdBy) ?? null : null,
+        creator: creatorUser ? {
+          id: creatorUser.id,
+          name: creatorUser.name,
+          avatar: creatorUser.avatar,
+          department: creatorUser.department,
+          position: creatorUser.position
+        } : null,
         performance: projectPerformancePercent(taskCount, completedCount),
         lastActiveAt: (lastTaskUpdate ?? project.updatedAt).toISOString(),
         members,
-        userRole: resolveProjectRole(project.createdBy, ctx.user.id, ctx.user.role),
         privacyType: "Public"
       };
     });
   }),
-  getById: authedQuery.input(external_exports.object({ id: external_exports.number() })).query(async ({ input }) => {
-    if (useMock()) return mockProjectById(input.id);
+  getById: authedQuery.input(external_exports.object({ id: external_exports.number() })).query(async ({ input, ctx }) => {
+    if (useMock()) return mockProjectById(input.id, ctx.user.id);
     await ensureSchema();
     const project = await findById(Collections.projects, input.id);
     if (!project) return null;
+    const joined = await isProjectMember(project.id, ctx.user.id, project.createdBy);
+    const canViewTasks = canViewProjectTasks(ctx.user, project.createdBy, joined);
     const taskCol = await getCollection(Collections.tasks);
-    const projectTasks = await taskCol.find({ projectId: project.id }).toArray();
-    const [total, todo, inProgress, review, done] = await Promise.all([
-      countDocs(Collections.tasks, { projectId: project.id }),
-      countDocs(Collections.tasks, { projectId: project.id, status: "todo" }),
-      countDocs(Collections.tasks, { projectId: project.id, status: "in_progress" }),
-      countDocs(Collections.tasks, { projectId: project.id, status: "review" }),
-      countDocs(Collections.tasks, { projectId: project.id, status: "done" })
-    ]);
-    const memberIds = /* @__PURE__ */ new Set();
+    const projectTasks = canViewTasks ? await taskCol.find({ projectId: project.id }).toArray() : [];
+    const total = canViewTasks ? projectTasks.length : 0;
+    const todo = canViewTasks ? projectTasks.filter((t2) => t2.status === "todo").length : 0;
+    const inProgress = canViewTasks ? projectTasks.filter((t2) => t2.status === "in_progress").length : 0;
+    const review = canViewTasks ? projectTasks.filter((t2) => t2.status === "review").length : 0;
+    const done = canViewTasks ? projectTasks.filter((t2) => t2.status === "done").length : 0;
+    const joinedMemberIds = await getProjectMemberUserIds(project.id);
+    const memberIds = new Set(joinedMemberIds);
+    if (project.createdBy) memberIds.add(project.createdBy);
     for (const t2 of projectTasks) {
       if (t2.assigneeId) memberIds.add(t2.assigneeId);
       if (t2.createdBy) memberIds.add(t2.createdBy);
@@ -57916,13 +59344,33 @@ var projectRouter = createRouter({
       stats: { total, todo, inProgress, review, done },
       hoursTracked: Math.round(hoursTracked * 10) / 10,
       memberCount: memberIds.size || 1,
-      dueDate: dueDates[0] ?? null
+      dueDate: dueDates[0] ?? null,
+      isMember: joined,
+      canViewTasks
     };
   }),
-  create: managerQuery.input(external_exports.object({
+  join: authedQuery.input(external_exports.object({ projectId: external_exports.number() })).mutation(async ({ input, ctx }) => {
+    if (useMock()) return mockJoinProject(input.projectId, ctx.user.id);
+    assertPermission(ctx.user, "projects.view");
+    await ensureSchema();
+    const project = await findById(Collections.projects, input.projectId);
+    if (!project) {
+      throw new Error("Project not found");
+    }
+    await joinProject(input.projectId, ctx.user.id);
+    const joined = await isProjectMember(input.projectId, ctx.user.id, project.createdBy);
+    return {
+      success: true,
+      isMember: joined,
+      canViewTasks: canViewProjectTasks(ctx.user, project.createdBy, joined)
+    };
+  }),
+  create: authedQuery.input(external_exports.object({
     name: external_exports.string().min(1),
     description: external_exports.string().optional(),
-    color: external_exports.string().optional()
+    clientName: external_exports.string().max(200).optional(),
+    color: external_exports.string().optional(),
+    icon: external_exports.string().max(50).optional()
   })).mutation(async ({ input, ctx }) => {
     assertPermission(ctx.user, "projects.manage");
     await ensureSchema();
@@ -57930,12 +59378,15 @@ var projectRouter = createRouter({
     const project = await insertDoc(Collections.projects, {
       name: input.name,
       description: input.description ?? null,
+      clientName: input.clientName?.trim() || null,
       status: "active",
       color: input.color ?? null,
+      icon: input.icon ?? null,
       createdBy: ctx.user.id,
       createdAt: now2,
       updatedAt: now2
     });
+    await joinProject(project.id, ctx.user.id);
     const creatorName = ctx.user.name || ctx.user.email || "Someone";
     await notifyLeads({
       actor: ctx.user,
@@ -57946,29 +59397,111 @@ var projectRouter = createRouter({
     });
     return { ...project, creator: ctx.user };
   }),
-  update: managerQuery.input(external_exports.object({
+  update: authedQuery.input(external_exports.object({
     id: external_exports.number(),
     name: external_exports.string().optional(),
     description: external_exports.string().optional(),
+    clientName: external_exports.string().max(200).nullable().optional(),
     status: external_exports.enum(["active", "archived", "completed"]).optional(),
-    color: external_exports.string().optional()
-  })).mutation(async ({ input }) => {
+    color: external_exports.string().optional(),
+    icon: external_exports.string().max(50).optional()
+  })).mutation(async ({ input, ctx }) => {
+    assertPermission(ctx.user, "projects.manage");
     await ensureSchema();
     const { id, ...data } = input;
-    return updateById(Collections.projects, id, {
-      ...data,
-      updatedAt: /* @__PURE__ */ new Date()
-    });
+    const patch = { updatedAt: /* @__PURE__ */ new Date() };
+    if (data.name !== void 0) patch.name = data.name;
+    if (data.description !== void 0) patch.description = data.description ?? null;
+    if (data.clientName !== void 0) patch.clientName = data.clientName?.trim() || null;
+    if (data.status !== void 0) patch.status = data.status;
+    if (data.color !== void 0) patch.color = data.color ?? null;
+    if (data.icon !== void 0) patch.icon = data.icon ?? null;
+    return updateById(Collections.projects, id, patch);
   }),
-  delete: managerQuery.input(external_exports.object({ id: external_exports.number() })).mutation(async ({ input }) => {
+  delete: authedQuery.input(external_exports.object({ id: external_exports.number() })).mutation(async ({ input, ctx }) => {
+    if (useMock()) return mockDeleteProject(input.id);
+    assertPermission(ctx.user, "projects.manage");
     await ensureSchema();
-    await updateById(Collections.projects, input.id, {
-      status: "archived",
-      updatedAt: /* @__PURE__ */ new Date()
-    });
+    const project = await findById(Collections.projects, input.id);
+    if (!project) {
+      throw new Error("Project not found");
+    }
+    const taskCol = await getCollection(Collections.tasks);
+    const projectTasks = await taskCol.find({ projectId: input.id }).toArray();
+    const taskIds = projectTasks.map((t2) => t2.id);
+    if (taskIds.length > 0) {
+      const taskFilter = { taskId: { $in: taskIds } };
+      await Promise.all([
+        getCollection(Collections.taskParticipants).then((c) => c.deleteMany(taskFilter)),
+        getCollection(Collections.subtasks).then((c) => c.deleteMany(taskFilter)),
+        getCollection(Collections.taskActivity).then((c) => c.deleteMany(taskFilter)),
+        getCollection(Collections.taskAttachments).then((c) => c.deleteMany(taskFilter)),
+        getCollection(Collections.taskTagRelations).then((c) => c.deleteMany(taskFilter)),
+        getCollection(Collections.timeEntries).then((c) => c.deleteMany(taskFilter)),
+        getCollection(Collections.notifications).then((c) => c.deleteMany({ taskId: { $in: taskIds } }))
+      ]);
+      await taskCol.deleteMany({ id: { $in: taskIds } });
+    }
+    await getCollection(Collections.notifications).then(
+      (c) => c.deleteMany({ projectId: input.id })
+    );
+    await deleteProjectMembers(input.id);
+    const projectCol = await getCollection(Collections.projects);
+    await projectCol.deleteOne({ id: input.id });
     return { success: true };
   })
 });
+
+// api/lib/notify-task-members.ts
+async function getTaskRecipientIds(taskId) {
+  const task = await findById(Collections.tasks, taskId);
+  if (!task) return { assigneeId: null, participantIds: [] };
+  const participantCol = await getCollection(
+    Collections.taskParticipants
+  );
+  const participants = await participantCol.find({ taskId, role: "participant" }).toArray();
+  return {
+    assigneeId: task.assigneeId,
+    participantIds: participants.map((p) => p.userId)
+  };
+}
+async function notifyTaskMembers({
+  taskId,
+  actor,
+  type,
+  title,
+  message: message2,
+  activityId = null,
+  extraRecipientIds = [],
+  excludeUserIds = [],
+  includeAssignee = true
+}) {
+  const { assigneeId } = await getTaskRecipientIds(taskId);
+  const excluded = /* @__PURE__ */ new Set([actor.id, ...excludeUserIds]);
+  const recipientIds = /* @__PURE__ */ new Set();
+  if (includeAssignee && assigneeId != null) {
+    recipientIds.add(assigneeId);
+  }
+  for (const id of extraRecipientIds) recipientIds.add(id);
+  const recipients = [...recipientIds].filter((id) => !excluded.has(id));
+  if (recipients.length === 0) return;
+  const now2 = /* @__PURE__ */ new Date();
+  await Promise.all(
+    recipients.map(
+      (userId) => insertDoc(Collections.notifications, {
+        userId,
+        actorId: actor.id,
+        type,
+        title,
+        message: message2,
+        taskId,
+        activityId,
+        read: false,
+        createdAt: now2
+      })
+    )
+  );
+}
 
 // api/task-router.ts
 var projectStageSchema = external_exports.enum(
@@ -57976,6 +59509,15 @@ var projectStageSchema = external_exports.enum(
 );
 function useTaskMock() {
   return isAuthDisabled() || !hasMongoConfigured();
+}
+function actorLabel(user) {
+  return user.name || user.email || "Someone";
+}
+function canManageTaskTime(user, task) {
+  return user.role === "admin" || user.role === "manager" || task.createdBy === user.id || task.assigneeId === user.id;
+}
+function canEditTaskTimeEntry(user, task, entry) {
+  return canManageTaskTime(user, task) || entry.userId === user.id;
 }
 function escapeRegex4(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -58001,10 +59543,20 @@ var taskRouter = createRouter({
       page: external_exports.number().default(1),
       limit: external_exports.number().default(50)
     }).optional()
-  ).query(async ({ input }) => {
-    if (useTaskMock()) return mockTaskList(input || void 0);
+  ).query(async ({ input, ctx }) => {
+    if (useTaskMock()) return mockTaskList(input || void 0, ctx.user);
     await ensureSchema();
     const { status, priority, assigneeId, projectId, search, page = 1, limit = 50 } = input || {};
+    if (projectId != null) {
+      const project = await findById(Collections.projects, projectId);
+      if (!project) {
+        return { tasks: [], total: 0 };
+      }
+      const joined = await isProjectMember(projectId, ctx.user.id, project.createdBy);
+      if (!canViewProjectTasks(ctx.user, project.createdBy, joined)) {
+        return { tasks: [], total: 0 };
+      }
+    }
     const skip = (page - 1) * limit;
     const filter = {};
     if (status) filter.status = status;
@@ -58024,10 +59576,19 @@ var taskRouter = createRouter({
     const creatorIds = allTasks.map((t2) => t2.createdBy).filter((id) => id != null);
     const userIds = [.../* @__PURE__ */ new Set([...assigneeIds, ...creatorIds])];
     const userMap = await findUsersByIds(userIds);
+    const projectIds = [
+      ...new Set(
+        allTasks.map((t2) => t2.projectId).filter((id) => id != null)
+      )
+    ];
+    const projectCol = await getCollection(Collections.projects);
+    const projectDocs = projectIds.length > 0 ? await projectCol.find({ id: { $in: projectIds } }).project({ id: 1, name: 1, color: 1 }).toArray() : [];
+    const projectMap = new Map(projectDocs.map((p) => [p.id, p]));
     const tasksWithAssignees = allTasks.map((task) => ({
       ...task,
       assignee: task.assigneeId ? userMap.get(task.assigneeId) ?? null : null,
       creator: task.createdBy ? userMap.get(task.createdBy) ?? null : null,
+      project: task.projectId ? projectMap.get(task.projectId) ?? null : null,
       participantIds: allParticipants.filter((p) => p.taskId === task.id && p.role === "participant").map((p) => p.userId),
       observerIds: allParticipants.filter((p) => p.taskId === task.id && p.role === "observer").map((p) => p.userId)
     }));
@@ -58106,7 +59667,7 @@ var taskRouter = createRouter({
     assigneeId: external_exports.number().optional(),
     projectId: external_exports.number().nullable().optional(),
     dueDate: external_exports.string().optional(),
-    estimatedHours: external_exports.number().optional(),
+    estimatedHours: external_exports.number().nullable().optional(),
     tags: external_exports.array(external_exports.string()).optional(),
     stage: projectStageSchema.optional()
   })).mutation(async ({ input, ctx }) => {
@@ -58143,15 +59704,12 @@ var taskRouter = createRouter({
       createdAt: now2
     });
     if (taskData.assigneeId && taskData.assigneeId !== ctx.user.id) {
-      await insertDoc(Collections.notifications, {
-        userId: taskData.assigneeId,
-        actorId: ctx.user.id,
+      await notifyTaskMembers({
+        taskId: newTask.id,
+        actor: ctx.user,
         type: "task_assigned",
         title: "New task assigned",
-        message: `${ctx.user.name || "Someone"} created "${taskData.title}" and assigned it to you`,
-        taskId: newTask.id,
-        read: false,
-        createdAt: now2
+        message: `${actorLabel(ctx.user)} created "${taskData.title}" and assigned it to you`
       });
     }
     const creatorName = ctx.user.name || ctx.user.email || "Someone";
@@ -58167,7 +59725,6 @@ var taskRouter = createRouter({
   }),
   update: authedQuery.input(external_exports.object({
     id: external_exports.number(),
-    title: external_exports.string().optional(),
     description: external_exports.string().optional(),
     status: external_exports.enum(["todo", "in_progress", "review", "done"]).optional(),
     stage: projectStageSchema.optional(),
@@ -58176,7 +59733,7 @@ var taskRouter = createRouter({
     createdBy: external_exports.number().nullable().optional(),
     projectId: external_exports.number().nullable().optional(),
     dueDate: external_exports.string().nullable().optional(),
-    estimatedHours: external_exports.number().optional(),
+    estimatedHours: external_exports.number().nullable().optional(),
     actualHours: external_exports.number().optional(),
     position: external_exports.number().optional()
   })).mutation(async ({ input, ctx }) => {
@@ -58191,7 +59748,6 @@ var taskRouter = createRouter({
     const oldTask = await findById(Collections.tasks, id);
     if (!oldTask) throw new Error("Task not found");
     const patch = { updatedAt: /* @__PURE__ */ new Date() };
-    if (data.title !== void 0) patch.title = data.title;
     if (data.description !== void 0) patch.description = data.description;
     if (data.status !== void 0) patch.status = data.status;
     if (data.priority !== void 0) patch.priority = data.priority;
@@ -58202,7 +59758,7 @@ var taskRouter = createRouter({
       patch.dueDate = data.dueDate ? new Date(data.dueDate) : null;
     }
     if (data.estimatedHours !== void 0) {
-      patch.estimatedHours = String(data.estimatedHours);
+      patch.estimatedHours = data.estimatedHours != null ? String(data.estimatedHours) : null;
     }
     if (data.actualHours !== void 0) {
       patch.actualHours = String(data.actualHours);
@@ -58221,6 +59777,8 @@ var taskRouter = createRouter({
     const updated = await updateById(Collections.tasks, id, patch);
     if (!updated) throw new Error("Task not found");
     const now2 = /* @__PURE__ */ new Date();
+    const label = actorLabel(ctx.user);
+    const taskTitle = oldTask.title;
     if (data.status && data.status !== oldTask.status) {
       await insertDoc(Collections.taskActivity, {
         taskId: id,
@@ -58230,6 +59788,13 @@ var taskRouter = createRouter({
         newValue: data.status,
         metadata: null,
         createdAt: now2
+      });
+      await notifyTaskMembers({
+        taskId: id,
+        actor: ctx.user,
+        type: "task_updated",
+        title: "Task status changed",
+        message: `${label} changed "${taskTitle}" to ${data.status.replace(/_/g, " ")}`
       });
     }
     if (data.stage && data.stage !== oldTask.stage) {
@@ -58241,6 +59806,42 @@ var taskRouter = createRouter({
         newValue: data.stage,
         metadata: null,
         createdAt: now2
+      });
+      await notifyTaskMembers({
+        taskId: id,
+        actor: ctx.user,
+        type: "task_updated",
+        title: "Task stage changed",
+        message: `${label} moved "${taskTitle}" to ${data.stage}`
+      });
+    }
+    if (data.priority !== void 0 && data.priority !== oldTask.priority) {
+      const formatPriority = (value) => value.charAt(0).toUpperCase() + value.slice(1);
+      const priorityTitle = data.priority === "urgent" ? "Task marked urgent" : "Task priority changed";
+      const priorityMessage = data.priority === "urgent" ? `${label} marked "${taskTitle}" as urgent` : `${label} changed priority on "${taskTitle}" from ${formatPriority(oldTask.priority)} to ${formatPriority(data.priority)}`;
+      await insertDoc(Collections.taskActivity, {
+        taskId: id,
+        userId: ctx.user.id,
+        action: "priority_changed",
+        oldValue: oldTask.priority,
+        newValue: data.priority,
+        metadata: null,
+        createdAt: now2
+      });
+      await notifyTaskMembers({
+        taskId: id,
+        actor: ctx.user,
+        type: "task_updated",
+        title: priorityTitle,
+        message: priorityMessage
+      });
+      await notifyLeads({
+        actor: ctx.user,
+        type: "task_updated",
+        title: priorityTitle,
+        message: priorityMessage,
+        taskId: id,
+        excludeUserIds: oldTask.assigneeId ? [oldTask.assigneeId] : []
       });
     }
     if (data.assigneeId !== void 0 && data.assigneeId !== oldTask.assigneeId) {
@@ -58254,17 +59855,55 @@ var taskRouter = createRouter({
         createdAt: now2
       });
       if (data.assigneeId) {
-        await insertDoc(Collections.notifications, {
-          userId: data.assigneeId,
-          actorId: ctx.user.id,
+        const assignee = await findById(Collections.users, data.assigneeId);
+        await notifyTaskMembers({
+          taskId: id,
+          actor: ctx.user,
           type: "task_assigned",
           title: "Task reassigned",
-          message: `${ctx.user.name || "Someone"} assigned you to ${oldTask.title}`,
+          message: `${label} assigned "${taskTitle}" to ${assignee?.name ?? assignee?.email ?? "someone"}`
+        });
+      } else {
+        await notifyTaskMembers({
           taskId: id,
-          read: false,
-          createdAt: now2
+          actor: ctx.user,
+          type: "task_updated",
+          title: "Task updated",
+          message: `${label} removed the assignee from "${taskTitle}"`
         });
       }
+      if (oldTask.assigneeId != null && oldTask.assigneeId !== data.assigneeId) {
+        await notifyTaskMembers({
+          taskId: id,
+          actor: ctx.user,
+          type: "task_updated",
+          title: "Task reassigned",
+          message: `${label} reassigned "${taskTitle}" to another team member`,
+          extraRecipientIds: [oldTask.assigneeId],
+          includeAssignee: false
+        });
+      }
+      await notifyLeads({
+        actor: ctx.user,
+        type: "task_updated",
+        title: "Task assignee changed",
+        message: `${label} updated assignee on "${taskTitle}"`,
+        taskId: id,
+        excludeUserIds: [
+          ...data.assigneeId ? [data.assigneeId] : [],
+          ...oldTask.assigneeId ? [oldTask.assigneeId] : []
+        ]
+      });
+    }
+    const otherFieldsChanged = data.description !== void 0 && data.description !== oldTask.description || data.dueDate !== void 0 || data.projectId !== void 0 && data.projectId !== oldTask.projectId;
+    if (otherFieldsChanged && !data.status && !data.stage && data.assigneeId === void 0) {
+      await notifyTaskMembers({
+        taskId: id,
+        actor: ctx.user,
+        type: "task_updated",
+        title: "Task updated",
+        message: `${label} updated "${taskTitle}"`
+      });
     }
     return updated;
   }),
@@ -58304,6 +59943,13 @@ var taskRouter = createRouter({
         metadata: null,
         createdAt: /* @__PURE__ */ new Date()
       });
+      await notifyTaskMembers({
+        taskId: input.id,
+        actor: ctx.user,
+        type: "task_updated",
+        title: "Task status changed",
+        message: `${actorLabel(ctx.user)} changed "${oldTask.title}" to ${input.status.replace(/_/g, " ")}`
+      });
     }
     return updated;
   }),
@@ -58332,6 +59978,16 @@ var taskRouter = createRouter({
       newValue: String(input.userId),
       metadata: null,
       createdAt: /* @__PURE__ */ new Date()
+    });
+    const task = await findById(Collections.tasks, input.taskId);
+    await notifyTaskMembers({
+      taskId: input.taskId,
+      actor: ctx.user,
+      type: "task_updated",
+      title: "Added as participant",
+      message: `${actorLabel(ctx.user)} added you as a participant on "${task?.title ?? "a task"}"`,
+      extraRecipientIds: [input.userId],
+      includeAssignee: false
     });
     return { success: true };
   }),
@@ -58374,6 +60030,15 @@ var taskRouter = createRouter({
         metadata: null,
         createdAt: /* @__PURE__ */ new Date()
       });
+      await notifyTaskMembers({
+        taskId: input.taskId,
+        actor: ctx.user,
+        type: "task_updated",
+        title: "Added as observer",
+        message: `${actorLabel(ctx.user)} added you as an observer on "${task.title}"`,
+        extraRecipientIds: [input.userId],
+        includeAssignee: false
+      });
     }
     return { success: true };
   }),
@@ -58403,6 +60068,7 @@ var taskRouter = createRouter({
     if (useTaskMock()) return mockStartTaskTimer(ctx.user.id, input.taskId, ctx.user);
     await ensureSchema();
     const now2 = /* @__PURE__ */ new Date();
+    const task = await findById(Collections.tasks, input.taskId);
     await insertDoc(Collections.timeEntries, {
       userId: ctx.user.id,
       taskId: input.taskId,
@@ -58410,10 +60076,18 @@ var taskRouter = createRouter({
       clockIn: now2,
       clockOut: null,
       duration: null,
+      durationSeconds: null,
       note: "Task timer",
       source: "web",
       createdAt: now2,
       updatedAt: now2
+    });
+    await notifyTaskMembers({
+      taskId: input.taskId,
+      actor: ctx.user,
+      type: "task_updated",
+      title: "Timer started",
+      message: `${actorLabel(ctx.user)} started the timer on "${task?.title ?? "a task"}"`
     });
     return { taskId: input.taskId, startedAt: now2 };
   }),
@@ -58444,6 +60118,14 @@ var taskRouter = createRouter({
       metadata: null,
       createdAt: now2
     });
+    const task = await findById(Collections.tasks, input.taskId);
+    await notifyTaskMembers({
+      taskId: input.taskId,
+      actor: ctx.user,
+      type: "task_updated",
+      title: "Timer paused",
+      message: `${actorLabel(ctx.user)} paused the timer on "${task?.title ?? "a task"}"`
+    });
     return { accumulatedSeconds: duration3 * 60 };
   }),
   stopTimer: authedQuery.input(external_exports.object({ taskId: external_exports.number() })).mutation(async ({ ctx, input }) => {
@@ -58472,12 +60154,138 @@ var taskRouter = createRouter({
       metadata: null,
       createdAt: now2
     });
+    const task = await findById(Collections.tasks, input.taskId);
+    await notifyTaskMembers({
+      taskId: input.taskId,
+      actor: ctx.user,
+      type: "task_updated",
+      title: "Timer stopped",
+      message: `${actorLabel(ctx.user)} stopped the timer on "${task?.title ?? "a task"}" (${duration3} min)`
+    });
     return { durationMinutes: duration3 };
   }),
-  addComment: authedQuery.input(external_exports.object({ taskId: external_exports.number(), message: external_exports.string().min(1).max(2e3) })).mutation(async ({ ctx, input }) => {
+  updateTimeEntry: authedQuery.input(external_exports.object({
+    taskId: external_exports.number(),
+    entryId: external_exports.number(),
+    clockIn: external_exports.string(),
+    clockOut: external_exports.string(),
+    reason: external_exports.string().min(1, "A reason is required to edit time entries")
+  })).mutation(async ({ ctx, input }) => {
+    if (useTaskMock()) {
+      return mockUpdateTaskTimeEntry(ctx.user, input);
+    }
+    await ensureSchema();
+    const task = await findById(Collections.tasks, input.taskId);
+    if (!task) throw new Error("Task not found");
+    const timeCol = await getCollection(Collections.timeEntries);
+    const entry = await timeCol.findOne({ id: input.entryId, taskId: input.taskId });
+    if (!entry) throw new Error("Time entry not found");
+    if (!entry.clockOut) throw new Error("Cannot edit an active timer session");
+    if (!canEditTaskTimeEntry(ctx.user, task, entry)) {
+      throw new Error("Not allowed to edit this time entry");
+    }
+    const clockIn = new Date(input.clockIn);
+    const clockOut = new Date(input.clockOut);
+    if (clockOut <= clockIn) throw new Error("End time must be after start time");
+    const duration3 = Math.floor((clockOut.getTime() - clockIn.getTime()) / 6e4);
+    const now2 = /* @__PURE__ */ new Date();
+    const noteSuffix = `(edited: ${input.reason.trim()})`;
+    const note = entry.note ? `${entry.note} ${noteSuffix}` : noteSuffix;
+    const updated = await updateById(Collections.timeEntries, input.entryId, {
+      clockIn,
+      clockOut,
+      duration: duration3,
+      note,
+      source: entry.source === "manual" ? "manual" : entry.source,
+      updatedAt: now2
+    });
+    await insertDoc(Collections.taskActivity, {
+      taskId: input.taskId,
+      userId: ctx.user.id,
+      action: "time_logged",
+      oldValue: null,
+      newValue: `Time entry edited \u2014 ${duration3} min`,
+      metadata: { entryId: input.entryId, reason: input.reason.trim() },
+      createdAt: now2
+    });
+    await notifyTaskMembers({
+      taskId: input.taskId,
+      actor: ctx.user,
+      type: "task_updated",
+      title: "Time entry updated",
+      message: `${actorLabel(ctx.user)} edited time logged on "${task.title}"`
+    });
+    return updated;
+  }),
+  addManualTimeEntry: authedQuery.input(external_exports.object({
+    taskId: external_exports.number(),
+    userId: external_exports.number().optional(),
+    clockIn: external_exports.string(),
+    clockOut: external_exports.string(),
+    note: external_exports.string().optional()
+  })).mutation(async ({ ctx, input }) => {
+    if (useTaskMock()) {
+      return mockAddManualTaskTimeEntry(ctx.user, input);
+    }
+    await ensureSchema();
+    const task = await findById(Collections.tasks, input.taskId);
+    if (!task) throw new Error("Task not found");
+    const targetUserId = input.userId ?? ctx.user.id;
+    const isManager = ctx.user.role === "admin" || ctx.user.role === "manager";
+    if (targetUserId !== ctx.user.id && !isManager && !canManageTaskTime(ctx.user, task)) {
+      throw new Error("Not allowed to add time for this user");
+    }
+    if (!canManageTaskTime(ctx.user, task) && targetUserId !== ctx.user.id) {
+      throw new Error("Not allowed to add time for this user");
+    }
+    const clockIn = new Date(input.clockIn);
+    const clockOut = new Date(input.clockOut);
+    if (clockOut <= clockIn) throw new Error("End time must be after start time");
+    const durationSeconds = Math.max(
+      0,
+      Math.floor((clockOut.getTime() - clockIn.getTime()) / 1e3)
+    );
+    const duration3 = Math.floor(durationSeconds / 60);
+    const now2 = /* @__PURE__ */ new Date();
+    const entry = await insertDoc(Collections.timeEntries, {
+      userId: targetUserId,
+      taskId: input.taskId,
+      projectId: task.projectId ?? null,
+      clockIn,
+      clockOut,
+      duration: duration3,
+      durationSeconds,
+      note: input.note?.trim() || "Manual entry",
+      source: "manual",
+      createdAt: now2,
+      updatedAt: now2
+    });
+    await insertDoc(Collections.taskActivity, {
+      taskId: input.taskId,
+      userId: ctx.user.id,
+      action: "time_logged",
+      oldValue: null,
+      newValue: `Manual time added \u2014 ${duration3} min`,
+      metadata: { entryId: entry.id, targetUserId },
+      createdAt: now2
+    });
+    await notifyTaskMembers({
+      taskId: input.taskId,
+      actor: ctx.user,
+      type: "task_updated",
+      title: "Time logged",
+      message: `${actorLabel(ctx.user)} added ${duration3} min of time on "${task.title}"`
+    });
+    return entry;
+  }),
+  addComment: authedQuery.input(external_exports.object({ taskId: external_exports.number(), message: external_exports.string().min(1).max(5e4) })).mutation(async ({ ctx, input }) => {
     if (useTaskMock()) return mockAddTaskComment(input.taskId, input.message, ctx.user);
     await ensureSchema();
-    await insertDoc(Collections.taskActivity, {
+    const task = await findById(Collections.tasks, input.taskId);
+    const previewSource = richCommentPlainText(input.message) || formatCommentPreview(input.message);
+    const preview = previewSource.length > 120 ? `${previewSource.slice(0, 120)}\u2026` : previewSource;
+    const mentionedUserIds = extractMentionedUserIdsFromComment(input.message);
+    const activity = await insertDoc(Collections.taskActivity, {
       taskId: input.taskId,
       userId: ctx.user.id,
       action: "commented",
@@ -58486,6 +60294,84 @@ var taskRouter = createRouter({
       metadata: null,
       createdAt: /* @__PURE__ */ new Date()
     });
+    if (mentionedUserIds.length > 0) {
+      await notifyTaskMembers({
+        taskId: input.taskId,
+        actor: ctx.user,
+        type: "mention",
+        title: "You were mentioned in a comment",
+        message: `${actorLabel(ctx.user)} mentioned you on "${task?.title ?? "a task"}": ${preview}`,
+        activityId: activity.id,
+        extraRecipientIds: mentionedUserIds,
+        includeAssignee: false
+      });
+    } else {
+      await notifyTaskMembers({
+        taskId: input.taskId,
+        actor: ctx.user,
+        type: "mention",
+        title: "New comment on task",
+        message: `${actorLabel(ctx.user)}: ${preview}`,
+        activityId: activity.id
+      });
+    }
+    return { success: true };
+  }),
+  editComment: authedQuery.input(external_exports.object({
+    taskId: external_exports.number(),
+    activityId: external_exports.number(),
+    message: external_exports.string().min(1).max(5e4)
+  })).mutation(async ({ ctx, input }) => {
+    if (useTaskMock()) {
+      return mockEditTaskComment(
+        input.taskId,
+        input.activityId,
+        input.message,
+        ctx.user
+      );
+    }
+    await ensureSchema();
+    const activityCol = await getCollection(Collections.taskActivity);
+    const activity = await findById(Collections.taskActivity, input.activityId);
+    if (!activity || activity.taskId !== input.taskId) throw new Error("Comment not found");
+    if (activity.action !== "commented") throw new Error("Only comments can be edited");
+    if (activity.userId !== ctx.user.id) throw new Error("You can only edit your own comments");
+    if (activity.metadata && typeof activity.metadata === "object" && "subtaskId" in activity.metadata) {
+      throw new Error("This message cannot be edited");
+    }
+    const editedAt = /* @__PURE__ */ new Date();
+    await activityCol.updateOne(
+      { id: input.activityId },
+      {
+        $set: {
+          oldValue: activity.newValue,
+          newValue: input.message,
+          metadata: {
+            ...activity.metadata && typeof activity.metadata === "object" ? activity.metadata : {},
+            editedAt: editedAt.toISOString()
+          }
+        }
+      }
+    );
+    return { success: true, editedAt };
+  }),
+  deleteComment: authedQuery.input(external_exports.object({
+    taskId: external_exports.number(),
+    activityId: external_exports.number()
+  })).mutation(async ({ ctx, input }) => {
+    if (useTaskMock()) {
+      return mockDeleteTaskComment(input.taskId, input.activityId, ctx.user);
+    }
+    await ensureSchema();
+    const activityCol = await getCollection(Collections.taskActivity);
+    const activity = await findById(Collections.taskActivity, input.activityId);
+    if (!activity || activity.taskId !== input.taskId) throw new Error("Comment not found");
+    if (activity.action !== "commented") throw new Error("Only comments can be deleted");
+    if (activity.userId !== ctx.user.id) throw new Error("You can only delete your own comments");
+    if (activity.metadata && typeof activity.metadata === "object" && "subtaskId" in activity.metadata) {
+      throw new Error("This message cannot be deleted");
+    }
+    await activityCol.deleteOne({ id: input.activityId });
     return { success: true };
   }),
   listAttachments: authedQuery.input(external_exports.object({ taskId: external_exports.number() })).query(async ({ input }) => {
@@ -58530,6 +60416,77 @@ var taskRouter = createRouter({
     const attachmentCol = await getCollection(Collections.taskAttachments);
     await attachmentCol.deleteOne({ id: input.id });
     return { success: true };
+  }),
+  bulkAction: authedQuery.input(
+    external_exports.object({
+      taskIds: external_exports.array(external_exports.number()).min(1).max(100),
+      action: external_exports.enum(["delete", "status", "move_project"]),
+      status: external_exports.enum(["todo", "in_progress", "review", "done"]).optional(),
+      projectId: external_exports.number().nullable().optional()
+    })
+  ).mutation(async ({ input, ctx }) => {
+    if (useTaskMock()) {
+      return mockBulkTaskAction(input, ctx.user);
+    }
+    await ensureSchema();
+    const taskCol = await getCollection(Collections.tasks);
+    const tasks2 = await taskCol.find({ id: { $in: input.taskIds } }).toArray();
+    if (tasks2.length === 0) {
+      throw new Error("No tasks found");
+    }
+    for (const task of tasks2) {
+      if (task.projectId != null) {
+        const project = await findById(Collections.projects, task.projectId);
+        const joined = project ? await isProjectMember(task.projectId, ctx.user.id, project.createdBy) : false;
+        if (!canViewProjectTasks(ctx.user, project?.createdBy ?? null, joined)) {
+          throw new Error("Not authorized to modify tasks in this project");
+        }
+      }
+      const canEdit = ctx.user.role === "admin" || ctx.user.role === "manager" || hasPermission(ctx.user, "tasks.edit_all") || hasPermission(ctx.user, "tasks.edit_own") && (task.createdBy === ctx.user.id || task.assigneeId === ctx.user.id);
+      const canDelete = ctx.user.role === "admin" || ctx.user.role === "manager" || hasPermission(ctx.user, "tasks.delete") || task.createdBy === ctx.user.id;
+      if (input.action === "delete" && !canDelete) {
+        throw new Error("Not authorized to delete one or more tasks");
+      }
+      if (input.action !== "delete" && !canEdit) {
+        throw new Error("Not authorized to update one or more tasks");
+      }
+    }
+    const now2 = /* @__PURE__ */ new Date();
+    if (input.action === "delete") {
+      const ids = tasks2.map((t2) => t2.id);
+      const taskFilter = { taskId: { $in: ids } };
+      await Promise.all([
+        getCollection(Collections.taskParticipants).then((c) => c.deleteMany(taskFilter)),
+        getCollection(Collections.subtasks).then((c) => c.deleteMany(taskFilter)),
+        getCollection(Collections.taskActivity).then((c) => c.deleteMany(taskFilter)),
+        getCollection(Collections.taskAttachments).then((c) => c.deleteMany(taskFilter)),
+        getCollection(Collections.taskTagRelations).then((c) => c.deleteMany(taskFilter)),
+        getCollection(Collections.timeEntries).then((c) => c.deleteMany(taskFilter)),
+        getCollection(Collections.notifications).then((c) => c.deleteMany({ taskId: { $in: ids } }))
+      ]);
+      await taskCol.deleteMany({ id: { $in: ids } });
+      return { success: true, affected: ids.length };
+    }
+    if (input.action === "status") {
+      if (!input.status) throw new Error("Status is required");
+      await taskCol.updateMany(
+        { id: { $in: input.taskIds } },
+        { $set: { status: input.status, updatedAt: now2 } }
+      );
+      return { success: true, affected: input.taskIds.length };
+    }
+    if (input.action === "move_project") {
+      if (input.projectId != null) {
+        const project = await findById(Collections.projects, input.projectId);
+        if (!project) throw new Error("Target project not found");
+      }
+      await taskCol.updateMany(
+        { id: { $in: input.taskIds } },
+        { $set: { projectId: input.projectId ?? null, updatedAt: now2 } }
+      );
+      return { success: true, affected: input.taskIds.length };
+    }
+    throw new Error("Unsupported action");
   })
 });
 
@@ -58568,14 +60525,275 @@ var subtaskRouter = createRouter({
   })
 });
 
-// api/time-entry-router.ts
-function sessionTiming(state) {
-  let workElapsedSeconds = state.accumulatedWorkSeconds;
-  if (state.workSegmentStartedAt) {
-    workElapsedSeconds += Math.floor(
-      (Date.now() - state.workSegmentStartedAt.getTime()) / 1e3
+// api/lib/work-breaks.ts
+async function openWorkBreak(userId, workSessionId, timeEntryId, startTime) {
+  return insertDoc(Collections.workBreaks, {
+    userId,
+    workSessionId,
+    timeEntryId,
+    startTime,
+    endTime: null,
+    reason: null,
+    manuallyEdited: false,
+    createdAt: startTime,
+    updatedAt: startTime
+  });
+}
+async function closeOpenWorkBreak(workSessionId, endTime) {
+  const col = await getCollection(Collections.workBreaks);
+  const open = await col.findOne({ workSessionId, endTime: null });
+  if (!open) return null;
+  return updateById(Collections.workBreaks, open.id, {
+    endTime,
+    updatedAt: endTime
+  });
+}
+async function closeOpenBreaksForSession(workSessionId, endTime) {
+  const col = await getCollection(Collections.workBreaks);
+  await col.updateMany(
+    { workSessionId, endTime: null },
+    { $set: { endTime, updatedAt: endTime } }
+  );
+}
+
+// api/lib/notify-admins.ts
+async function notifyAdmins({
+  actor,
+  type,
+  title,
+  message: message2,
+  approvalRequestId = null,
+  excludeUserIds = []
+}) {
+  const excluded = /* @__PURE__ */ new Set([actor.id, ...excludeUserIds]);
+  const usersCol = await getCollection(Collections.users);
+  const admins = await usersCol.find({ role: "admin", status: "active" }).toArray();
+  const recipients = admins.filter((admin) => !excluded.has(admin.id));
+  if (recipients.length === 0) return;
+  const now2 = /* @__PURE__ */ new Date();
+  await Promise.all(
+    recipients.map(
+      (admin) => insertDoc(Collections.notifications, {
+        userId: admin.id,
+        actorId: actor.id,
+        type,
+        title,
+        message: message2,
+        taskId: null,
+        approvalRequestId,
+        read: false,
+        createdAt: now2
+      })
+    )
+  );
+}
+
+// api/lib/attendance-breaks.ts
+async function findBreaksOverlappingWindow(userId, windowStart, windowEnd) {
+  if (isAuthDisabled() || !hasMongoConfigured()) {
+    return mockFindBreaksOverlappingWindow(userId, windowStart, windowEnd);
+  }
+  const breakCol = await getCollection(Collections.workBreaks);
+  return breakCol.find({
+    userId,
+    startTime: { $lt: windowEnd },
+    $or: [{ endTime: { $gt: windowStart } }, { endTime: null }]
+  }).sort({ startTime: 1 }).toArray();
+}
+async function computeStoredAttendanceDurationSeconds(userId, clockIn, clockOut, now2 = /* @__PURE__ */ new Date()) {
+  const breaks = await findBreaksOverlappingWindow(userId, clockIn, clockOut);
+  return computeAttendanceWorkSeconds(clockIn, clockOut, breaks, now2);
+}
+
+// api/lib/auto-clock-out.ts
+var AUTO_CLOCK_OUT_NOTE = "Auto clock-out at 10:00 PM";
+async function findActiveSession(userId) {
+  const sessionCol = await getCollection(Collections.workSessions);
+  return sessionCol.findOne({ userId, active: true });
+}
+async function clockOutAttendanceAtTime(userId, clockOutTime, note = AUTO_CLOCK_OUT_NOTE) {
+  const session = await findActiveSession(userId);
+  const timeCol = await getCollection(Collections.timeEntries);
+  const entry = await timeCol.findOne(
+    { userId, clockOut: null, taskId: null },
+    { sort: { clockIn: -1 } }
+  );
+  const effectiveClockIn = entry?.clockIn ?? session?.startTime;
+  if (!effectiveClockIn) return null;
+  if (clockOutTime.getTime() <= effectiveClockIn.getTime()) return null;
+  let durationSeconds = 0;
+  const now2 = /* @__PURE__ */ new Date();
+  if (session) {
+    if (session.paused) {
+      await closeOpenBreaksForSession(session.id, clockOutTime);
+    }
+    durationSeconds = Math.max(
+      0,
+      computeSessionWorkSeconds(
+        { ...session, startTime: session.startTime },
+        clockOutTime
+      )
+    );
+    await updateById(Collections.workSessions, session.id, {
+      active: false,
+      endTime: clockOutTime,
+      paused: false,
+      accumulatedWorkSeconds: 0,
+      workSegmentStartedAt: null,
+      breakStartedAt: null
+    });
+  } else if (entry) {
+    durationSeconds = await computeStoredAttendanceDurationSeconds(
+      userId,
+      effectiveClockIn,
+      clockOutTime,
+      now2
     );
   }
+  if (entry) {
+    const mergedNote = entry.note ? `${entry.note} - ${note}` : note;
+    await updateById(Collections.timeEntries, entry.id, {
+      clockOut: clockOutTime,
+      durationSeconds,
+      duration: Math.floor(durationSeconds / 60),
+      note: mergedNote,
+      updatedAt: now2
+    });
+  }
+  return { userId, clockOutTime, durationSeconds };
+}
+function useMock3() {
+  return isAuthDisabled() || !hasMongoConfigured();
+}
+async function runAutoClockOutForUser(userId, now2 = /* @__PURE__ */ new Date()) {
+  if (useMock3()) {
+    return mockRunAutoClockOutForUser(userId, now2);
+  }
+  await ensureSchema();
+  const session = await findActiveSession(userId);
+  if (!session || !isPastAutoClockOutDeadline(session.startTime, now2)) {
+    return null;
+  }
+  const deadline = getAutoClockOutDeadline(session.startTime);
+  return clockOutAttendanceAtTime(userId, deadline);
+}
+async function runAutoClockOutJob(now2 = /* @__PURE__ */ new Date()) {
+  if (useMock3()) {
+    return mockRunAutoClockOutJob(now2);
+  }
+  await ensureSchema();
+  const sessionCol = await getCollection(Collections.workSessions);
+  const activeSessions = await sessionCol.find({ active: true }).toArray();
+  const results = [];
+  for (const session of activeSessions) {
+    if (!isPastAutoClockOutDeadline(session.startTime, now2)) continue;
+    const deadline = getAutoClockOutDeadline(session.startTime);
+    const result = await clockOutAttendanceAtTime(session.userId, deadline);
+    if (result) results.push(result);
+  }
+  return results;
+}
+var AUTO_CLOCK_OUT_INTERVAL_MS = 6e4;
+var schedulerStarted = false;
+function startAutoClockOutScheduler() {
+  if (schedulerStarted) return;
+  schedulerStarted = true;
+  const tick = () => {
+    void runAutoClockOutJob().catch((error51) => {
+      console.error("[auto-clock-out] job failed:", error51);
+    });
+  };
+  tick();
+  setInterval(tick, AUTO_CLOCK_OUT_INTERVAL_MS);
+}
+
+// api/lib/time-approvals.ts
+async function findClockInRequestForSession(workSessionId) {
+  const col = await getCollection(Collections.timeApprovalRequests);
+  return col.findOne({
+    workSessionId,
+    type: "clock_in"
+  });
+}
+async function applyClockInApproval(request, session, entry) {
+  if (!request.requestedClockIn || !request.originalClockIn) {
+    throw new Error("Invalid clock-in approval request");
+  }
+  const deltaSeconds = Math.floor(
+    (request.originalClockIn.getTime() - request.requestedClockIn.getTime()) / 1e3
+  );
+  if (deltaSeconds <= 0) {
+    throw new Error("Approved clock-in must be earlier than the actual clock-in");
+  }
+  const now2 = /* @__PURE__ */ new Date();
+  await updateById(Collections.workSessions, session.id, {
+    startTime: request.requestedClockIn,
+    accumulatedWorkSeconds: session.accumulatedWorkSeconds + deltaSeconds
+  });
+  if (entry) {
+    await updateById(Collections.timeEntries, entry.id, {
+      clockIn: request.requestedClockIn,
+      note: entry.note ? `${entry.note} (clock-in adjusted to ${request.requestedClockIn.toLocaleString()})` : `Clock-in adjusted to ${request.requestedClockIn.toLocaleString()}`,
+      updatedAt: now2
+    });
+  }
+}
+async function applyBreakApproval(request, breakItem) {
+  if (!request.requestedBreakStart) {
+    throw new Error("Invalid break approval request");
+  }
+  const startTime = request.requestedBreakStart;
+  const endTime = request.requestedBreakEnd;
+  if (endTime && endTime <= startTime) {
+    throw new Error("Break end must be after break start");
+  }
+  const now2 = /* @__PURE__ */ new Date();
+  await updateById(Collections.workBreaks, breakItem.id, {
+    startTime,
+    endTime,
+    reason: request.reason.trim(),
+    manuallyEdited: true,
+    updatedAt: now2
+  });
+  const sessionCol = await getCollection(Collections.workSessions);
+  const session = await sessionCol.findOne({
+    id: breakItem.workSessionId,
+    active: true
+  });
+  if (session?.paused && session.breakStartedAt && !breakItem.endTime) {
+    await updateById(Collections.workSessions, session.id, {
+      breakStartedAt: startTime
+    });
+  }
+}
+async function notifyUserOfTimeReview(userId, actor, approved, message2) {
+  const now2 = /* @__PURE__ */ new Date();
+  await insertDoc(Collections.notifications, {
+    userId,
+    actorId: actor.id,
+    type: approved ? "time_approved" : "time_rejected",
+    title: approved ? "Time adjustment approved" : "Time adjustment rejected",
+    message: message2,
+    taskId: null,
+    read: false,
+    createdAt: now2
+  });
+}
+function validateManualClockInRequest(requestedClockIn, actualClockIn) {
+  if (requestedClockIn >= actualClockIn) {
+    throw new Error("Manual clock-in time must be earlier than your actual clock-in time");
+  }
+  if (localDateKey(requestedClockIn) !== localDateKey(actualClockIn)) {
+    throw new Error("Manual clock-in must be on the same day as your session");
+  }
+  if (requestedClockIn.getTime() > Date.now()) {
+    throw new Error("Manual clock-in cannot be in the future");
+  }
+}
+
+// api/time-entry-router.ts
+function sessionTiming(state) {
+  const workElapsedSeconds = computeSessionWorkSeconds(state);
   const breakElapsedSeconds = state.breakStartedAt ? Math.floor((Date.now() - state.breakStartedAt.getTime()) / 1e3) : 0;
   return { workElapsedSeconds, breakElapsedSeconds };
 }
@@ -58598,16 +60816,102 @@ function enrichSession(session) {
     breakElapsedSeconds
   };
 }
-async function findActiveSession(userId) {
+async function attachSessionApprovalInfo(session) {
+  const existing = await findClockInRequestForSession(session.id);
+  return {
+    ...session,
+    clockInRequest: existing ? {
+      id: existing.id,
+      requestedClockIn: existing.requestedClockIn,
+      reason: existing.reason,
+      status: existing.status
+    } : null,
+    pendingClockInRequest: existing?.status === "pending" ? {
+      id: existing.id,
+      requestedClockIn: existing.requestedClockIn,
+      reason: existing.reason
+    } : null
+  };
+}
+async function findActiveSession2(userId) {
   const sessionCol = await getCollection(Collections.workSessions);
   return sessionCol.findOne({ userId, active: true });
 }
-async function endActiveSessions(userId, endTime) {
-  const sessionCol = await getCollection(Collections.workSessions);
-  await sessionCol.updateMany(
-    { userId, active: true },
-    { $set: { active: false, endTime } }
+function entryLiveSeconds(entry, now2) {
+  return Math.max(0, Math.floor((now2.getTime() - entry.clockIn.getTime()) / 1e3));
+}
+async function attendanceLiveSeconds(userId, dateStr, entries, now2) {
+  const session = await findActiveSession2(userId);
+  if (session && localDateKey(session.startTime) === dateStr) {
+    return computeSessionWorkSeconds(
+      { ...session, startTime: session.startTime },
+      now2
+    );
+  }
+  const openAttendance = entries.find((e) => !e.clockOut && e.taskId == null);
+  if (openAttendance) {
+    return entryLiveSeconds(openAttendance, now2);
+  }
+  return 0;
+}
+async function completedAttendanceSecondsForDay(userId, dateStr, now2 = /* @__PURE__ */ new Date()) {
+  const { start, end } = dayBounds(dateStr);
+  const timeCol = await getCollection(Collections.timeEntries);
+  const entries = await timeCol.find({
+    userId,
+    taskId: null,
+    clockIn: { $gte: start, $lte: end },
+    clockOut: { $ne: null }
+  }).toArray();
+  return entries.reduce((sum, entry) => sum + attendanceEntrySeconds(entry), 0);
+}
+function displayAttendanceDurationSeconds2(entry, attendanceLiveSeconds2) {
+  if (entry.clockOut) return attendanceEntrySeconds(entry);
+  if (!entry.clockOut && attendanceLiveSeconds2 > 0) {
+    return attendanceLiveSeconds2;
+  }
+  return null;
+}
+async function buildDayHoursForUser(userId, dateStr, now2 = /* @__PURE__ */ new Date()) {
+  const { start, end } = dayBounds(dateStr);
+  const timeCol = await getCollection(Collections.timeEntries);
+  const entries = await timeCol.find({
+    userId,
+    taskId: null,
+    clockIn: { $gte: start, $lte: end }
+  }).sort({ clockIn: 1 }).toArray();
+  const attendanceLive = await attendanceLiveSeconds(userId, dateStr, entries, now2);
+  const dayBreaks = await findBreaksOverlappingWindow(userId, start, end);
+  const enrichedEntries = entries.map((entry) => {
+    let durationSeconds;
+    if (entry.clockOut) {
+      const entryBreaks = dayBreaks.filter(
+        (b) => b.startTime.getTime() < entry.clockOut.getTime() && (b.endTime && b.endTime.getTime() > entry.clockIn.getTime() || !b.endTime)
+      );
+      durationSeconds = resolveAttendanceDisplaySeconds(entry, entryBreaks, now2);
+    } else {
+      durationSeconds = displayAttendanceDurationSeconds2(entry, attendanceLive);
+    }
+    return {
+      id: entry.id,
+      clockIn: entry.clockIn,
+      clockOut: entry.clockOut,
+      durationSeconds,
+      duration: durationSeconds != null ? Math.floor(durationSeconds / 60) : null,
+      note: entry.note
+    };
+  });
+  const totalSeconds = enrichedEntries.reduce(
+    (sum, entry) => sum + (entry.durationSeconds ?? 0),
+    0
   );
+  return {
+    entries: enrichedEntries,
+    totalMinutes: totalSeconds / 60,
+    totalSeconds,
+    totalHours: roundHours(totalSeconds / 3600),
+    entriesCount: entries.length
+  };
 }
 var timeEntryRouter = createRouter({
   clockIn: authedQuery.input(external_exports.object({ note: external_exports.string().optional() }).optional()).mutation(async ({ ctx, input }) => {
@@ -58616,7 +60920,11 @@ var timeEntryRouter = createRouter({
     }
     await ensureSchema();
     const now2 = /* @__PURE__ */ new Date();
-    await endActiveSessions(ctx.user.id, now2);
+    await runAutoClockOutForUser(ctx.user.id, now2);
+    const openSession = await findActiveSession2(ctx.user.id);
+    if (openSession) {
+      await clockOutAttendanceAtTime(ctx.user.id, now2, "Clocked out for new session");
+    }
     const session = await insertDoc(Collections.workSessions, {
       userId: ctx.user.id,
       startTime: now2,
@@ -58635,6 +60943,7 @@ var timeEntryRouter = createRouter({
       clockIn: now2,
       clockOut: null,
       duration: null,
+      durationSeconds: null,
       note: input?.note || "Clocked in",
       source: "web",
       createdAt: now2,
@@ -58642,48 +60951,104 @@ var timeEntryRouter = createRouter({
     });
     return { entry, session: enrichSession(session) };
   }),
-  clockOut: authedQuery.input(external_exports.object({ note: external_exports.string().optional() }).optional()).mutation(async ({ ctx, input }) => {
+  clockOut: authedQuery.input(
+    external_exports.object({
+      note: external_exports.string().optional(),
+      clockIn: external_exports.string().optional(),
+      clockOut: external_exports.string().optional()
+    }).optional()
+  ).mutation(async ({ ctx, input }) => {
     if (isAuthDisabled() || !hasMongoConfigured()) {
-      return mockClockOut(ctx.user.id, input?.note);
+      return mockClockOut(ctx.user.id, input);
     }
     await ensureSchema();
     const now2 = /* @__PURE__ */ new Date();
-    const session = await findActiveSession(ctx.user.id);
+    const clockOutTime = input?.clockOut ? new Date(input.clockOut) : now2;
+    const clockInTime = input?.clockIn ? new Date(input.clockIn) : void 0;
+    if (Number.isNaN(clockOutTime.getTime())) {
+      throw new Error("Invalid clock out time");
+    }
+    if (clockInTime && Number.isNaN(clockInTime.getTime())) {
+      throw new Error("Invalid clock in time");
+    }
+    if (clockOutTime.getTime() > now2.getTime()) {
+      throw new Error("Clock out time cannot be in the future");
+    }
+    const session = await findActiveSession2(ctx.user.id);
     const timeCol = await getCollection(Collections.timeEntries);
     const entry = await timeCol.findOne(
       { userId: ctx.user.id, clockOut: null, taskId: null },
       { sort: { clockIn: -1 } }
     );
-    let duration3 = 0;
+    const effectiveClockIn = clockInTime ?? entry?.clockIn ?? session?.startTime;
+    if (!effectiveClockIn) {
+      throw new Error("No active clock-in session found");
+    }
+    if (clockOutTime.getTime() <= effectiveClockIn.getTime()) {
+      throw new Error("Clock out time must be after clock in time");
+    }
+    let durationSeconds = 0;
     if (session) {
-      const hasPauseState = session.workSegmentStartedAt != null || session.paused || session.accumulatedWorkSeconds > 0 || session.breakStartedAt != null;
-      if (hasPauseState) {
-        const { workElapsedSeconds } = sessionTiming(session);
-        duration3 = Math.max(1, Math.floor(workElapsedSeconds / 60));
+      if (session.paused) {
+        await closeOpenBreaksForSession(session.id, clockOutTime);
+      }
+      if (clockInTime || input?.clockOut) {
+        durationSeconds = await computeStoredAttendanceDurationSeconds(
+          ctx.user.id,
+          effectiveClockIn,
+          clockOutTime,
+          now2
+        );
       } else {
-        duration3 = Math.floor((now2.getTime() - session.startTime.getTime()) / 6e4);
+        durationSeconds = Math.max(
+          0,
+          computeSessionWorkSeconds(
+            {
+              ...session,
+              startTime: clockInTime ?? session.startTime
+            },
+            clockOutTime
+          )
+        );
       }
       await updateById(Collections.workSessions, session.id, {
         active: false,
-        endTime: now2,
+        endTime: clockOutTime,
         paused: false,
         accumulatedWorkSeconds: 0,
         workSegmentStartedAt: null,
-        breakStartedAt: null
+        breakStartedAt: null,
+        ...clockInTime ? { startTime: clockInTime } : {}
       });
+    } else if (entry) {
+      durationSeconds = await computeStoredAttendanceDurationSeconds(
+        ctx.user.id,
+        effectiveClockIn,
+        clockOutTime,
+        now2
+      );
     }
     if (entry) {
-      const note = input?.note ? `${entry.note || ""} - ${input.note}` : entry.note;
+      const note = input?.note ? `${entry.note || ""} - ${input.note}`.trim() : entry.note;
       await updateById(Collections.timeEntries, entry.id, {
-        clockOut: now2,
-        duration: duration3,
+        ...clockInTime ? { clockIn: clockInTime } : {},
+        clockOut: clockOutTime,
+        durationSeconds,
+        duration: Math.floor(durationSeconds / 60),
         note,
         updatedAt: now2
       });
     }
     return {
-      duration: duration3,
-      entry: entry ? { ...entry, clockOut: now2, duration: duration3 } : null
+      durationSeconds,
+      duration: Math.floor(durationSeconds / 60),
+      entry: entry ? {
+        ...entry,
+        ...clockInTime ? { clockIn: clockInTime } : {},
+        clockOut: clockOutTime,
+        durationSeconds,
+        duration: Math.floor(durationSeconds / 60)
+      } : null
     };
   }),
   getCurrentSession: authedQuery.query(async ({ ctx }) => {
@@ -58691,26 +61056,44 @@ var timeEntryRouter = createRouter({
       return mockCurrentSession(ctx.user.id);
     }
     await ensureSchema();
-    const session = await findActiveSession(ctx.user.id);
+    await runAutoClockOutForUser(ctx.user.id);
+    const session = await findActiveSession2(ctx.user.id);
     if (!session) return null;
-    return enrichSession(session);
+    const enriched = enrichSession(session);
+    const priorDayWorkSeconds = await completedAttendanceSecondsForDay(
+      ctx.user.id,
+      localDateKey(session.startTime)
+    );
+    return attachSessionApprovalInfo({ ...enriched, priorDayWorkSeconds });
   }),
   pauseSession: authedQuery.mutation(async ({ ctx }) => {
     if (isAuthDisabled() || !hasMongoConfigured()) {
       return mockPauseWorkSession(ctx.user.id);
     }
     await ensureSchema();
-    const session = await findActiveSession(ctx.user.id);
+    const session = await findActiveSession2(ctx.user.id);
     if (!session) throw new Error("No active work session to pause");
     let workSegmentStartedAt = session.workSegmentStartedAt ?? session.startTime;
     if (session.paused || !workSegmentStartedAt) {
       throw new Error("No active work session to pause");
     }
     const accumulatedWorkSeconds = session.accumulatedWorkSeconds + Math.floor((Date.now() - workSegmentStartedAt.getTime()) / 1e3);
+    const breakStart = /* @__PURE__ */ new Date();
+    const timeCol = await getCollection(Collections.timeEntries);
+    const entry = await timeCol.findOne(
+      { userId: ctx.user.id, clockOut: null, taskId: null },
+      { sort: { clockIn: -1 } }
+    );
+    await openWorkBreak(
+      ctx.user.id,
+      session.id,
+      entry?.id ?? null,
+      breakStart
+    );
     const updated = await updateById(Collections.workSessions, session.id, {
       accumulatedWorkSeconds,
       workSegmentStartedAt: null,
-      breakStartedAt: /* @__PURE__ */ new Date(),
+      breakStartedAt: breakStart,
       paused: true
     });
     return enrichSession(updated);
@@ -58720,11 +61103,13 @@ var timeEntryRouter = createRouter({
       return mockResumeWorkSession(ctx.user.id);
     }
     await ensureSchema();
-    const session = await findActiveSession(ctx.user.id);
+    const session = await findActiveSession2(ctx.user.id);
     if (!session) throw new Error("No active work session");
     if (!session.paused) throw new Error("Work session is not paused");
+    const resumeTime = /* @__PURE__ */ new Date();
+    await closeOpenWorkBreak(session.id, resumeTime);
     const updated = await updateById(Collections.workSessions, session.id, {
-      workSegmentStartedAt: /* @__PURE__ */ new Date(),
+      workSegmentStartedAt: resumeTime,
       breakStartedAt: null,
       paused: false
     });
@@ -58740,7 +61125,8 @@ var timeEntryRouter = createRouter({
     }).optional()
   ).query(async ({ ctx, input }) => {
     const { userId, startDate, endDate, page = 1, limit = 50 } = input || {};
-    const targetUserId = ctx.user.role === "employee" ? ctx.user.id : userId || ctx.user.id;
+    const canViewOthers = ctx.user.role === "admin";
+    const targetUserId = canViewOthers && userId ? userId : ctx.user.id;
     if (isAuthDisabled() || !hasMongoConfigured()) {
       return mockTimeEntryList(targetUserId, { limit });
     }
@@ -58749,8 +61135,14 @@ var timeEntryRouter = createRouter({
     const filter = { userId: targetUserId };
     if (startDate || endDate) {
       const clockIn = {};
-      if (startDate) clockIn.$gte = new Date(startDate);
-      if (endDate) clockIn.$lte = new Date(endDate);
+      if (startDate && endDate && startDate === endDate) {
+        const { start, end } = dayBounds(startDate);
+        clockIn.$gte = start;
+        clockIn.$lte = end;
+      } else {
+        if (startDate) clockIn.$gte = new Date(startDate);
+        if (endDate) clockIn.$lte = new Date(endDate);
+      }
       filter.clockIn = clockIn;
     }
     const timeCol = await getCollection(Collections.timeEntries);
@@ -58760,65 +61152,444 @@ var timeEntryRouter = createRouter({
     ]);
     return { entries, total };
   }),
+  getDayHours: authedQuery.input(
+    external_exports.object({
+      date: external_exports.string(),
+      userId: external_exports.number().optional()
+    })
+  ).query(async ({ ctx, input }) => {
+    const canViewOthers = ctx.user.role === "admin";
+    const targetUserId = canViewOthers && input.userId ? input.userId : ctx.user.id;
+    if (isAuthDisabled() || !hasMongoConfigured()) {
+      return mockGetDayHours(targetUserId, input.date);
+    }
+    await ensureSchema();
+    return buildDayHoursForUser(targetUserId, input.date);
+  }),
+  getBreaks: authedQuery.input(
+    external_exports.object({
+      date: external_exports.string().optional(),
+      from: external_exports.string().optional(),
+      to: external_exports.string().optional(),
+      userId: external_exports.number().optional()
+    })
+  ).query(async ({ ctx, input }) => {
+    const canViewOthers = ctx.user.role === "admin";
+    const targetUserId = canViewOthers && input.userId ? input.userId : ctx.user.id;
+    let windowStart;
+    let windowEnd;
+    if (input.from && input.to) {
+      windowStart = new Date(input.from);
+      windowEnd = new Date(input.to);
+    } else {
+      const dateStr = input.date ?? localDateKey(/* @__PURE__ */ new Date());
+      ({ start: windowStart, end: windowEnd } = dayBounds(dateStr));
+    }
+    if (isAuthDisabled() || !hasMongoConfigured()) {
+      return mockGetBreaksForWindow(targetUserId, windowStart, windowEnd);
+    }
+    await ensureSchema();
+    const breaks = await findBreaksOverlappingWindow(
+      targetUserId,
+      windowStart,
+      windowEnd
+    );
+    const approvalCol = await getCollection(
+      Collections.timeApprovalRequests
+    );
+    const pendingBreakEdits = await approvalCol.find({
+      userId: targetUserId,
+      type: "break",
+      status: "pending",
+      workBreakId: { $in: breaks.map((b) => b.id) }
+    }).toArray();
+    const pendingByBreakId = new Map(
+      pendingBreakEdits.map((r) => [
+        r.workBreakId,
+        {
+          id: r.id,
+          requestedBreakStart: r.requestedBreakStart,
+          requestedBreakEnd: r.requestedBreakEnd,
+          reason: r.reason
+        }
+      ])
+    );
+    return {
+      breaks: breaks.map((b) => ({
+        ...b,
+        pendingEdit: pendingByBreakId.get(b.id) ?? null
+      }))
+    };
+  }),
+  updateBreak: authedQuery.input(
+    external_exports.object({
+      id: external_exports.number(),
+      startTime: external_exports.string(),
+      endTime: external_exports.string().optional().nullable(),
+      reason: external_exports.string().min(1, "A reason is required to edit break times")
+    })
+  ).mutation(async ({ ctx, input }) => {
+    if (isAuthDisabled() || !hasMongoConfigured()) {
+      return mockRequestBreakEdit(ctx.user, input);
+    }
+    await ensureSchema();
+    const breakCol = await getCollection(Collections.workBreaks);
+    const existing = await breakCol.findOne({ id: input.id });
+    if (!existing) throw new Error("Break not found");
+    if (existing.userId !== ctx.user.id && ctx.user.role !== "admin") {
+      throw new Error("Not allowed to edit this break");
+    }
+    const startTime = new Date(input.startTime);
+    const endTime = input.endTime ? new Date(input.endTime) : null;
+    if (endTime && endTime <= startTime) {
+      throw new Error("Break end must be after break start");
+    }
+    if (ctx.user.role === "admin") {
+      const now3 = /* @__PURE__ */ new Date();
+      const updated = await updateById(Collections.workBreaks, input.id, {
+        startTime,
+        endTime,
+        reason: input.reason.trim(),
+        manuallyEdited: true,
+        updatedAt: now3
+      });
+      return { ...updated, requiresApproval: false };
+    }
+    const approvalCol = await getCollection(
+      Collections.timeApprovalRequests
+    );
+    const existingPending = await approvalCol.findOne({
+      workBreakId: input.id,
+      type: "break",
+      status: "pending"
+    });
+    if (existingPending) {
+      throw new Error("A break edit request is already pending approval");
+    }
+    const now2 = /* @__PURE__ */ new Date();
+    const request = await insertDoc(
+      Collections.timeApprovalRequests,
+      {
+        userId: ctx.user.id,
+        type: "break",
+        status: "pending",
+        reason: input.reason.trim(),
+        workSessionId: existing.workSessionId,
+        timeEntryId: existing.timeEntryId,
+        workBreakId: existing.id,
+        originalClockIn: null,
+        originalBreakStart: existing.startTime,
+        originalBreakEnd: existing.endTime,
+        requestedClockIn: null,
+        requestedBreakStart: startTime,
+        requestedBreakEnd: endTime,
+        reviewedBy: null,
+        reviewedAt: null,
+        reviewNote: null,
+        createdAt: now2,
+        updatedAt: now2
+      }
+    );
+    const actorName = ctx.user.name || ctx.user.email || "An employee";
+    await notifyAdmins({
+      actor: ctx.user,
+      type: "time_approval_pending",
+      title: "Break edit needs approval",
+      message: `${actorName} requested a break time change: ${input.reason.trim()}`,
+      approvalRequestId: request.id
+    });
+    return { ...request, requiresApproval: true };
+  }),
+  updateAttendanceEntry: authedQuery.input(
+    external_exports.object({
+      id: external_exports.number(),
+      clockIn: external_exports.string(),
+      clockOut: external_exports.string(),
+      breakMinutes: external_exports.number().min(0).optional(),
+      reason: external_exports.string().min(1, "A reason is required to edit attendance times")
+    })
+  ).mutation(async ({ ctx, input }) => {
+    if (isAuthDisabled() || !hasMongoConfigured()) {
+      return mockUpdateAttendanceEntry(ctx.user, input);
+    }
+    await ensureSchema();
+    const timeCol = await getCollection(Collections.timeEntries);
+    const existing = await timeCol.findOne({ id: input.id, taskId: null });
+    if (!existing) throw new Error("Attendance entry not found");
+    if (existing.userId !== ctx.user.id && ctx.user.role !== "admin") {
+      throw new Error("Not allowed to edit this attendance entry");
+    }
+    if (!existing.clockOut) {
+      throw new Error("Cannot edit an active session \u2014 clock out first");
+    }
+    const clockIn = new Date(input.clockIn);
+    const clockOut = new Date(input.clockOut);
+    if (Number.isNaN(clockIn.getTime()) || Number.isNaN(clockOut.getTime())) {
+      throw new Error("Invalid clock in or clock out time");
+    }
+    if (clockOut <= clockIn) {
+      throw new Error("Clock out must be after clock in");
+    }
+    if (clockOut.getTime() > Date.now()) {
+      throw new Error("Clock out time cannot be in the future");
+    }
+    const now2 = /* @__PURE__ */ new Date();
+    let durationSeconds;
+    if (input.breakMinutes != null) {
+      const spanSeconds = Math.floor((clockOut.getTime() - clockIn.getTime()) / 1e3);
+      const breakSeconds = Math.min(input.breakMinutes * 60, spanSeconds);
+      durationSeconds = Math.max(0, spanSeconds - breakSeconds);
+    } else {
+      durationSeconds = await computeStoredAttendanceDurationSeconds(
+        existing.userId,
+        clockIn,
+        clockOut,
+        now2
+      );
+    }
+    const note = existing.note ? `${existing.note} \u2014 ${input.reason.trim()}` : input.reason.trim();
+    const updated = await updateById(Collections.timeEntries, input.id, {
+      clockIn,
+      clockOut,
+      durationSeconds,
+      duration: Math.floor(durationSeconds / 60),
+      note,
+      updatedAt: now2
+    });
+    const sessionCol = await getCollection(Collections.workSessions);
+    const session = await sessionCol.findOne({
+      userId: existing.userId,
+      startTime: existing.clockIn
+    });
+    if (session && !session.active) {
+      await updateById(Collections.workSessions, session.id, {
+        startTime: clockIn,
+        endTime: clockOut
+      });
+    }
+    return updated;
+  }),
+  requestManualClockIn: authedQuery.input(
+    external_exports.object({
+      requestedClockIn: external_exports.string(),
+      reason: external_exports.string().min(1, "A reason is required for manual clock-in")
+    })
+  ).mutation(async ({ ctx, input }) => {
+    if (isAuthDisabled() || !hasMongoConfigured()) {
+      return mockRequestManualClockIn(ctx.user, input);
+    }
+    await ensureSchema();
+    const session = await findActiveSession2(ctx.user.id);
+    if (!session) throw new Error("You must be clocked in to request a manual clock-in time");
+    const timeCol = await getCollection(Collections.timeEntries);
+    const entry = await timeCol.findOne(
+      { userId: ctx.user.id, clockOut: null, taskId: null },
+      { sort: { clockIn: -1 } }
+    );
+    const actualClockIn = entry?.clockIn ?? session.startTime;
+    const requestedClockIn = new Date(input.requestedClockIn);
+    validateManualClockInRequest(requestedClockIn, actualClockIn);
+    const existingRequest = await findClockInRequestForSession(session.id);
+    if (existingRequest) {
+      throw new Error("You have already submitted a manual clock-in request for this session");
+    }
+    const now2 = /* @__PURE__ */ new Date();
+    const request = await insertDoc(
+      Collections.timeApprovalRequests,
+      {
+        userId: ctx.user.id,
+        type: "clock_in",
+        status: "pending",
+        reason: input.reason.trim(),
+        workSessionId: session.id,
+        timeEntryId: entry?.id ?? null,
+        workBreakId: null,
+        originalClockIn: actualClockIn,
+        originalBreakStart: null,
+        originalBreakEnd: null,
+        requestedClockIn,
+        requestedBreakStart: null,
+        requestedBreakEnd: null,
+        reviewedBy: null,
+        reviewedAt: null,
+        reviewNote: null,
+        createdAt: now2,
+        updatedAt: now2
+      }
+    );
+    const actorName = ctx.user.name || ctx.user.email || "An employee";
+    const requestedLabel = requestedClockIn.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit"
+    });
+    const actualLabel = actualClockIn.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit"
+    });
+    await notifyAdmins({
+      actor: ctx.user,
+      type: "time_approval_pending",
+      title: "Manual clock-in needs approval",
+      message: `${actorName} requests clock-in at ${requestedLabel} instead of ${actualLabel}: ${input.reason.trim()}`,
+      approvalRequestId: request.id
+    });
+    return { ...request, requiresApproval: true };
+  }),
+  listPendingApprovals: adminQuery.query(async () => {
+    if (isAuthDisabled() || !hasMongoConfigured()) {
+      return mockListPendingApprovals();
+    }
+    await ensureSchema();
+    const approvalCol = await getCollection(
+      Collections.timeApprovalRequests
+    );
+    const userCol = await getCollection(Collections.users);
+    const requests = await approvalCol.find({ status: "pending" }).sort({ createdAt: -1 }).toArray();
+    const userIds = [...new Set(requests.map((r) => r.userId))];
+    const users2 = userIds.length ? await userCol.find({ id: { $in: userIds } }).toArray() : [];
+    const userMap = new Map(users2.map((u) => [u.id, u]));
+    return {
+      requests: requests.map((r) => ({
+        ...r,
+        user: userMap.get(r.userId) ?? null
+      }))
+    };
+  }),
+  reviewTimeApproval: adminQuery.input(
+    external_exports.object({
+      id: external_exports.number(),
+      action: external_exports.enum(["approve", "reject"]),
+      reviewNote: external_exports.string().optional()
+    })
+  ).mutation(async ({ ctx, input }) => {
+    if (isAuthDisabled() || !hasMongoConfigured()) {
+      return mockReviewTimeApproval(ctx.user, input);
+    }
+    await ensureSchema();
+    const approvalCol = await getCollection(
+      Collections.timeApprovalRequests
+    );
+    const request = await approvalCol.findOne({ id: input.id });
+    if (!request) throw new Error("Approval request not found");
+    if (request.status !== "pending") {
+      throw new Error("This request has already been reviewed");
+    }
+    const now2 = /* @__PURE__ */ new Date();
+    const approved = input.action === "approve";
+    const userCol = await getCollection(Collections.users);
+    const employee = await userCol.findOne({ id: request.userId });
+    if (approved) {
+      if (request.type === "clock_in") {
+        const sessionCol = await getCollection(Collections.workSessions);
+        const session = request.workSessionId ? await sessionCol.findOne({ id: request.workSessionId }) : null;
+        if (!session) throw new Error("Work session not found");
+        const timeCol = await getCollection(Collections.timeEntries);
+        const entry = request.timeEntryId ? await timeCol.findOne({ id: request.timeEntryId }) : null;
+        await applyClockInApproval(request, session, entry);
+      } else if (request.type === "break") {
+        const breakCol = await getCollection(Collections.workBreaks);
+        const breakItem = request.workBreakId ? await breakCol.findOne({ id: request.workBreakId }) : null;
+        if (!breakItem) throw new Error("Break not found");
+        await applyBreakApproval(request, breakItem);
+      }
+    }
+    await updateById(Collections.timeApprovalRequests, request.id, {
+      status: approved ? "approved" : "rejected",
+      reviewedBy: ctx.user.id,
+      reviewedAt: now2,
+      reviewNote: input.reviewNote?.trim() || null,
+      updatedAt: now2
+    });
+    const employeeName = employee?.name || "Employee";
+    const reviewMessage = approved ? `Your ${request.type === "clock_in" ? "manual clock-in" : "break edit"} request was approved.` : `Your ${request.type === "clock_in" ? "manual clock-in" : "break edit"} request was rejected.${input.reviewNote ? ` Note: ${input.reviewNote.trim()}` : ""}`;
+    await notifyUserOfTimeReview(request.userId, ctx.user, approved, reviewMessage);
+    return { success: true, approved, employeeName };
+  }),
   getStats: authedQuery.input(external_exports.object({ period: external_exports.enum(["today", "week", "month"]).default("week") })).query(async ({ ctx, input }) => {
     if (isAuthDisabled() || !hasMongoConfigured()) {
       return mockTimeStats(ctx.user.id, input.period);
     }
     await ensureSchema();
     const now2 = /* @__PURE__ */ new Date();
-    let startDate = /* @__PURE__ */ new Date();
-    if (input.period === "today") {
-      startDate.setHours(0, 0, 0, 0);
-    } else if (input.period === "week") {
-      startDate = startOfCalendarWeek(now2);
-    } else {
-      startDate.setMonth(now2.getMonth() - 1);
-    }
+    const { start: startDate, end: endDate } = periodClockInBounds(input.period, now2);
     const timeCol = await getCollection(Collections.timeEntries);
     const entries = await timeCol.find({
       userId: ctx.user.id,
-      clockIn: { $gte: startDate },
-      duration: { $ne: null }
+      taskId: null,
+      clockIn: { $gte: startDate, $lte: endDate },
+      clockOut: { $ne: null }
     }).toArray();
-    const totalMinutes = entries.reduce((sum, e) => sum + (e.duration || 0), 0);
-    const dailyMap = /* @__PURE__ */ new Map();
+    const dailyMapSeconds = /* @__PURE__ */ new Map();
     entries.forEach((e) => {
       const date5 = localDateKey(e.clockIn);
-      dailyMap.set(date5, (dailyMap.get(date5) || 0) + (e.duration || 0));
+      dailyMapSeconds.set(
+        date5,
+        (dailyMapSeconds.get(date5) || 0) + attendanceEntrySeconds(e)
+      );
     });
-    const summary = buildTimeStatsSummary(totalMinutes, dailyMap, input.period);
+    const session = await findActiveSession2(ctx.user.id);
+    let activeSession = null;
+    if (session) {
+      const sessionDate = localDateKey(session.startTime);
+      const sessionInPeriod = session.startTime >= startDate && session.startTime <= endDate;
+      if (sessionInPeriod) {
+        const workSeconds = computeSessionWorkSeconds({
+          ...session,
+          startTime: session.startTime
+        }, now2);
+        dailyMapSeconds.set(
+          sessionDate,
+          (dailyMapSeconds.get(sessionDate) || 0) + workSeconds
+        );
+        activeSession = { date: sessionDate, workSeconds };
+      }
+    }
+    const totalSeconds = Array.from(dailyMapSeconds.values()).reduce(
+      (sum, seconds) => sum + seconds,
+      0
+    );
+    const dailyMapMinutes = new Map(
+      Array.from(dailyMapSeconds.entries()).map(([date5, seconds]) => [
+        date5,
+        seconds / 60
+      ])
+    );
+    const summary = buildTimeStatsSummary(totalSeconds / 60, dailyMapMinutes, input.period);
     return {
       ...summary,
-      entriesCount: entries.length
+      totalSeconds,
+      entriesCount: entries.length,
+      activeSession
     };
   }),
   getTeamHours: adminQuery.input(external_exports.object({
+    date: external_exports.string().optional(),
     startDate: external_exports.string().optional(),
     endDate: external_exports.string().optional()
   }).optional()).query(async ({ input }) => {
-    if (isAuthDisabled() || !hasMongoConfigured()) return mockTeamHours();
+    if (isAuthDisabled() || !hasMongoConfigured()) {
+      return mockTeamHours(input ?? void 0);
+    }
     await ensureSchema();
-    const now2 = /* @__PURE__ */ new Date();
-    const start = input?.startDate ? new Date(input.startDate) : new Date(now2.getTime() - 7 * 864e5);
-    const end = input?.endDate ? new Date(input.endDate) : now2;
+    let dateStr;
+    if (input?.date) {
+      dateStr = input.date;
+    } else {
+      dateStr = localDateKey(/* @__PURE__ */ new Date());
+    }
     const userCol = await getCollection(Collections.users);
     const allUsers = await userCol.find({ status: "active" }).project({ id: 1, name: 1, avatar: 1, role: 1 }).toArray();
-    const timeCol = await getCollection(Collections.timeEntries);
+    const now2 = /* @__PURE__ */ new Date();
     const teamHours = await Promise.all(
       allUsers.map(async (user) => {
-        const entries = await timeCol.find({
-          userId: user.id,
-          clockIn: { $gte: start, $lte: end },
-          duration: { $ne: null }
-        }).toArray();
-        const totalMinutes = entries.reduce((sum, e) => sum + (e.duration || 0), 0);
+        const day2 = await buildDayHoursForUser(user.id, dateStr, now2);
         return {
           userId: user.id,
           name: user.name || "Unknown",
           avatar: user.avatar,
           role: user.role,
-          totalHours: Math.round(totalMinutes / 60 * 10) / 10,
-          entriesCount: entries.length
+          totalHours: day2.totalHours,
+          entriesCount: day2.entriesCount
         };
       })
     );
@@ -58834,7 +61605,11 @@ var timeEntryRouter = createRouter({
     await ensureSchema();
     const clockIn = new Date(input.clockIn);
     const clockOut = new Date(input.clockOut);
-    const duration3 = Math.floor((clockOut.getTime() - clockIn.getTime()) / 6e4);
+    const durationSeconds = Math.max(
+      0,
+      Math.floor((clockOut.getTime() - clockIn.getTime()) / 1e3)
+    );
+    const duration3 = Math.floor(durationSeconds / 60);
     const now2 = /* @__PURE__ */ new Date();
     return insertDoc(Collections.timeEntries, {
       userId: input.userId,
@@ -58843,6 +61618,7 @@ var timeEntryRouter = createRouter({
       clockIn,
       clockOut,
       duration: duration3,
+      durationSeconds,
       note: input.note || "Manual entry",
       source: "manual",
       createdAt: now2,
@@ -58858,7 +61634,7 @@ var timeEntryRouter = createRouter({
 });
 
 // api/notification-router.ts
-function useMock3() {
+function useMock4() {
   return isAuthDisabled() || !hasMongoConfigured();
 }
 var notificationRouter = createRouter({
@@ -58870,7 +61646,7 @@ var notificationRouter = createRouter({
     }).optional()
   ).query(async ({ ctx, input }) => {
     const { unreadOnly = false, page = 1, limit = 50 } = input || {};
-    if (useMock3()) return mockNotificationList(ctx.user.id, unreadOnly);
+    if (useMock4()) return mockNotificationList(ctx.user.id, unreadOnly);
     await ensureSchema();
     const offset = (page - 1) * limit;
     const filter = { userId: ctx.user.id };
@@ -58886,12 +61662,12 @@ var notificationRouter = createRouter({
     };
   }),
   markRead: authedQuery.input(external_exports.object({ id: external_exports.number() })).mutation(async ({ ctx, input }) => {
-    if (useMock3()) return mockMarkNotificationRead(ctx.user.id, input.id);
+    if (useMock4()) return mockMarkNotificationRead(ctx.user.id, input.id);
     await ensureSchema();
     return updateById(Collections.notifications, input.id, { read: true });
   }),
   markAllRead: authedQuery.mutation(async ({ ctx }) => {
-    if (useMock3()) return mockMarkAllNotificationsRead(ctx.user.id);
+    if (useMock4()) return mockMarkAllNotificationsRead(ctx.user.id);
     await ensureSchema();
     const col = await getCollection(Collections.notifications);
     await col.updateMany(
@@ -58901,7 +61677,7 @@ var notificationRouter = createRouter({
     return { success: true };
   }),
   delete: authedQuery.input(external_exports.object({ id: external_exports.number() })).mutation(async ({ ctx, input }) => {
-    if (useMock3()) return mockDeleteNotification(ctx.user.id, input.id);
+    if (useMock4()) return mockDeleteNotification(ctx.user.id, input.id);
     await ensureSchema();
     const col = await getCollection(Collections.notifications);
     await col.deleteOne({ id: input.id });
@@ -59243,34 +62019,19 @@ var dashboardRouter = createRouter({
     }
     await ensureSchema();
     const userId = ctx.user.id;
-    const now2 = /* @__PURE__ */ new Date();
-    const weekAgo = new Date(now2.getTime() - 7 * 864e5);
+    const startOfToday = /* @__PURE__ */ new Date();
+    startOfToday.setHours(0, 0, 0, 0);
     const taskCol = await getCollection(Collections.tasks);
-    const [ongoingTasks, completedTasks, hoursTotal, performanceResult] = await Promise.all([
-      taskCol.countDocuments({ assigneeId: userId, status: "in_progress" }),
-      taskCol.countDocuments({ assigneeId: userId, status: "done" }),
-      sumDuration({ userId, clockIn: { $gte: weekAgo } }),
-      taskCol.aggregate([
-        { $match: { assigneeId: userId } },
-        {
-          $group: {
-            _id: null,
-            total: { $sum: 1 },
-            done: {
-              $sum: { $cond: [{ $eq: ["$status", "done"] }, 1, 0] }
-            }
-          }
-        }
-      ]).toArray()
+    const [taskCounts, hoursTotal] = await Promise.all([
+      taskCol.find({}, { projection: { status: 1, stage: 1, _id: 0 } }).toArray(),
+      sumDuration({ userId, clockIn: { $gte: startOfToday } })
     ]);
-    const totalTasks = performanceResult[0]?.total || 1;
-    const doneTasks = performanceResult[0]?.done || 0;
-    const completionRate = Math.round(doneTasks / totalTasks * 100);
+    const ongoingTasks = countTodoTasks(taskCounts);
+    const completedTasks = countCompletedTasks(taskCounts);
     return {
       ongoingTasks,
       completedTasks,
-      hoursTracked: Math.round(hoursTotal / 60 * 10) / 10,
-      teamPerformance: completionRate
+      hoursTracked: Math.round(hoursTotal / 60 * 10) / 10
     };
   }),
   getRecentTasks: authedQuery.input(external_exports.object({ limit: external_exports.number().default(10) }).optional()).query(async ({ ctx, input }) => {
@@ -59417,9 +62178,224 @@ async function createContext(opts) {
   return ctx;
 }
 
+// node_modules/hono/dist/utils/stream.js
+var StreamingApi = class {
+  writer;
+  encoder;
+  writable;
+  abortSubscribers = [];
+  responseReadable;
+  /**
+   * Whether the stream has been aborted.
+   */
+  aborted = false;
+  /**
+   * Whether the stream has been closed normally.
+   */
+  closed = false;
+  constructor(writable, _readable) {
+    this.writable = writable;
+    this.writer = writable.getWriter();
+    this.encoder = new TextEncoder();
+    const reader = _readable.getReader();
+    this.abortSubscribers.push(async () => {
+      await reader.cancel();
+    });
+    this.responseReadable = new ReadableStream({
+      async pull(controller) {
+        const { done, value } = await reader.read();
+        done ? controller.close() : controller.enqueue(value);
+      },
+      cancel: () => {
+        if (!this.closed) {
+          this.abort();
+        }
+      }
+    });
+  }
+  async write(input) {
+    try {
+      if (typeof input === "string") {
+        input = this.encoder.encode(input);
+      }
+      await this.writer.write(input);
+    } catch {
+    }
+    return this;
+  }
+  async writeln(input) {
+    await this.write(input + "\n");
+    return this;
+  }
+  sleep(ms) {
+    return new Promise((res) => setTimeout(res, ms));
+  }
+  async close() {
+    this.closed = true;
+    try {
+      await this.writer.close();
+    } catch {
+    }
+  }
+  async pipe(body) {
+    this.writer.releaseLock();
+    await body.pipeTo(this.writable, { preventClose: true });
+    this.writer = this.writable.getWriter();
+  }
+  onAbort(listener) {
+    this.abortSubscribers.push(listener);
+  }
+  /**
+   * Abort the stream.
+   * You can call this method when stream is aborted by external event.
+   */
+  abort() {
+    if (!this.aborted) {
+      this.aborted = true;
+      this.abortSubscribers.forEach((subscriber) => subscriber());
+    }
+  }
+};
+
+// node_modules/hono/dist/helper/streaming/utils.js
+var isOldBunVersion = () => {
+  const version2 = typeof Bun !== "undefined" ? Bun.version : void 0;
+  if (version2 === void 0) {
+    return false;
+  }
+  const result = version2.startsWith("1.1") || version2.startsWith("1.0") || version2.startsWith("0.");
+  isOldBunVersion = () => result;
+  return result;
+};
+
+// node_modules/hono/dist/helper/streaming/sse.js
+var SSEStreamingApi = class extends StreamingApi {
+  constructor(writable, readable) {
+    super(writable, readable);
+  }
+  async writeSSE(message2) {
+    const data = await resolveCallback(message2.data, HtmlEscapedCallbackPhase.Stringify, false, {});
+    const dataLines = data.split(/\r\n|\r|\n/).map((line) => {
+      return `data: ${line}`;
+    }).join("\n");
+    for (const key of ["event", "id", "retry"]) {
+      if (message2[key] && /[\r\n]/.test(message2[key])) {
+        throw new Error(`${key} must not contain "\\r" or "\\n"`);
+      }
+    }
+    const sseData = [
+      message2.event && `event: ${message2.event}`,
+      dataLines,
+      message2.id && `id: ${message2.id}`,
+      message2.retry && `retry: ${message2.retry}`
+    ].filter(Boolean).join("\n") + "\n\n";
+    await this.write(sseData);
+  }
+};
+var run2 = async (stream2, cb, onError) => {
+  try {
+    await cb(stream2);
+  } catch (e) {
+    if (e instanceof Error && onError) {
+      await onError(e, stream2);
+      await stream2.writeSSE({
+        event: "error",
+        data: e.message
+      });
+    } else {
+      console.error(e);
+    }
+  } finally {
+    stream2.close();
+  }
+};
+var contextStash = /* @__PURE__ */ new WeakMap();
+var streamSSE = (c, cb, onError) => {
+  const { readable, writable } = new TransformStream();
+  const stream2 = new SSEStreamingApi(writable, readable);
+  if (isOldBunVersion()) {
+    c.req.raw.signal.addEventListener("abort", () => {
+      if (!stream2.closed) {
+        stream2.abort();
+      }
+    });
+  }
+  contextStash.set(stream2.responseReadable, c);
+  c.header("Transfer-Encoding", "chunked");
+  c.header("Content-Type", "text/event-stream");
+  c.header("Cache-Control", "no-cache");
+  c.header("Connection", "keep-alive");
+  run2(stream2, cb, onError);
+  return c.newResponse(stream2.responseReadable);
+};
+
+// api/lib/notifications-feed.ts
+function useMock5() {
+  return isAuthDisabled() || !hasMongoConfigured();
+}
+async function getLatestNotificationId(userId) {
+  if (useMock5()) return mockLatestNotificationId(userId);
+  await ensureSchema();
+  const col = await getCollection(Collections.notifications);
+  const latest = await col.find({ userId }).sort({ id: -1 }).limit(1).next();
+  return latest?.id ?? 0;
+}
+async function listNotificationsSince(userId, sinceId) {
+  if (useMock5()) return mockNotificationsSince(userId, sinceId);
+  await ensureSchema();
+  const col = await getCollection(Collections.notifications);
+  return col.find({ userId, id: { $gt: sinceId } }).sort({ id: 1 }).toArray();
+}
+
+// api/notification-stream.ts
+var POLL_MS = 1e3;
+async function notificationStreamHandler(c) {
+  const ctx = await createContext({
+    req: c.req.raw,
+    resHeaders: c.res.headers
+  });
+  if (!ctx.user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  const userId = ctx.user.id;
+  return streamSSE(c, async (stream2) => {
+    let lastId = await getLatestNotificationId(userId);
+    let closed = false;
+    const onAbort = () => {
+      closed = true;
+    };
+    c.req.raw.signal.addEventListener("abort", onAbort);
+    try {
+      await stream2.writeSSE({
+        data: JSON.stringify({ type: "connected", lastId })
+      });
+      while (!closed) {
+        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+        if (closed) break;
+        const incoming = await listNotificationsSince(userId, lastId);
+        if (incoming.length > 0) {
+          lastId = Math.max(lastId, ...incoming.map((n) => n.id));
+          await stream2.writeSSE({
+            data: JSON.stringify({
+              type: "notifications",
+              notifications: incoming
+            })
+          });
+        } else {
+          await stream2.writeSSE({ data: JSON.stringify({ type: "ping" }) });
+        }
+      }
+    } finally {
+      c.req.raw.signal.removeEventListener("abort", onAbort);
+    }
+  });
+}
+
 // api/boot.ts
+startAutoClockOutScheduler();
 var app = new Hono2();
 app.use(bodyLimit({ maxSize: 50 * 1024 * 1024 }));
+app.get("/api/notifications/stream", notificationStreamHandler);
 app.use("/api/trpc/*", async (c) => {
   return fetchRequestHandler({
     endpoint: "/api/trpc",

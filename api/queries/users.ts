@@ -8,7 +8,7 @@ import { createEmployeeFromUser, deactivateEmployeeByUserId, syncEmployeeFromUse
 export type { SafeUser };
 
 export function omitPasswordHash(user: UserDoc): SafeUser {
-  const { passwordHash: _, ...safeUser } = user;
+  const { passwordHash: _passwordHash, privateNotes: _privateNotes, ...safeUser } = user;
   return safeUser;
 }
 
@@ -34,8 +34,36 @@ export async function updateLastSignIn(userId: number) {
 }
 
 export async function createUser(
-  data: Omit<UserDoc, "id" | "createdAt" | "updatedAt" | "lastSignInAt" | "permissions"> & {
+  data: {
+    unionId: string;
+    organizationId: number;
+    name?: string | null;
+    email?: string | null;
+    passwordHash?: string | null;
+    avatar?: string | null;
+    role: UserDoc["role"];
+    status?: UserDoc["status"];
+    department?: string | null;
+    position?: string | null;
+    phone?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+    secondName?: string | null;
+    dateOfBirth?: Date | null;
+    dateOfJoining?: Date | null;
+    sex?: UserDoc["sex"];
+    city?: string | null;
+    address?: string | null;
+    familyContactNumber?: string | null;
+    bloodGroup?: string | null;
+    aadhaarCard?: string | null;
+    panCard?: string | null;
+    notificationLanguage?: string | null;
+    privateNotes?: string | null;
+    employmentType?: "full_time" | "intern";
+    headOfDepartmentUserIds?: number[];
     permissions?: string[];
+    sortOrder?: number;
   },
   options?: { inviteId?: number | null },
 ) {
@@ -46,21 +74,36 @@ export async function createUser(
       ? await getEmployeeDefaultPermissions()
       : DEFAULT_PERMISSIONS_BY_ROLE[data.role] ?? DEFAULT_PERMISSIONS_BY_ROLE.employee);
 
+  const col = await getCollection<UserDoc>(Collections.users);
+  const last = await col.find({}).sort({ sortOrder: -1, id: -1 }).limit(1).next();
+  const sortOrder = data.sortOrder ?? ((last?.sortOrder ?? last?.id ?? 0) + 1);
+
   const user = await insertDoc<UserDoc>(Collections.users, {
     firstName: null,
     lastName: null,
     secondName: null,
     dateOfBirth: null,
+    dateOfJoining: null,
     sex: null,
     city: null,
+    address: null,
+    familyContactNumber: null,
+    personalEmail: null,
+    bloodGroup: null,
+    aadhaarCard: null,
+    panCard: null,
     notificationLanguage: null,
+    privateNotes: null,
+    employmentType: "full_time",
     headOfDepartmentUserIds: [],
     ...data,
+    organizationId: data.organizationId,
+    sortOrder,
     permissions,
     createdAt: now,
     updatedAt: now,
     lastSignInAt: now,
-  });
+  } as Omit<UserDoc, "id">);
 
   if (user.role === "employee") {
     await createEmployeeFromUser(user, { inviteId: options?.inviteId ?? null });
@@ -84,8 +127,13 @@ export async function upsertUser(
     return findUserById(existing.id);
   }
 
+  if (data.organizationId == null) {
+    throw new Error("organizationId is required when creating a user");
+  }
+
   return createUser({
     unionId: data.unionId,
+    organizationId: data.organizationId,
     name: data.name ?? null,
     email: data.email ?? null,
     passwordHash: data.passwordHash ?? null,

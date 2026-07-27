@@ -5,7 +5,10 @@ import { useLiveSessionTimers } from "@/hooks/useLiveSessionTimers";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import { trpc } from "@/providers/trpc";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { invalidateActiveTaskTimers } from "@/lib/invalidate-task-timers";
 import { ManualClockInRequestForm } from "@/components/time-tracking/ManualClockInRequestForm";
+import { CrossDayClockOutDialog } from "@/components/time-tracking/CrossDayClockOutDialog";
+import { useClockOutAction } from "@/hooks/useClockOutAction";
 import { formatElapsedHMS, roleConfig } from "@/lib/utils";
 import {
   ChevronRight,
@@ -34,12 +37,19 @@ export function ProfileMenu() {
   const [open, setOpen] = useState(false);
   const utils = trpc.useUtils();
 
-  const { data: todayStats } = trpc.timeEntry.getStats.useQuery({ period: "today" });
+  const { data: todayStats } = trpc.timeEntry.getStats.useQuery(
+    { period: "today" },
+    { enabled: open, staleTime: 30_000 },
+  );
   const hasWorkedToday = (todayStats?.totalSeconds ?? 0) > 0;
 
   const { data: currentSession, refetch: refetchSession } = trpc.timeEntry.getCurrentSession.useQuery(
     undefined,
-    { refetchInterval: open ? 30000 : false },
+    {
+      staleTime: 30_000,
+      // Dot indicator needs session even when closed; poll only while menu is open.
+      refetchInterval: open ? 30_000 : false,
+    },
   );
 
   const isClockedIn = !!currentSession?.active;
@@ -58,16 +68,15 @@ export function ProfileMenu() {
     utils.timeEntry.listPendingApprovals.invalidate();
     utils.dashboard.getStats.invalidate();
     utils.notification.list.invalidate();
+    invalidateActiveTaskTimers(utils);
   };
 
-  const clockInMutation = trpc.timeEntry.clockIn.useMutation({
-    onSuccess: () => {
-      invalidateTime();
-      refetchSession();
-    },
+  const clockOutAction = useClockOutAction(() => {
+    invalidateTime();
+    refetchSession();
   });
 
-  const clockOutMutation = trpc.timeEntry.clockOut.useMutation({
+  const clockInMutation = trpc.timeEntry.clockIn.useMutation({
     onSuccess: () => {
       invalidateTime();
       refetchSession();
@@ -90,11 +99,13 @@ export function ProfileMenu() {
 
   const isBusy =
     clockInMutation.isPending ||
-    clockOutMutation.isPending ||
+    clockOutAction.isPending ||
     pauseMutation.isPending ||
     resumeMutation.isPending;
 
-  const roleLabel = user?.role ? roleConfig[user.role].label : "Employee";
+  const roleLabel = user?.role
+    ? roleConfig[user.role as keyof typeof roleConfig]?.label ?? "Employee"
+    : "Employee";
   const subtitle = userPositionOrDepartment(user);
 
   return (
@@ -206,10 +217,10 @@ export function ProfileMenu() {
                 <button
                   type="button"
                   disabled={isBusy}
-                  onClick={() => clockOutMutation.mutate()}
+                  onClick={() => clockOutAction.requestClockOut(currentSession!.startTime)}
                   className="flex-1 h-9 flex items-center justify-center gap-1.5 rounded-lg bg-[#2563EB] text-white text-sm font-medium hover:bg-[#1D4ED8] transition-colors disabled:opacity-50"
                 >
-                  {clockOutMutation.isPending ? (
+                  {clockOutAction.isPending ? (
                     <Loader2 size={14} className="animate-spin" />
                   ) : (
                     <Power size={14} />
@@ -259,11 +270,22 @@ export function ProfileMenu() {
         >
           <span className="flex items-center gap-2.5">
             <Timer size={16} className="text-gray-400" />
-            Time tracking
+            Time Tracking
           </span>
           <ChevronRight size={16} className="text-gray-400 shrink-0" />
         </button>
       </PopoverContent>
+
+      {currentSession?.active ? (
+        <CrossDayClockOutDialog
+          open={clockOutAction.dialogOpen}
+          onOpenChange={clockOutAction.setDialogOpen}
+          sessionStartTime={currentSession.startTime}
+          isPending={clockOutAction.isPending}
+          onConfirmNow={clockOutAction.confirmClockOutNow}
+          onUpdateTime={clockOutAction.updateClockOutTime}
+        />
+      ) : null}
     </Popover>
   );
 }

@@ -12,7 +12,15 @@ export type StoredProfilePrefs = {
 export function readProfilePrefs(userId: number): StoredProfilePrefs | null {
   try {
     const raw = localStorage.getItem(`${PROFILE_PREFS_KEY}-${userId}`);
-    return raw ? (JSON.parse(raw) as StoredProfilePrefs) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredProfilePrefs;
+    // Department is authoritative from the server (admins can change it);
+    // never re-apply a cached department over auth.me.
+    if ("department" in parsed) {
+      const { department: _ignored, ...rest } = parsed;
+      return rest;
+    }
+    return parsed;
   } catch {
     return null;
   }

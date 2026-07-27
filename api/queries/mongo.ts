@@ -19,6 +19,8 @@ export async function getMongoDb(): Promise<Db> {
       client = new MongoClient(env.mongoUri, {
         serverSelectionTimeoutMS: 15000,
         connectTimeoutMS: 15000,
+        minPoolSize: 2,
+        maxPoolSize: 20,
         family: 4,
       });
       await client.connect();

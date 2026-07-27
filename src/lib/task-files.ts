@@ -69,6 +69,56 @@ export function getFileExtension(fileName: string) {
   return parts.length > 1 ? parts.pop()!.toLowerCase() : "";
 }
 
+const EXT_MIME: Record<string, string> = {
+  avif: "image/avif",
+  bmp: "image/bmp",
+  gif: "image/gif",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  svg: "image/svg+xml",
+  webp: "image/webp",
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  webm: "video/webm",
+  m4v: "video/x-m4v",
+  pdf: "application/pdf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  txt: "text/plain",
+  zip: "application/zip",
+};
+
+/** Prefer browser MIME; fall back to extension (drag-drop often omits type). */
+export function resolveFileMimeType(file: Pick<File, "name" | "type">): string {
+  const typed = file.type?.trim();
+  if (typed && typed !== "application/octet-stream") return typed;
+  const ext = getFileExtension(file.name);
+  return EXT_MIME[ext] ?? (typed || "application/octet-stream");
+}
+
+export function isImageFileName(fileName: string) {
+  return /\.(avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(fileName);
+}
+
+export function isVideoFileName(fileName: string) {
+  return /\.(mp4|mov|webm|m4v)$/i.test(fileName);
+}
+
+export function isImageMimeType(mimeType: string, fileName?: string) {
+  if (mimeType.startsWith("image/")) return true;
+  return fileName ? isImageFileName(fileName) : false;
+}
+
+export function isVideoMimeType(mimeType: string, fileName?: string) {
+  if (mimeType.startsWith("video/")) return true;
+  return fileName ? isVideoFileName(fileName) : false;
+}
+
 export function getTaskFileBadge(fileName: string, mimeType?: string): TaskFileBadge {
   const ext = getFileExtension(fileName);
   let kind = EXT_MAP[ext] ?? "file";
@@ -99,6 +149,16 @@ export function formatFileSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+export const MAX_TASK_ATTACHMENT_BYTES = 50 * 1024 * 1024; // per-file; stored in GridFS (not BSON docs)
+
+export function assertAttachmentFileSize(file: File | { name: string; size: number }) {
+  if (file.size <= MAX_TASK_ATTACHMENT_BYTES) return;
+  const maxMb = Math.round(MAX_TASK_ATTACHMENT_BYTES / (1024 * 1024));
+  throw new Error(
+    `"${file.name}" is too large (${formatFileSize(file.size)}). Max upload size is ${maxMb} MB.`,
+  );
+}
+
 export async function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -109,6 +169,21 @@ export async function readFileAsBase64(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error ?? new Error("Failed to read file"));
     reader.readAsDataURL(file);
   });
+}
+
+/** Resolve pending attachment payload to base64 when submitting (File or preloaded). */
+export async function resolveAttachmentBase64(file: {
+  fileName: string;
+  fileSize: number;
+  dataBase64?: string;
+  file?: File;
+}): Promise<string> {
+  if (file.dataBase64) return file.dataBase64;
+  if (file.file) {
+    assertAttachmentFileSize(file.file);
+    return readFileAsBase64(file.file);
+  }
+  throw new Error(`Missing file data for "${file.fileName}".`);
 }
 
 export function base64ToBlob(dataBase64: string, mimeType: string) {

@@ -1,3 +1,5 @@
+import { formatWorkZoneDateTime } from "@/lib/timezone";
+
 export type ProjectFunnelRole = "project_manager" | "assistant_manager" | "member";
 
 export const PROJECT_ROLE_CONFIG: Record<
@@ -22,29 +24,13 @@ export const PROJECT_ROLE_CONFIG: Record<
 };
 
 export function formatProjectActiveDate(value?: string | Date | null) {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("en-US", {
+  return formatWorkZoneDateTime(value, {
     month: "long",
     day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
   });
-}
-
-export function formatCreatorDepartment(
-  department?: string | null,
-  position?: string | null,
-): string {
-  const value = department?.trim() || position?.trim();
-  if (!value) return "—";
-
-  return value
-    .split(/\s+/)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-    .join(" ");
 }
 
 export function resolveProjectRole(

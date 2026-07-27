@@ -1,14 +1,14 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { trpc } from "@/providers/trpc";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import { RoleBadge } from "@/components/shared/StatusBadge";
 import {
   Users, Search, X, Loader2, Shield, UserCheck,
-  UserX, UserPlus, Link2, Copy, Check, KeyRound, Trash2,
+  UserX, UserPlus, Link2, Copy, Check, KeyRound, Trash2, GripVertical,
 } from "lucide-react";
 import { PERMISSION_GROUPS } from "@contracts/permissions";
 import { Checkbox } from "@/components/ui/checkbox";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import {
   Dialog,
   DialogContent,
@@ -18,42 +18,95 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { formatWorkZoneDate } from "@/lib/timezone";
 import { Label } from "@/components/ui/label";
 import { Invite } from "@contracts/constants";
+import { cn } from "@/lib/utils";
+import { useAuth } from "@/hooks/useAuth";
+import { hasPermission } from "@/lib/permissions";
+import { EmployeeDetailDialog } from "@/components/admin/EmployeeDetailDialog";
+import { departmentSelectOptions } from "@/lib/department-options";
+import { FilterSelect } from "@/components/shared/FilterSelect";
+import {
+  isInProbationPeriod,
+  resolveEmploymentType,
+  paidLeaveLockPeriodLabel,
+} from "@/lib/leave-policy";
+
+const EMPLOYEE_ROW_GRID =
+  "grid grid-cols-[32px_minmax(0,1.6fr)_minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,0.9fr)_140px] gap-3 px-5 items-center";
+
+type EmployeeRow = {
+  id: number;
+  name: string | null;
+  email: string | null;
+  avatar?: string | null;
+  department?: string | null;
+  role: string;
+  status: string;
+  permissions?: string[];
+  dateOfJoining?: Date | string | null;
+  employmentType?: string | null;
+  position?: string | null;
+};
 
 export default function AdminEmployees() {
+  const { user } = useAuth();
+  const canManageEmployees = hasPermission(user, "employees.manage");
+  const canManagePermissions = hasPermission(user, "permissions.manage");
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [editingUser, setEditingUser] = useState<number | null>(null);
-  const [editRole, setEditRole] = useState("");
+  const [editRole, setEditRole] = useState<"admin" | "manager" | "employee" | "hr" | "client">("employee");
+  const [editDepartment, setEditDepartment] = useState("");
+  const [savingEditId, setSavingEditId] = useState<number | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteUrl, setInviteUrl] = useState("");
-  const [inviteDepartment, setInviteDepartment] = useState("");
+  const [inviteEmail, setInviteEmail] = useState("");
   const [copied, setCopied] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
+  const [detailUserId, setDetailUserId] = useState<number | null>(null);
   const [accessUser, setAccessUser] = useState<{
     id: number;
     name: string | null;
     permissions: string[];
   } | null>(null);
   const [accessPermissions, setAccessPermissions] = useState<string[]>([]);
+  const [orderedUsers, setOrderedUsers] = useState<EmployeeRow[]>([]);
+  const [draggedId, setDraggedId] = useState<number | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<number | null>(null);
 
   const { data, isLoading } = trpc.user.list.useQuery({
     search: search || undefined,
     role: roleFilter || undefined,
     status: statusFilter || undefined,
+    limit: 500,
   });
 
-  const { data: pendingInvites, refetch: refetchInvites } = trpc.invite.list.useQuery();
+  const { data: pendingInvites, refetch: refetchInvites } = trpc.invite.list.useQuery(undefined, {
+    retry: false,
+    enabled: canManageEmployees,
+  });
 
   const utils = trpc.useUtils();
-  const updateRoleMutation = trpc.user.updateRole.useMutation({
+
+  useEffect(() => {
+    setOrderedUsers((data?.users ?? []) as EmployeeRow[]);
+  }, [data?.users]);
+
+  const canReorder = !search && !roleFilter && !statusFilter;
+
+  const reorderMutation = trpc.user.reorder.useMutation({
     onSuccess: () => {
       utils.user.list.invalidate();
-      setEditingUser(null);
+    },
+    onError: () => {
+      setOrderedUsers((data?.users ?? []) as EmployeeRow[]);
     },
   });
+
+  const updateRoleMutation = trpc.user.updateRole.useMutation();
 
   const updateStatusMutation = trpc.user.update.useMutation({
     onSuccess: () => {
@@ -61,12 +114,47 @@ export default function AdminEmployees() {
     },
   });
 
+  const updateEmployeeMutation = trpc.user.update.useMutation();
+
   const updatePermissionsMutation = trpc.user.update.useMutation({
     onSuccess: () => {
       utils.user.list.invalidate();
       setAccessUser(null);
     },
   });
+
+  async function saveEmployeeEdits(target: EmployeeRow) {
+    setSavingEditId(target.id);
+    try {
+      const nextDepartment = editDepartment.trim() || null;
+      const departmentChanged = (target.department ?? null) !== nextDepartment;
+      const roleChanged = target.role !== editRole;
+
+      if (roleChanged) {
+        await updateRoleMutation.mutateAsync({ id: target.id, role: editRole });
+      }
+      if (departmentChanged) {
+        await updateEmployeeMutation.mutateAsync({
+          id: target.id,
+          department: nextDepartment,
+        });
+      }
+      await utils.user.list.invalidate();
+      setEditingUser(null);
+    } finally {
+      setSavingEditId(null);
+    }
+  }
+
+  function startEditing(target: EmployeeRow) {
+    if (editingUser === target.id) {
+      setEditingUser(null);
+      return;
+    }
+    setEditingUser(target.id);
+    setEditRole(target.role as "admin" | "manager" | "employee" | "hr" | "client");
+    setEditDepartment(target.department ?? "");
+  }
 
   const createInviteMutation = trpc.invite.create.useMutation({
     onSuccess: (result) => {
@@ -99,16 +187,23 @@ export default function AdminEmployees() {
   function handleOpenInvite() {
     setInviteOpen(true);
     setInviteUrl("");
-    setInviteDepartment("");
+    setInviteEmail("");
     setInviteError(null);
     setCopied(false);
   }
 
   function handleGenerateInvite() {
     setInviteError(null);
-    createInviteMutation.mutate({
-      department: inviteDepartment.trim() || undefined,
-    });
+    const email = inviteEmail.trim().toLowerCase();
+    if (!email) {
+      setInviteError("Email is required.");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setInviteError("Please enter a valid email address.");
+      return;
+    }
+    createInviteMutation.mutate({ email });
   }
 
   async function handleCopyLink() {
@@ -129,6 +224,58 @@ export default function AdminEmployees() {
     );
   }
 
+  function handleDragStart(e: React.DragEvent, id: number) {
+    if (!canReorder) {
+      e.preventDefault();
+      return;
+    }
+    setDraggedId(id);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", String(id));
+  }
+
+  function handleDragOver(e: React.DragEvent, id: number) {
+    if (!canReorder || draggedId == null || draggedId === id) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setDropTargetId(id);
+  }
+
+  function handleDrop(e: React.DragEvent, targetId: number) {
+    e.preventDefault();
+    if (!canReorder || draggedId == null || draggedId === targetId) {
+      setDraggedId(null);
+      setDropTargetId(null);
+      return;
+    }
+
+    const fromIndex = orderedUsers.findIndex((u) => u.id === draggedId);
+    const toIndex = orderedUsers.findIndex((u) => u.id === targetId);
+    if (fromIndex < 0 || toIndex < 0) {
+      setDraggedId(null);
+      setDropTargetId(null);
+      return;
+    }
+
+    const next = [...orderedUsers];
+    const [moved] = next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, moved);
+    setOrderedUsers(next);
+    setDraggedId(null);
+    setDropTargetId(null);
+    reorderMutation.mutate({ orderedIds: next.map((u) => u.id) });
+  }
+
+  function handleDragEnd() {
+    setDraggedId(null);
+    setDropTargetId(null);
+  }
+
+  const totalLabel = useMemo(
+    () => data?.total ?? orderedUsers.length,
+    [data?.total, orderedUsers.length],
+  );
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-5">
       {/* Header */}
@@ -136,16 +283,19 @@ export default function AdminEmployees() {
         <div>
           <h1 className="text-2xl font-bold text-[#1F2937]">Employees</h1>
           <p className="text-sm text-gray-500 mt-0.5">
-            {data?.total ?? 0} total employees
+            {totalLabel} total employees
+            {canReorder ? " · drag rows to reorder" : " · clear filters to reorder"}
           </p>
         </div>
-        <Button
-          onClick={handleOpenInvite}
-          className="bg-[#2563EB] hover:bg-[#1D4ED8] gap-2"
-        >
-          <UserPlus size={16} />
-          Invite Employee
-        </Button>
+        {canManageEmployees ? (
+          <Button
+            onClick={handleOpenInvite}
+            className="bg-[#2563EB] hover:bg-[#1D4ED8] gap-2"
+          >
+            <UserPlus size={16} />
+            Invite Employee
+          </Button>
+        ) : null}
       </div>
 
       {/* Pending invites */}
@@ -166,8 +316,8 @@ export default function AdminEmployees() {
                 <div className="min-w-0 flex-1">
                   <p className="text-xs text-gray-500 truncate">{invite.url}</p>
                   <p className="text-xs text-gray-400 mt-0.5">
-                    {invite.department ? `${invite.department} · ` : ""}
-                    Expires {new Date(invite.expiresAt).toLocaleDateString()}
+                    {invite.email ? `${invite.email} · ` : ""}
+                    Expires {formatWorkZoneDate(invite.expiresAt)}
                   </p>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
@@ -205,26 +355,31 @@ export default function AdminEmployees() {
             className="w-full h-9 pl-9 pr-4 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20"
           />
         </div>
-        <select
+        <FilterSelect
           value={roleFilter}
-          onChange={(e) => setRoleFilter(e.target.value)}
-          className="h-9 px-3 bg-gray-50 border border-gray-200 rounded-lg text-sm"
-        >
-          <option value="">All Roles</option>
-          <option value="admin">Admin</option>
-          <option value="manager">Manager</option>
-          <option value="employee">Employee</option>
-        </select>
-        <select
+          onChange={setRoleFilter}
+          options={[
+            { value: "", label: "All Roles" },
+            { value: "admin", label: "Admin" },
+            { value: "manager", label: "Manager" },
+            { value: "employee", label: "Employee" },
+            { value: "hr", label: "HR" },
+          ]}
+          aria-label="Filter by role"
+          triggerClassName="h-9 bg-gray-50"
+        />
+        <FilterSelect
           value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="h-9 px-3 bg-gray-50 border border-gray-200 rounded-lg text-sm"
-        >
-          <option value="">All Statuses</option>
-          <option value="active">Active</option>
-          <option value="inactive">Inactive</option>
-          <option value="suspended">Suspended</option>
-        </select>
+          onChange={setStatusFilter}
+          options={[
+            { value: "", label: "All Statuses" },
+            { value: "active", label: "Active" },
+            { value: "inactive", label: "Inactive" },
+            { value: "suspended", label: "Suspended" },
+          ]}
+          aria-label="Filter by status"
+          triggerClassName="h-9 bg-gray-50"
+        />
         {hasFilters && (
           <button onClick={clearFilters} className="h-9 px-3 text-sm text-gray-500 hover:text-[#2563EB] flex items-center gap-1">
             <X size={14} /> Clear
@@ -233,120 +388,235 @@ export default function AdminEmployees() {
       </div>
 
       {/* Employee Table */}
-      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-        <div className="grid grid-cols-[1fr_140px_140px_100px_120px] gap-4 px-5 py-3 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-          <span>Employee</span>
-          <span>Department</span>
-          <span>Role</span>
-          <span>Status</span>
-          <span>Actions</span>
-        </div>
-
-        {isLoading && (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 size={24} className="animate-spin text-gray-400" />
+      <div className="bg-white border border-gray-200 rounded-xl overflow-x-auto">
+        <div className="min-w-[720px]">
+          <div
+            className={cn(
+              EMPLOYEE_ROW_GRID,
+              "py-3 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider",
+            )}
+          >
+            <span aria-hidden className="block w-4" />
+            <span className="min-w-0 truncate">Employee</span>
+            <span className="min-w-0 truncate">Department</span>
+            <span className="min-w-0 truncate">Role</span>
+            <span className="min-w-0 truncate">Status</span>
+            <span className="min-w-0 truncate">Actions</span>
           </div>
-        )}
 
-        <AnimatePresence>
-          {data?.users.map((u) => (
-            <motion.div
-              key={u.id}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="grid grid-cols-[1fr_140px_140px_100px_120px] gap-4 px-5 py-3.5 border-b border-gray-50 hover:bg-gray-50 transition-colors items-center"
-            >
-              <div className="flex items-center gap-3">
-                <UserAvatar name={u.name} avatar={u.avatar} size={32} />
-                <div className="min-w-0">
-                  <div className="text-sm font-medium text-[#1F2937]">{u.name || "Unknown"}</div>
-                  <div className="text-xs text-gray-400 truncate">{u.email || "No email"}</div>
+          {isLoading && (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 size={24} className="animate-spin text-gray-400" />
+            </div>
+          )}
+
+          <div>
+            {orderedUsers.map((u) => (
+              <div
+                key={u.id}
+                draggable={canReorder}
+                onDragStart={(e) => handleDragStart(e, u.id)}
+                onDragOver={(e) => handleDragOver(e, u.id)}
+                onDrop={(e) => handleDrop(e, u.id)}
+                onDragEnd={handleDragEnd}
+                className={cn(
+                  EMPLOYEE_ROW_GRID,
+                  "py-3.5 border-b border-gray-50 hover:bg-gray-50 transition-colors",
+                  canReorder && "cursor-grab active:cursor-grabbing",
+                  draggedId === u.id && "opacity-50 bg-blue-50",
+                  dropTargetId === u.id && draggedId !== u.id && "border-t-2 border-t-[#2563EB]",
+                )}
+              >
+                <div
+                  className={cn(
+                    "flex items-center justify-center text-gray-300",
+                    canReorder ? "text-gray-400" : "opacity-40",
+                  )}
+                  title={canReorder ? "Drag to reorder" : "Clear filters to reorder"}
+                  aria-hidden
+                >
+                  <GripVertical size={16} />
                 </div>
-              </div>
-              <div className="text-sm text-gray-600">{u.department || "—"}</div>
-              <div>
-                {editingUser === u.id ? (
-                  <div className="flex items-center gap-1">
+                <div className="flex items-center gap-3 min-w-0">
+                  <button
+                    type="button"
+                    disabled={!canManageEmployees}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!canManageEmployees) return;
+                      setDetailUserId(u.id);
+                    }}
+                    className={cn(
+                      "flex items-center gap-3 min-w-0 text-left rounded-lg -ml-1 pl-1 pr-2 py-1 transition-colors",
+                      canManageEmployees
+                        ? "hover:bg-gray-100 cursor-pointer"
+                        : "cursor-default",
+                    )}
+                    title={canManageEmployees ? "View employee details" : undefined}
+                  >
+                    <UserAvatar name={u.name} avatar={u.avatar} size={32} />
+                    <div className="min-w-0">
+                      <div
+                        className={cn(
+                          "text-sm font-medium truncate capitalize",
+                          canManageEmployees ? "text-[#2563EB]" : "text-[#1F2937]",
+                        )}
+                      >
+                        {u.name || "Unknown"}
+                      </div>
+                      <div className="text-xs text-gray-400 truncate">{u.email || "No email"}</div>
+                    </div>
+                  </button>
+                </div>
+                <div className="min-w-0">
+                  {editingUser === u.id && canManageEmployees ? (
+                    <select
+                      value={editDepartment}
+                      onChange={(e) => setEditDepartment(e.target.value)}
+                      className="h-8 w-full max-w-full px-2 border border-gray-200 rounded-lg text-xs bg-white"
+                      aria-label="Edit department"
+                    >
+                      <option value="">No department</option>
+                      {departmentSelectOptions(u.department, "all").map((dept) => (
+                        <option key={dept} value={dept}>
+                          {dept}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="text-sm text-gray-600 truncate">{u.department || "—"}</div>
+                  )}
+                </div>
+                <div className="min-w-0">
+                  {editingUser === u.id && canManageEmployees ? (
                     <select
                       value={editRole}
-                      onChange={(e) => setEditRole(e.target.value)}
-                      className="h-7 px-2 border border-gray-200 rounded text-xs"
+                      onChange={(e) =>
+                        setEditRole(e.target.value as "admin" | "manager" | "employee" | "hr" | "client")
+                      }
+                      className="h-8 w-full max-w-full px-2 border border-gray-200 rounded-lg text-xs bg-white"
+                      aria-label="Edit role"
                     >
                       <option value="admin">Admin</option>
                       <option value="manager">Manager</option>
                       <option value="employee">Employee</option>
+                      <option value="hr">HR</option>
+                      <option value="client">Client</option>
                     </select>
-                    <button
-                      onClick={() => updateRoleMutation.mutate({ id: u.id, role: editRole as "admin" | "manager" | "employee" })}
-                      className="h-7 px-2 bg-[#2563EB] text-white rounded text-xs"
-                    >
-                      Save
-                    </button>
-                  </div>
-                ) : (
-                  <RoleBadge role={u.role as "admin" | "manager" | "employee"} />
-                )}
-              </div>
-              <div>
-                <span
-                  className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                    u.status === "active"
-                      ? "bg-emerald-50 text-emerald-600"
-                      : u.status === "inactive"
-                      ? "bg-gray-100 text-gray-500"
-                      : "bg-blue-50 text-blue-600"
-                  }`}
-                >
-                  {u.status}
-                </span>
-              </div>
-              <div className="flex items-center gap-1">
-                {u.role === "employee" && (
-                  <button
-                    onClick={() => openAccessDialog(u)}
-                    className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200 transition-colors"
-                    title="Manage access"
-                  >
-                    <KeyRound size={14} className="text-[#2563EB]" />
-                  </button>
-                )}
-                <button
-                  onClick={() => {
-                    setEditingUser(editingUser === u.id ? null : u.id);
-                    setEditRole(u.role);
-                  }}
-                  className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200 transition-colors"
-                  title="Edit role"
-                >
-                  <Shield size={14} className="text-gray-500" />
-                </button>
-                <button
-                  onClick={() =>
-                    updateStatusMutation.mutate({
-                      id: u.id,
-                      status: u.status === "active" ? "inactive" : "active",
-                    })
-                  }
-                  className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200 transition-colors"
-                  title={u.status === "active" ? "Deactivate" : "Activate"}
-                >
-                  {u.status === "active" ? (
-                    <UserX size={14} className="text-blue-400" />
                   ) : (
-                    <UserCheck size={14} className="text-emerald-500" />
+                    <RoleBadge role={u.role as "admin" | "manager" | "employee" | "hr" | "client"} />
                   )}
-                </button>
+                </div>
+                <div className="min-w-0 flex flex-wrap items-center gap-1.5">
+                  <span
+                    className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium capitalize ${
+                      u.status === "active"
+                        ? "bg-emerald-50 text-emerald-600"
+                        : u.status === "inactive"
+                        ? "bg-gray-100 text-gray-500"
+                        : "bg-blue-50 text-blue-600"
+                    }`}
+                  >
+                    {u.status}
+                  </span>
+                  {canManageEmployees &&
+                  isInProbationPeriod(
+                    u.dateOfJoining,
+                    new Date(),
+                    resolveEmploymentType(u),
+                  ) ? (
+                    <span
+                      className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700"
+                      title={`No paid leave during ${paidLeaveLockPeriodLabel(resolveEmploymentType(u))} (starts next month if joined on/after the 20th)`}
+                    >
+                      {resolveEmploymentType(u) === "intern"
+                        ? "Internship / probation"
+                        : "In probation"}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="flex items-center gap-1">
+                  {editingUser === u.id && canManageEmployees ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void saveEmployeeEdits(u)}
+                        disabled={savingEditId === u.id}
+                        className="h-7 px-2.5 bg-[#2563EB] text-white rounded-lg text-xs font-medium hover:bg-[#1D4ED8] disabled:opacity-50 inline-flex items-center gap-1"
+                      >
+                        {savingEditId === u.id ? (
+                          <Loader2 size={12} className="animate-spin" />
+                        ) : null}
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingUser(null)}
+                        disabled={savingEditId === u.id}
+                        className="h-7 px-2 text-xs text-gray-500 hover:text-gray-800"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {(u.role !== "admin") && canManagePermissions && (
+                        <button
+                          onClick={() => openAccessDialog(u)}
+                          className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200 transition-colors"
+                          title="Manage access"
+                        >
+                          <KeyRound size={14} className="text-[#2563EB]" />
+                        </button>
+                      )}
+                      {canManageEmployees ? (
+                        <button
+                          onClick={() => startEditing(u)}
+                          className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200 transition-colors"
+                          title="Edit department & role"
+                        >
+                          <Shield size={14} className="text-gray-500" />
+                        </button>
+                      ) : null}
+                      {canManageEmployees ? (
+                        <button
+                          onClick={() => {
+                            const nextStatus = u.status === "active" ? "inactive" : "active";
+                            if (nextStatus === "inactive") {
+                              const confirmed = window.confirm(
+                                "Are you sure you want to deactivate this user?",
+                              );
+                              if (!confirmed) return;
+                            }
+                            updateStatusMutation.mutate({
+                              id: u.id,
+                              status: nextStatus,
+                            });
+                          }}
+                          className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200 transition-colors"
+                          title={u.status === "active" ? "Deactivate" : "Activate"}
+                        >
+                          {u.status === "active" ? (
+                            <UserX size={14} className="text-blue-400" />
+                          ) : (
+                            <UserCheck size={14} className="text-emerald-500" />
+                          )}
+                        </button>
+                      ) : null}
+                    </>
+                  )}
+                </div>
               </div>
-            </motion.div>
-          ))}
-        </AnimatePresence>
-
-        {data?.users.length === 0 && !isLoading && (
-          <div className="py-12 text-center">
-            <Users size={36} className="mx-auto text-gray-200 mb-2" />
-            <p className="text-gray-500 text-sm">No employees found</p>
+            ))}
           </div>
-        )}
+
+          {orderedUsers.length === 0 && !isLoading && (
+            <div className="py-12 text-center">
+              <Users size={36} className="mx-auto text-gray-200 mb-2" />
+              <p className="text-gray-500 text-sm">No employees found</p>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Invite dialog */}
@@ -355,19 +625,23 @@ export default function AdminEmployees() {
           <DialogHeader>
             <DialogTitle>Invite via link</DialogTitle>
             <DialogDescription>
-              Share this link with a new employee. They will create their account with email and password.
-              Each link is unique, single-use, and expires after {Invite.expiryDays} days.
+              Enter the employee&apos;s email, then generate a unique invite link.
+              They will create their account with that email and a password.
+              Each link is single-use and expires after {Invite.expiryDays} days.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-5 pt-2">
             <div className="space-y-2">
-              <Label htmlFor="inviteDepartment">Department (optional)</Label>
+              <Label htmlFor="inviteEmail">Email</Label>
               <Input
-                id="inviteDepartment"
-                placeholder="e.g. Engineering, Sales"
-                value={inviteDepartment}
-                onChange={(e) => setInviteDepartment(e.target.value)}
+                id="inviteEmail"
+                type="email"
+                required
+                placeholder="name@company.com"
+                value={inviteEmail}
+                onChange={(e) => setInviteEmail(e.target.value)}
+                autoComplete="email"
               />
             </div>
 
@@ -409,7 +683,7 @@ export default function AdminEmployees() {
               </Button>
               <Button
                 onClick={handleGenerateInvite}
-                disabled={createInviteMutation.isPending}
+                disabled={createInviteMutation.isPending || !inviteEmail.trim()}
                 className="bg-[#2563EB] hover:bg-[#1D4ED8] gap-2"
               >
                 {createInviteMutation.isPending ? (
@@ -483,6 +757,17 @@ export default function AdminEmployees() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {canManageEmployees ? (
+        <EmployeeDetailDialog
+          userId={detailUserId}
+          open={detailUserId != null}
+          onOpenChange={(open) => {
+            if (!open) setDetailUserId(null);
+          }}
+          canEdit
+        />
+      ) : null}
     </motion.div>
   );
 }

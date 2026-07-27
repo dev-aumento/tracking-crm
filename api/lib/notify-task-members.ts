@@ -1,6 +1,7 @@
 import { Collections } from "@db/mongo/collections";
-import type { NotificationDoc, SafeUser, TaskDoc } from "@db/mongo/types";
+import type { NotificationDoc, SafeUser, TaskDoc, UserDoc } from "@db/mongo/types";
 import { findById, getCollection, insertDoc } from "../queries/connection";
+import { isHrDepartmentUser } from "@/lib/leave-policy";
 
 type NotifyTaskMembersInput = {
   taskId: number;
@@ -8,9 +9,16 @@ type NotifyTaskMembersInput = {
   type: NotificationDoc["type"];
   title: string;
   message: string;
-  /** Additional recipients beyond assignee + participants (e.g. newly added member). */
+  activityId?: number | null;
+  /**
+   * Extra recipients (e.g. newly added participant).
+   * Participants are never notified by default — only the assignee falls
+   * through unless includeAssignee is false.
+   */
   extraRecipientIds?: number[];
   excludeUserIds?: number[];
+  /** When false, skip the task assignee (e.g. participant-only alerts). Default true. */
+  includeAssignee?: boolean;
 };
 
 export async function getTaskRecipientIds(taskId: number) {
@@ -30,24 +38,41 @@ export async function getTaskRecipientIds(taskId: number) {
   };
 }
 
+async function excludeHrRecipientIds(userIds: number[]): Promise<number[]> {
+  if (userIds.length === 0) return [];
+  const usersCol = await getCollection<UserDoc>(Collections.users);
+  const users = await usersCol
+    .find({ id: { $in: userIds } })
+    .project({ id: 1, role: 1, department: 1 })
+    .toArray();
+  const allowed = new Set(
+    users.filter((user) => !isHrDepartmentUser(user)).map((user) => user.id),
+  );
+  return userIds.filter((id) => allowed.has(id));
+}
+
 export async function notifyTaskMembers({
   taskId,
   actor,
   type,
   title,
   message,
+  activityId = null,
   extraRecipientIds = [],
   excludeUserIds = [],
+  includeAssignee = true,
 }: NotifyTaskMembersInput) {
-  const { assigneeId, participantIds } = await getTaskRecipientIds(taskId);
+  const { assigneeId } = await getTaskRecipientIds(taskId);
   const excluded = new Set([actor.id, ...excludeUserIds]);
   const recipientIds = new Set<number>();
 
-  if (assigneeId != null) recipientIds.add(assigneeId);
-  for (const id of participantIds) recipientIds.add(id);
+  if (includeAssignee && assigneeId != null) {
+    recipientIds.add(assigneeId);
+  }
   for (const id of extraRecipientIds) recipientIds.add(id);
 
-  const recipients = [...recipientIds].filter((id) => !excluded.has(id));
+  const candidates = [...recipientIds].filter((id) => !excluded.has(id));
+  const recipients = await excludeHrRecipientIds(candidates);
   if (recipients.length === 0) return;
 
   const now = new Date();
@@ -55,11 +80,13 @@ export async function notifyTaskMembers({
     recipients.map((userId) =>
       insertDoc<NotificationDoc>(Collections.notifications, {
         userId,
+        organizationId: actor.organizationId,
         actorId: actor.id,
         type,
         title,
         message,
         taskId,
+        activityId,
         read: false,
         createdAt: now,
       }),

@@ -6,14 +6,16 @@ import {
   subscribeNotificationStream,
   type StreamNotification,
 } from "@/lib/notification-stream-client";
+import { invalidateQueriesForNotifications } from "@/lib/invalidate-on-notifications";
 
 export type { StreamNotification };
 
 export const notificationListQueryOptions = {
-  staleTime: 0,
-  refetchInterval: 10_000,
-  refetchIntervalInBackground: true,
-  refetchOnWindowFocus: true,
+  staleTime: 60_000,
+  // SSE invalidates the list; keep a slow fallback poll if the stream drops.
+  refetchInterval: 60_000,
+  refetchIntervalInBackground: false,
+  refetchOnWindowFocus: false,
 } as const;
 
 function useNotificationInvalidation() {
@@ -23,8 +25,8 @@ function useNotificationInvalidation() {
   useEffect(() => {
     if (!user) return;
 
-    return registerNotificationStreamInvalidator(() => {
-      void utils.notification.list.invalidate();
+    return registerNotificationStreamInvalidator((notifications) => {
+      invalidateQueriesForNotifications(utils, notifications);
     });
   }, [user, utils]);
 }

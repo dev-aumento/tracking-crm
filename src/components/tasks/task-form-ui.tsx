@@ -1,6 +1,13 @@
 import type { LucideIcon } from "lucide-react";
 import { UserAvatar } from "@/components/shared/UserAvatar";
-import { cn } from "@/lib/utils";
+import { cn, priorityConfig } from "@/lib/utils";
+
+export const TASK_PRIORITY_OPTIONS = ["low", "medium", "high", "urgent"] as const;
+export type TaskPriority = (typeof TASK_PRIORITY_OPTIONS)[number];
+
+export function isTaskPriority(value: string): value is TaskPriority {
+  return TASK_PRIORITY_OPTIONS.includes(value as TaskPriority);
+}
 
 const META_SELECT_CHEVRON =
   "bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg xmlns%3D%22http://www.w3.org/2000/svg%22 width%3D%2216%22 height%3D%2216%22 viewBox%3D%220 0 24 24%22 fill%3D%22none%22 stroke%3D%22%239CA3AF%22 stroke-width%3D%222%22 stroke-linecap%3D%22round%22 stroke-linejoin%3D%22round%22%3E%3Cpath d%3D%22m6 9 6 6 6-6%22/%3E%3C/svg%3E')]";
@@ -17,6 +24,34 @@ export const META_DATETIME_CLASS = cn(
   "[&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:cursor-pointer",
   "[&::-webkit-datetime-edit]:leading-9 [&::-webkit-datetime-edit-fields-wrapper]:p-0",
 );
+
+export function PriorityMetaSelect({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: TaskPriority;
+  onChange: (value: TaskPriority) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <select
+      value={value}
+      disabled={disabled}
+      onChange={(e) => {
+        const next = e.target.value;
+        if (isTaskPriority(next)) onChange(next);
+      }}
+      className={META_SELECT_CLASS}
+    >
+      {TASK_PRIORITY_OPTIONS.map((priority) => (
+        <option key={priority} value={priority}>
+          {priorityConfig[priority].label}
+        </option>
+      ))}
+    </select>
+  );
+}
 
 export function TaskMetaRow({
   label,

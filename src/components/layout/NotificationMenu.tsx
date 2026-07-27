@@ -1,12 +1,24 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { trpc } from "@/providers/trpc";
+import { useAuth } from "@/hooks/useAuth";
 import {
   notificationListQueryOptions,
   useNotificationStreamInvalidation,
 } from "@/hooks/useNotificationStream";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { formatTimeAgo } from "@/lib/utils";
+import { buildTaskNotificationLink } from "@/lib/task-notification-link";
+import {
+  filterNotificationsByPrefs,
+  useNotificationPrefs,
+} from "@/lib/notification-prefs";
+import {
+  markNotificationReadInCache,
+  NOTIFICATION_LIST_ALL,
+  NOTIFICATION_LIST_UNREAD,
+} from "@/lib/notification-list-cache";
+import { useStableIdOrder } from "@/lib/stable-list-order";
 import { Bell, CheckCheck, Loader2 } from "lucide-react";
 
 type NotificationItem = {
@@ -18,55 +30,91 @@ type NotificationItem = {
   type?: string;
   taskId?: number | null;
   projectId?: number | null;
+  activityId?: number | null;
   link?: string | null;
 };
 
 function notificationTarget(notif: NotificationItem) {
   if (notif.type === "employee_joined") return "/admin/employees";
-  if (notif.type === "time_approval_pending") return "/time-tracking";
+  if (
+    notif.type === "time_approval_pending" ||
+    notif.type === "time_approved" ||
+    notif.type === "time_rejected"
+  ) {
+    return "/time-tracking";
+  }
+  if (
+    notif.type === "leave_request_pending" ||
+    notif.type === "leave_approved" ||
+    notif.type === "leave_rejected" ||
+    notif.type === "leave_cancelled" ||
+    notif.type === "holiday_reminder"
+  ) {
+    return notif.type === "leave_request_pending" || notif.type === "leave_cancelled"
+      ? "/leave-management"
+      : "/leaves";
+  }
   if (notif.type === "project_created" && notif.projectId) {
     return `/projects/${notif.projectId}`;
   }
+  if (notif.link?.includes("activity=")) return notif.link;
+  if (notif.taskId) return buildTaskNotificationLink(notif.taskId, notif.activityId);
   if (notif.link) return notif.link;
-  if (notif.taskId) return `/tasks?task=${notif.taskId}`;
   return null;
 }
 
 export function NotificationMenu() {
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const utils = trpc.useUtils();
+  const notificationPrefs = useNotificationPrefs(user?.id);
 
   useNotificationStreamInvalidation();
 
   const { data, isLoading } = trpc.notification.list.useQuery(
-    { limit: 50 },
-    { enabled: open, ...notificationListQueryOptions },
+    NOTIFICATION_LIST_ALL,
+    { enabled: !!user, ...notificationListQueryOptions },
   );
 
   const { data: badgeData } = trpc.notification.list.useQuery(
-    { unreadOnly: true, limit: 1 },
-    notificationListQueryOptions,
+    NOTIFICATION_LIST_UNREAD,
+    { enabled: !!user, ...notificationListQueryOptions },
   );
 
   const markReadMutation = trpc.notification.markRead.useMutation({
-    onSuccess: () => utils.notification.list.invalidate(),
+    onMutate: ({ id }) => {
+      markNotificationReadInCache(utils, id);
+    },
+    onSettled: () => {
+      void utils.notification.list.invalidate();
+    },
   });
 
   const markAllReadMutation = trpc.notification.markAllRead.useMutation({
     onSuccess: () => utils.notification.list.invalidate(),
   });
 
-  const notifications = useMemo(() => {
-    const list = data?.notifications ?? [];
-    return [...list].sort((a, b) => {
-      const aUnread = !a.read;
-      const bUnread = !b.read;
-      if (aUnread !== bUnread) return aUnread ? -1 : 1;
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-    });
-  }, [data?.notifications]);
-  const unreadCount = badgeData?.unreadCount ?? data?.unreadCount ?? 0;
+  const filteredNotifications = useMemo(
+    () => filterNotificationsByPrefs(data?.notifications ?? [], notificationPrefs),
+    [data?.notifications, notificationPrefs],
+  );
+
+  const sortNewNotifications = useCallback(
+    (a: NotificationItem, b: NotificationItem) =>
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    [],
+  );
+
+  const notifications = useStableIdOrder(filteredNotifications, sortNewNotifications);
+
+  const unreadCount = useMemo(() => {
+    const unread = filterNotificationsByPrefs(
+      badgeData?.notifications ?? data?.notifications?.filter((n) => !n.read) ?? [],
+      notificationPrefs,
+    );
+    return unread.length;
+  }, [badgeData?.notifications, data?.notifications, notificationPrefs]);
 
   const handleOpen = (next: boolean) => {
     setOpen(next);
@@ -81,6 +129,16 @@ export function NotificationMenu() {
     if (target) {
       setOpen(false);
       navigate(target);
+    }
+  };
+
+  const handleMarkAsRead = (
+    e: React.MouseEvent,
+    notif: NotificationItem,
+  ) => {
+    e.stopPropagation();
+    if (!notif.read) {
+      markReadMutation.mutate({ id: notif.id });
     }
   };
 
@@ -147,30 +205,43 @@ export function NotificationMenu() {
               const isUnread = !notif.read;
               const target = notificationTarget(notif as NotificationItem);
               return (
-                <button
+                <div
                   key={notif.id}
-                  type="button"
-                  onClick={() => handleNotificationClick(notif as NotificationItem)}
-                  className={`w-full text-left flex items-start gap-3 px-4 py-3 border-b border-gray-50 hover:bg-gray-50 transition-colors ${
+                  className={`group relative w-full text-left flex items-start gap-3 px-4 py-3 border-b border-gray-50 hover:bg-gray-50 transition-colors ${
                     isUnread ? "bg-blue-50/40" : ""
                   }`}
                 >
-                  <div
-                    className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${
-                      isUnread ? "bg-[#2563EB]" : "bg-transparent"
-                    }`}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <p className={`text-sm ${isUnread ? "font-semibold text-gray-900" : "font-medium text-gray-700"}`}>
-                      {notif.title}
-                    </p>
-                    <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{notif.message}</p>
-                    <p className="text-[10px] text-gray-400 mt-1">{formatTimeAgo(notif.createdAt)}</p>
-                  </div>
-                  {target && (
-                    <span className="text-[10px] text-[#2563EB] shrink-0 mt-1">View</span>
-                  )}
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => handleNotificationClick(notif as NotificationItem)}
+                    className="flex items-start gap-3 flex-1 min-w-0 text-left pr-16"
+                  >
+                    <div
+                      className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${
+                        isUnread ? "bg-[#2563EB]" : "bg-transparent"
+                      }`}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-sm ${isUnread ? "font-semibold text-gray-900" : "font-medium text-gray-700"}`}>
+                        {notif.title}
+                      </p>
+                      <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{notif.message}</p>
+                      <p className="text-[10px] text-gray-400 mt-1">{formatTimeAgo(notif.createdAt)}</p>
+                    </div>
+                    {target && (
+                      <span className="text-[10px] text-[#2563EB] shrink-0 mt-1">View</span>
+                    )}
+                  </button>
+                  {isUnread ? (
+                    <button
+                      type="button"
+                      onClick={(e) => handleMarkAsRead(e, notif as NotificationItem)}
+                      className="opacity-100 md:opacity-0 md:group-hover:opacity-100 absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-medium text-[#2563EB] bg-white border border-blue-100 rounded-lg px-2 py-1 shadow-sm hover:bg-blue-50 transition-opacity shrink-0"
+                    >
+                      Mark read
+                    </button>
+                  ) : null}
+                </div>
               );
             })}
         </div>

@@ -1,6 +1,7 @@
 import { Collections } from "@db/mongo/collections";
 import type { NotificationDoc, SafeUser, UserDoc } from "@db/mongo/types";
 import { getCollection, insertDoc } from "../queries/connection";
+import { isHrDepartmentUser } from "@/lib/leave-policy";
 
 type NotifyLeadsInput = {
   actor: SafeUser;
@@ -24,10 +25,16 @@ export async function notifyLeads({
   const excluded = new Set([actor.id, ...excludeUserIds]);
   const usersCol = await getCollection<UserDoc>(Collections.users);
   const leads = await usersCol
-    .find({ role: { $in: ["admin", "manager"] }, status: "active" })
+    .find({
+      organizationId: actor.organizationId,
+      role: { $in: ["admin", "manager"] },
+      status: "active",
+    })
     .toArray();
 
-  const recipients = leads.filter((lead) => !excluded.has(lead.id));
+  const recipients = leads.filter(
+    (lead) => !excluded.has(lead.id) && !isHrDepartmentUser(lead),
+  );
   if (recipients.length === 0) return;
 
   const now = new Date();
@@ -35,6 +42,7 @@ export async function notifyLeads({
     recipients.map((lead) =>
       insertDoc<NotificationDoc>(Collections.notifications, {
         userId: lead.id,
+        organizationId: actor.organizationId,
         actorId: actor.id,
         type,
         title,

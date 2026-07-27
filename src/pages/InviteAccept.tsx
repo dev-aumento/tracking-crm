@@ -1,5 +1,5 @@
 import { TRPCClientError } from "@trpc/client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, Link } from "react-router";
 import { Loader2, AlertCircle, ArrowLeft } from "lucide-react";
 import { trpc } from "@/providers/trpc";
@@ -28,6 +28,14 @@ export default function InviteAccept() {
     { token: token ?? "" },
     { enabled: !!token, retry: false },
   );
+
+  useEffect(() => {
+    if (validation?.valid && validation.email) {
+      setEmail(validation.email);
+    }
+  }, [validation?.valid, validation?.email]);
+
+  const emailLocked = Boolean(validation?.email);
 
   const acceptMutation = trpc.invite.accept.useMutation({
     onSuccess: async () => {
@@ -136,15 +144,9 @@ export default function InviteAccept() {
 
   return (
     <OrgAuthShell organizationLabel={orgLabel}>
-      {validation.department || validation.invitedByName ? (
+      {validation.invitedByName ? (
         <p className="text-center text-sm text-gray-500 -mt-4 mb-6">
-          {validation.invitedByName ? (
-            <>Invited by <span className="font-medium text-gray-700">{validation.invitedByName}</span></>
-          ) : null}
-          {validation.invitedByName && validation.department ? " · " : null}
-          {validation.department ? (
-            <>Department: <span className="font-medium text-gray-700">{validation.department}</span></>
-          ) : null}
+          Invited by <span className="font-medium text-gray-700">{validation.invitedByName}</span>
         </p>
       ) : null}
 
@@ -160,10 +162,18 @@ export default function InviteAccept() {
               autoComplete="email"
               placeholder="name@company.com"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="h-11 border-gray-200 bg-white text-[15px]"
+              onChange={(e) => {
+                if (!emailLocked) setEmail(e.target.value);
+              }}
+              readOnly={emailLocked}
+              className={`h-11 border-gray-200 text-[15px] ${
+                emailLocked ? "bg-gray-50 text-gray-700" : "bg-white"
+              }`}
               required
             />
+            {emailLocked ? (
+              <p className="text-xs text-gray-400">This invite is for this email address only.</p>
+            ) : null}
           </div>
 
           <label className="flex items-start gap-3 cursor-pointer group">

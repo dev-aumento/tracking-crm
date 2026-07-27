@@ -116,6 +116,9 @@ export function projectsMatchingUnifiedSearch(
   if (!q) return true;
   return (
     textMatchesQuery(project.name, q) ||
-    (project.description ? textMatchesQuery(project.description, q) : false)
+    (project.description ? textMatchesQuery(project.description, q) : false) ||
+    ("clientName" in project && project.clientName
+      ? textMatchesQuery(project.clientName, q)
+      : false)
   );
 }

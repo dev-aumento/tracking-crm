@@ -3,6 +3,7 @@ import * as SheetPrimitive from "@radix-ui/react-dialog"
 import { XIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { useBodyScrollLock } from "@/hooks/useBodyScrollLock"
 
 function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
   return <SheetPrimitive.Root data-slot="sheet" {...props} />
@@ -30,6 +31,7 @@ function SheetOverlay({
   className,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Overlay>) {
+  useBodyScrollLock(true);
   return (
     <SheetPrimitive.Overlay
       data-slot="sheet-overlay"

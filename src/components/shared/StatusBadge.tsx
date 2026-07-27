@@ -42,12 +42,15 @@ export function PriorityBadge({ priority, size = "sm" }: PriorityBadgeProps) {
 }
 
 interface RoleBadgeProps {
-  role: keyof typeof roleConfig;
+  role: string;
   size?: "sm" | "md";
 }
 
 export function RoleBadge({ role, size = "sm" }: RoleBadgeProps) {
-  const config = roleConfig[role];
+  const config =
+    role && role in roleConfig
+      ? roleConfig[role as keyof typeof roleConfig]
+      : roleConfig.employee;
   const padding = size === "sm" ? "px-2.5 py-0.5" : "px-3 py-1";
   const textSize = size === "sm" ? "text-xs" : "text-sm";
 

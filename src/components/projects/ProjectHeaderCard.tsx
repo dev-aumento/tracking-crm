@@ -1,143 +1,146 @@
-import { Calendar, CheckSquare, Clock, Users, Plus, Pencil, Trash2, UserPlus, Loader2 } from "lucide-react";
+import { Link } from "react-router";
+import {
+  ArrowLeft,
+  CheckSquare,
+  Users,
+  Plus,
+  Pencil,
+  UserPlus,
+  Loader2,
+} from "lucide-react";
 
 type ProjectStats = {
   total: number;
 };
 
-
-function formatDueDate(value?: string | Date | null) {
-  if (!value) return "No due date";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "No due date";
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-}
-
 interface ProjectHeaderCardProps {
   name: string;
   description?: string | null;
-  status: string;
-  dueDate?: string | Date | null;
+  clientName?: string | null;
   stats: ProjectStats;
-  hoursTracked: number;
   memberCount: number;
   creatorName?: string | null;
   canEdit?: boolean;
-  canDelete?: boolean;
   onEdit?: () => void;
-  onDelete?: () => void;
   onAddTask?: () => void;
   onJoinProject?: () => void;
   joinPending?: boolean;
   canViewTasks?: boolean;
+  backTo?: string;
+  backLabel?: string;
 }
 
 export function ProjectHeaderCard({
   name,
   description,
-  status,
-  dueDate,
+  clientName,
   stats,
-  hoursTracked,
   memberCount,
   creatorName,
   canEdit,
-  canDelete,
   onEdit,
-  onDelete,
   onAddTask,
   onJoinProject,
   joinPending,
   canViewTasks = true,
+  backTo = "/projects",
+  backLabel = "Back to projects",
 }: ProjectHeaderCardProps) {
   const total = canViewTasks ? stats.total || 0 : 0;
-  const trackedHours = canViewTasks ? hoursTracked : 0;
+  const hasActions = Boolean(onJoinProject || (canEdit && onEdit) || onAddTask);
 
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-6">
-      <div className="flex flex-wrap items-start justify-between gap-4 mb-4">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-3 mb-2">
-            <h1 className="text-xl font-bold text-[#1F2937]">{name}</h1>
-          </div>
-          {description && (
-            <p className="text-sm text-gray-500">{description}</p>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0">
-          {onJoinProject ? (
-            <button
-              type="button"
-              onClick={onJoinProject}
-              disabled={joinPending}
-              className="h-9 px-4 bg-[#2563EB] text-white rounded-lg text-sm font-semibold hover:bg-[#1D4ED8] flex items-center gap-2 disabled:opacity-50"
-            >
-              {joinPending ? (
-                <Loader2 size={16} className="animate-spin" />
-              ) : (
-                <UserPlus size={16} />
-              )}
-              Join Project
-            </button>
-          ) : null}
-          {canEdit && onEdit && (
-            <button
-              type="button"
-              onClick={onEdit}
-              className="h-9 px-4 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50 flex items-center gap-2"
-            >
-              <Pencil size={14} />
-              Edit Project
-            </button>
-          )}
-          {onAddTask && (
-            <button
-              type="button"
-              onClick={onAddTask}
-              className="h-9 px-4 bg-[#2563EB] text-white rounded-lg text-sm font-semibold hover:bg-[#1D4ED8] flex items-center gap-2"
-            >
-              <Plus size={16} />
-              Add Task
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-5 text-sm text-gray-500 mb-5">
-        {creatorName ? (
-          <span className="flex items-center gap-1.5">
-            <Users size={15} className="text-gray-400" />
-            Created by {creatorName}
-          </span>
-        ) : null}
-        <span className="flex items-center gap-1.5">
-          <Calendar size={15} className="text-gray-400" />
-          Due {formatDueDate(dueDate)}
-        </span>
-        <span className="flex items-center gap-1.5">
-          <CheckSquare size={15} className="text-gray-400" />
-          {canViewTasks ? `${total} tasks` : "Join to view tasks"}
-        </span>
-        <span className="flex items-center gap-1.5">
-          <Clock size={15} className="text-gray-400" />
-          {canViewTasks ? `${trackedHours}h tracked` : "—"}
-        </span>
-        <span className="flex items-center gap-1.5">
-          <Users size={15} className="text-gray-400" />
-          {memberCount} members
-        </span>
-      </div>
-
-      {canDelete && onDelete ? (
-        <button
-          type="button"
-          onClick={onDelete}
-          className="inline-flex items-center gap-1.5 text-sm font-medium text-red-600 hover:text-red-700 transition-colors"
+    <div className="bg-white border border-gray-200 rounded-xl px-4 py-3">
+      <div className="flex items-start gap-2.5">
+        <Link
+          to={backTo}
+          className="mt-0.5 shrink-0 inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 hover:text-[#2563EB] hover:bg-blue-50 transition-colors"
+          aria-label={backLabel}
+          title={backLabel}
         >
-          <Trash2 size={15} />
-          Delete Project
-        </button>
-      ) : null}
+          <ArrowLeft size={18} />
+        </Link>
+
+        <div className="min-w-0 flex-1 flex flex-col gap-2">
+          <div className="min-w-0">
+            <div className="min-w-0 overflow-x-auto">
+              <div className="flex items-baseline gap-x-2 whitespace-nowrap">
+                <h1 className="text-[15px] sm:text-lg font-bold text-[#1F2937] leading-tight">
+                  {name}
+                </h1>
+                {clientName?.trim() ? (
+                  <span className="text-sm text-gray-500">
+                    · {clientName.trim()}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="mt-1.5 flex flex-col gap-1 text-xs text-gray-500 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3 sm:gap-y-1">
+              {creatorName ? (
+                <span className="inline-flex items-center gap-1 min-w-0">
+                  <Users size={13} className="text-gray-400 shrink-0" />
+                  <span className="break-words">Created by {creatorName}</span>
+                </span>
+              ) : null}
+              <span className="inline-flex items-center gap-1 shrink-0">
+                <CheckSquare size={13} className="text-gray-400" />
+                {canViewTasks ? `${total} Tasks` : "Join to view tasks"}
+              </span>
+              <span className="inline-flex items-center gap-1 shrink-0">
+                <Users size={13} className="text-gray-400" />
+                {memberCount} Members
+              </span>
+            </div>
+
+            {description?.trim() ? (
+              <p className="text-xs text-gray-500 mt-1 line-clamp-2 sm:line-clamp-1">
+                {description.trim()}
+              </p>
+            ) : null}
+          </div>
+
+          {hasActions ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {onJoinProject ? (
+                <button
+                  type="button"
+                  onClick={onJoinProject}
+                  disabled={joinPending}
+                  className="h-8 px-3 bg-[#2563EB] text-white rounded-lg text-sm font-semibold hover:bg-[#1D4ED8] flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  {joinPending ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <UserPlus size={14} />
+                  )}
+                  Join Project
+                </button>
+              ) : null}
+              {canEdit && onEdit ? (
+                <button
+                  type="button"
+                  onClick={onEdit}
+                  className="h-8 px-3 border border-gray-200 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-50 flex items-center gap-1.5"
+                >
+                  <Pencil size={13} />
+                  Edit Project
+                </button>
+              ) : null}
+              {onAddTask ? (
+                <button
+                  type="button"
+                  onClick={onAddTask}
+                  className="h-8 px-3 bg-[#2563EB] text-white rounded-lg text-sm font-semibold hover:bg-[#1D4ED8] flex items-center gap-1.5"
+                >
+                  <Plus size={14} />
+                  Add Task
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }

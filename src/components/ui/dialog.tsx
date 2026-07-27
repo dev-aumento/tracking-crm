@@ -3,6 +3,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { XIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { useBodyScrollLock } from "@/hooks/useBodyScrollLock"
 
 function Dialog({
   ...props
@@ -32,6 +33,7 @@ function DialogOverlay({
   className,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
+  useBodyScrollLock(true);
   return (
     <DialogPrimitive.Overlay
       data-slot="dialog-overlay"
@@ -121,7 +123,7 @@ function DialogDescription({
   return (
     <DialogPrimitive.Description
       data-slot="dialog-description"
-      className={cn("text-muted-foreground text-sm", className)}
+      className={cn("text-muted-foreground text-sm capitalize", className)}
       {...props}
     />
   )

@@ -2,11 +2,11 @@ import { useState } from "react";
 import { trpc } from "@/providers/trpc";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import { formatTimeAgo } from "@/lib/utils";
+import { formatWorkZoneDateTime } from "@/lib/timezone";
 import { Check, Loader2, X } from "lucide-react";
 
 function formatApprovalTime(value: Date | string | null | undefined) {
-  if (!value) return "—";
-  return new Date(value).toLocaleString("en-US", {
+  return formatWorkZoneDateTime(value, {
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -22,13 +22,18 @@ export function TimeApprovalPanel() {
   });
 
   const reviewMutation = trpc.timeEntry.reviewTimeApproval.useMutation({
-    onSuccess: () => {
-      utils.timeEntry.listPendingApprovals.invalidate();
-      utils.timeEntry.getCurrentSession.invalidate();
-      utils.timeEntry.getStats.invalidate();
-      utils.timeEntry.getBreaks.invalidate();
-      utils.timeEntry.getDayHours.invalidate();
-      utils.notification.list.invalidate();
+    onSuccess: async () => {
+      await Promise.all([
+        utils.timeEntry.listPendingApprovals.invalidate(),
+        utils.timeEntry.getCurrentSession.invalidate(),
+        utils.timeEntry.getStats.invalidate(),
+        utils.timeEntry.getBreaks.invalidate(),
+        utils.timeEntry.getDayHours.invalidate(),
+        utils.timeEntry.list.invalidate(),
+        utils.timeEntry.getTeamHours.invalidate(),
+        utils.dashboard.getStats.invalidate(),
+        utils.notification.list.invalidate(),
+      ]);
     },
   });
 
@@ -55,7 +60,7 @@ export function TimeApprovalPanel() {
       <div className="px-5 py-4 border-b border-gray-100 bg-gray-50/50">
         <h3 className="font-semibold text-[#1F2937]">Pending time approvals</h3>
         <p className="text-xs text-gray-500 mt-0.5">
-          Review manual clock-in and break edit requests from employees.
+          Review manual clock-in requests from employees.
         </p>
       </div>
 
@@ -63,6 +68,9 @@ export function TimeApprovalPanel() {
         {requests.map((request) => {
           const isClockIn = request.type === "clock_in";
           const note = reviewNote[request.id] ?? "";
+          const isReviewingThis =
+            reviewMutation.isPending && reviewMutation.variables?.id === request.id;
+          const reviewingAction = isReviewingThis ? reviewMutation.variables?.action : null;
 
           return (
             <div key={request.id} className="px-5 py-4 space-y-3">
@@ -152,7 +160,7 @@ export function TimeApprovalPanel() {
                   }
                   className="h-8 px-3 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-100 border border-gray-200 flex items-center gap-1.5 disabled:opacity-50"
                 >
-                  {reviewMutation.isPending ? (
+                  {reviewingAction === "reject" ? (
                     <Loader2 size={14} className="animate-spin" />
                   ) : (
                     <X size={14} />
@@ -171,7 +179,7 @@ export function TimeApprovalPanel() {
                   }
                   className="h-8 px-3 rounded-lg text-xs font-medium text-white bg-[#2563EB] hover:bg-blue-700 flex items-center gap-1.5 disabled:opacity-50"
                 >
-                  {reviewMutation.isPending ? (
+                  {reviewingAction === "approve" ? (
                     <Loader2 size={14} className="animate-spin" />
                   ) : (
                     <Check size={14} />

@@ -8,7 +8,15 @@ import type {
   WorkSessionDoc,
 } from "@db/mongo/types";
 import { getCollection, insertDoc, updateById } from "../queries/connection";
-import { localDateKey } from "@/lib/work-hours-policy";
+import {
+  computeAttendanceWorkSeconds,
+  localDateKey,
+} from "@/lib/work-hours-policy";
+import { formatWorkZoneDateTime } from "@/lib/timezone";
+import {
+  findBreaksOverlappingWindow,
+  refreshAttendanceEntriesOverlappingBreak,
+} from "./attendance-breaks";
 
 export async function findClockInRequestForSession(workSessionId: number) {
   const col = await getCollection<TimeApprovalRequestDoc>(Collections.timeApprovalRequests);
@@ -45,19 +53,79 @@ export async function applyClockInApproval(
   }
 
   const now = new Date();
-  await updateById<WorkSessionDoc>(Collections.workSessions, session.id, {
-    startTime: request.requestedClockIn,
-    accumulatedWorkSeconds: session.accumulatedWorkSeconds + deltaSeconds,
-  });
+  const requestedClockIn = request.requestedClockIn;
+  const breaks = await findBreaksOverlappingWindow(
+    session.userId,
+    requestedClockIn,
+    session.endTime ?? now,
+  );
+
+  const sessionPatch: Partial<WorkSessionDoc> = {
+    startTime: requestedClockIn,
+  };
+
+  if (session.active) {
+    // Recalculate worked seconds from the approved start, excluding breaks —
+    // never add raw wall-clock delta (that over-counts paused time).
+    if (session.paused) {
+      const pauseAt = session.breakStartedAt ?? now;
+      sessionPatch.accumulatedWorkSeconds = computeAttendanceWorkSeconds(
+        requestedClockIn,
+        pauseAt,
+        breaks,
+        now,
+      );
+      sessionPatch.workSegmentStartedAt = null;
+    } else {
+      const segmentStart = session.workSegmentStartedAt;
+      const segmentIsOriginalClockIn =
+        !!segmentStart &&
+        Math.abs(segmentStart.getTime() - request.originalClockIn.getTime()) < 2000;
+
+      if (!segmentStart || segmentIsOriginalClockIn) {
+        // Freeze work so far (break-aware) then continue from now.
+        sessionPatch.accumulatedWorkSeconds = computeAttendanceWorkSeconds(
+          requestedClockIn,
+          now,
+          breaks,
+          now,
+        );
+        sessionPatch.workSegmentStartedAt = now;
+      } else {
+        sessionPatch.accumulatedWorkSeconds = computeAttendanceWorkSeconds(
+          requestedClockIn,
+          segmentStart,
+          breaks,
+          now,
+        );
+        // Keep current work segment start (e.g. after a resume).
+      }
+    }
+  }
+
+  await updateById<WorkSessionDoc>(Collections.workSessions, session.id, sessionPatch);
 
   if (entry) {
-    await updateById<TimeEntryDoc>(Collections.timeEntries, entry.id, {
-      clockIn: request.requestedClockIn,
+    const entryPatch: Partial<TimeEntryDoc> = {
+      clockIn: requestedClockIn,
       note: entry.note
-        ? `${entry.note} (clock-in adjusted to ${request.requestedClockIn.toLocaleString()})`
-        : `Clock-in adjusted to ${request.requestedClockIn.toLocaleString()}`,
+        ? `${entry.note} (clock-in adjusted to ${formatWorkZoneDateTime(requestedClockIn)})`
+        : `Clock-in adjusted to ${formatWorkZoneDateTime(requestedClockIn)}`,
       updatedAt: now,
-    });
+    };
+
+    if (entry.clockOut) {
+      const durationSeconds = computeAttendanceWorkSeconds(
+        requestedClockIn,
+        entry.clockOut,
+        breaks,
+        now,
+      );
+      entryPatch.durationSeconds = durationSeconds;
+      entryPatch.duration = Math.floor(durationSeconds / 60);
+    }
+
+    await updateById<TimeEntryDoc>(Collections.timeEntries, entry.id, entryPatch);
   }
 }
 
@@ -84,6 +152,13 @@ export async function applyBreakApproval(
     updatedAt: now,
   });
 
+  await refreshAttendanceEntriesOverlappingBreak(
+    breakItem.userId,
+    startTime,
+    endTime ?? breakItem.endTime,
+    now,
+  );
+
   const sessionCol = await getCollection<WorkSessionDoc>(Collections.workSessions);
   const session = await sessionCol.findOne({
     id: breakItem.workSessionId,
@@ -106,6 +181,7 @@ export async function notifyUserOfTimeReview(
   const now = new Date();
   await insertDoc<NotificationDoc>(Collections.notifications, {
     userId,
+    organizationId: actor.organizationId,
     actorId: actor.id,
     type: approved ? "time_approved" : "time_rejected",
     title: approved ? "Time adjustment approved" : "Time adjustment rejected",

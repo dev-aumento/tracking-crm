@@ -1,12 +1,11 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { nanoid } from "nanoid";
-import { Invite, Workspace } from "@contracts/constants";
+import { Invite } from "@contracts/constants";
 import { Collections } from "@db/mongo/collections";
 import type { EmployeeInviteDoc, NotificationDoc, UserDoc } from "@db/mongo/types";
-import { createRouter, adminQuery, publicQuery } from "./middleware";
+import { createRouter, employeesManageQuery, publicQuery } from "./middleware";
 import { ensureSchema } from "./lib/migrate";
-import { isAuthDisabled } from "./lib/dev-mode";
 import * as inviteMock from "./lib/invite-mock";
 import { hashPassword } from "./lib/password";
 import { createSessionForUser } from "./lib/auth";
@@ -18,6 +17,11 @@ import {
   updateById,
 } from "./queries/connection";
 import { createUser, findUserByEmail, omitPasswordHash } from "./queries/users";
+import {
+  getOrganizationNameById,
+  orgFilter,
+  requireOrganizationId,
+} from "./lib/tenant";
 
 function inviteExpiryDate() {
   const date = new Date();
@@ -45,13 +49,14 @@ async function getValidInvite(token: string) {
 }
 
 async function notifyAdminsOfNewEmployee(
+  organizationId: number,
   newUserId: number,
   newUserName: string,
   newUserEmail: string,
 ) {
   const usersCol = await getCollection<UserDoc>(Collections.users);
   const admins = await usersCol
-    .find({ role: "admin", status: "active" })
+    .find({ organizationId, role: "admin", status: "active" })
     .toArray();
 
   if (admins.length === 0) return;
@@ -63,6 +68,7 @@ async function notifyAdminsOfNewEmployee(
     admins.map((admin) =>
       insertDoc<NotificationDoc>(Collections.notifications, {
         userId: admin.id,
+        organizationId,
         actorId: newUserId,
         type: "employee_joined",
         title: "New employee joined",
@@ -80,32 +86,59 @@ function useInviteMock() {
 }
 
 export const inviteRouter = createRouter({
-  create: adminQuery
+  create: employeesManageQuery
     .input(
-      z
-        .object({
-          department: z.string().max(100).optional(),
-        })
-        .optional(),
+      z.object({
+        email: z.string().email().max(320),
+      }),
     )
     .mutation(async ({ ctx, input }) => {
+      const email = input.email.trim().toLowerCase();
+      const organizationId = requireOrganizationId(ctx.user);
+
       if (useInviteMock()) {
-        const invite = inviteMock.mockCreateInvite(ctx.user.id, input?.department);
+        const invite = inviteMock.mockCreateInvite(ctx.user.id, email);
         return {
           token: invite.token,
           url: buildInviteUrl(ctx.req, invite.token),
           expiresAt: invite.expiresAt,
+          email: invite.email,
         };
       }
 
       await ensureSchema();
+
+      const existingUser = await findUserByEmail(email);
+      if (existingUser) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "An account with this email already exists",
+        });
+      }
+
+      const col = await getCollection<EmployeeInviteDoc>(Collections.employeeInvites);
+      const pendingForEmail = await col.findOne({
+        email,
+        organizationId,
+        status: "pending",
+        expiresAt: { $gt: new Date() },
+      });
+      if (pendingForEmail) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "A pending invite already exists for this email",
+        });
+      }
+
       const token = nanoid(Invite.tokenLength);
       const expiresAt = inviteExpiryDate();
 
       await insertDoc<EmployeeInviteDoc>(Collections.employeeInvites, {
         token,
+        organizationId,
         invitedBy: ctx.user.id,
-        department: input?.department ?? null,
+        email,
+        department: null,
         expiresAt,
         status: "pending",
         acceptedUserId: null,
@@ -117,15 +150,17 @@ export const inviteRouter = createRouter({
         token,
         url: buildInviteUrl(ctx.req, token),
         expiresAt,
+        email,
       };
     }),
 
-  list: adminQuery.query(async ({ ctx }) => {
+  list: employeesManageQuery.query(async ({ ctx }) => {
     if (useInviteMock()) {
       return {
         invites: inviteMock.mockListPendingInvites().map((invite) => ({
           id: invite.id,
           token: invite.token,
+          email: invite.email,
           department: invite.department,
           status: invite.status,
           expiresAt: invite.expiresAt,
@@ -142,7 +177,7 @@ export const inviteRouter = createRouter({
 
     const col = await getCollection<EmployeeInviteDoc>(Collections.employeeInvites);
     const invites = await col
-      .find({ status: "pending" })
+      .find({ ...orgFilter(ctx.user), status: "pending" })
       .sort({ createdAt: -1 })
       .limit(20)
       .toArray();
@@ -153,6 +188,7 @@ export const inviteRouter = createRouter({
         return {
           id: invite.id,
           token: invite.token,
+          email: invite.email,
           department: invite.department,
           status: invite.status,
           expiresAt: invite.expiresAt,
@@ -167,9 +203,9 @@ export const inviteRouter = createRouter({
     return { invites: invitesWithMeta };
   }),
 
-  revoke: adminQuery
+  revoke: employeesManageQuery
     .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       if (useInviteMock()) {
         inviteMock.mockRevokeInvite(input.id);
         return { success: true };
@@ -180,7 +216,10 @@ export const inviteRouter = createRouter({
         Collections.employeeInvites,
         input.id,
       );
-      if (invite?.status === "pending") {
+      if (
+        invite?.status === "pending" &&
+        invite.organizationId === requireOrganizationId(ctx.user)
+      ) {
         await updateById<EmployeeInviteDoc>(Collections.employeeInvites, input.id, {
           status: "revoked",
         });
@@ -195,22 +234,27 @@ export const inviteRouter = createRouter({
         const invite = inviteMock.mockGetInvite(input.token);
         return {
           valid: !!invite,
+          email: invite?.email ?? null,
           department: invite?.department ?? null,
           invitedByName: null,
-          organizationName: Workspace.name,
+          organizationName: "AumentoX26",
           expired: false,
         };
       }
 
       await ensureSchema();
       const invite = await getValidInvite(input.token);
+      const organizationName = invite?.organizationId
+        ? await getOrganizationNameById(invite.organizationId)
+        : "AumentoX26";
 
       if (!invite || invite.status !== "pending") {
         return {
           valid: false,
+          email: null,
           department: null,
           invitedByName: null,
-          organizationName: Workspace.name,
+          organizationName,
           expired: invite?.status === "expired",
         };
       }
@@ -218,9 +262,10 @@ export const inviteRouter = createRouter({
       if (invite.expiresAt < new Date()) {
         return {
           valid: false,
+          email: null,
           department: null,
           invitedByName: null,
-          organizationName: Workspace.name,
+          organizationName,
           expired: true,
         };
       }
@@ -229,9 +274,10 @@ export const inviteRouter = createRouter({
 
       return {
         valid: true,
+        email: invite.email,
         department: invite.department,
         invitedByName: inviter?.name ?? null,
-        organizationName: Workspace.name,
+        organizationName,
         expired: false,
       };
     }),
@@ -273,7 +319,21 @@ export const inviteRouter = createRouter({
         });
       }
 
+      if (invite.organizationId == null) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "This invite is not linked to an organization",
+        });
+      }
+
       const email = input.email.toLowerCase();
+      if (invite.email && invite.email.toLowerCase() !== email) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Please use the email address this invite was sent for",
+        });
+      }
+
       const existing = await findUserByEmail(email);
       if (existing) {
         throw new TRPCError({
@@ -287,12 +347,13 @@ export const inviteRouter = createRouter({
 
       const user = await createUser({
         unionId: `invite_${nanoid()}`,
+        organizationId: invite.organizationId,
         name: input.name,
         email,
         passwordHash,
         avatar: null,
         role: "employee",
-        status: "active",
+        status: "active" as UserDoc["status"],
         department: invite.department,
         position: null,
         phone: null,
@@ -304,7 +365,12 @@ export const inviteRouter = createRouter({
         acceptedAt: now,
       });
 
-      await notifyAdminsOfNewEmployee(user.id, input.name, email);
+      await notifyAdminsOfNewEmployee(
+        invite.organizationId,
+        user.id,
+        input.name,
+        email,
+      );
       await createSessionForUser(user.id, ctx.req.headers, ctx.resHeaders);
 
       return { user: omitPasswordHash(user) };

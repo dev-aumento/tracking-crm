@@ -7,6 +7,8 @@ import { PriorityBadge } from "@/components/shared/StatusBadge";
 import { TaskDetailPanel } from "@/components/tasks/TaskDetailPanel";
 import { GripVertical, Plus, Loader2 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
+import { formatWorkZoneDate } from "@/lib/timezone";
+import { defaultTaskDeadlineIso } from "@/lib/task-deadline";
 
 const COLUMNS = [
   { key: "todo", label: "To Do", color: "#6B7280" },
@@ -103,7 +105,7 @@ export default function Kanban() {
             <div
               key={column.key}
               className={`bg-gray-50/80 border-2 rounded-xl flex flex-col transition-colors ${
-                isDragOver ? "border-[#E2352D]/40 bg-red-50/50" : "border-dashed border-gray-200"
+                isDragOver ? "border-[#0EA5E9]/40 bg-sky-50/50" : "border-dashed border-gray-200"
               }`}
               style={{ minHeight: 400 }}
               onDragOver={(e) => handleDragOver(e, column.key)}
@@ -159,7 +161,7 @@ export default function Kanban() {
                         )}
                         {task.dueDate && (
                           <span className="text-[10px] text-gray-400">
-                            {new Date(task.dueDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                            {formatWorkZoneDate(task.dueDate, { month: "short", day: "numeric" })}
                           </span>
                         )}
                       </div>
@@ -177,7 +179,10 @@ export default function Kanban() {
                       onChange={(e) => setNewTaskTitle(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && newTaskTitle.trim()) {
-                          createMutation.mutate({ title: newTaskTitle.trim() });
+                          createMutation.mutate({
+                            title: newTaskTitle.trim(),
+                            dueDate: defaultTaskDeadlineIso(),
+                          });
                         }
                         if (e.key === "Escape") {
                           setShowCreate(null);
@@ -185,15 +190,16 @@ export default function Kanban() {
                         }
                       }}
                       placeholder="Task title..."
-                      className="w-full text-sm border border-gray-200 rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-[#E2352D]/20"
+                      className="w-full text-sm border border-gray-200 rounded-md px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-[#0EA5E9]/20"
                     />
                     <div className="flex gap-2 mt-2">
                       <button
                         onClick={() => newTaskTitle.trim() && createMutation.mutate({
                           title: newTaskTitle.trim(),
+                          dueDate: defaultTaskDeadlineIso(),
                         })}
                         disabled={createMutation.isPending}
-                        className="h-7 px-3 bg-[#E2352D] text-white rounded-md text-xs font-medium"
+                        className="h-7 px-3 bg-[#0EA5E9] text-white rounded-md text-xs font-medium hover:bg-[#0284C7]"
                       >
                         {createMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : "Add"}
                       </button>

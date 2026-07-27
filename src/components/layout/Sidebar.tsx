@@ -1,16 +1,38 @@
+import { useMemo } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { useAuth } from "@/hooks/useAuth";
-import { useTaskChats } from "@/hooks/useTaskChats";
+import { useTaskChatBadgeCount } from "@/hooks/useTaskChats";
 import { canAccessRoute } from "@/lib/permissions";
+import { canManageLeaves } from "@/lib/leave-policy";
+import { requestDashboardRefresh } from "@/lib/dashboard-refresh";
 import {
-  LayoutDashboard, ClipboardList, BarChart3, Settings,
-  Users, Shield, ChevronLeft, ChevronRight,
-  LogOut, FolderKanban, MessageSquare, Clock,
+  getSidebarWidth,
+  useLayoutMode,
+} from "@/hooks/use-layout-mode";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
+import {
+  LayoutDashboard,
+  ClipboardList,
+  BarChart3,
+  Settings,
+  Users,
+  Shield,
+  ChevronLeft,
+  ChevronRight,
+  LogOut,
+  FolderKanban,
+  MessageSquare,
+  Clock,
+  CalendarDays,
+  ClipboardCheck,
+  UserMinus,
 } from "lucide-react";
 
 interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
+  drawerOpen: boolean;
+  onDrawerOpenChange: (open: boolean) => void;
 }
 
 type NavItem = {
@@ -20,72 +42,112 @@ type NavItem = {
   badge?: number;
 };
 
-export function Sidebar({ collapsed, onToggle }: SidebarProps) {
+function SidebarPanel({
+  collapsed,
+  showCollapseToggle,
+  onToggle,
+  onNavigate,
+}: {
+  collapsed: boolean;
+  showCollapseToggle: boolean;
+  onToggle: () => void;
+  onNavigate: (path: string) => void;
+}) {
   const location = useLocation();
-  const navigate = useNavigate();
   const { user, logout } = useAuth();
-  const { taskChatsCount } = useTaskChats();
+  const taskChatsCount = useTaskChatBadgeCount();
 
-  const mainNav: NavItem[] = [
-    { path: "/", icon: LayoutDashboard, label: "Dashboard" },
-    { path: "/tasks", icon: ClipboardList, label: "My Tasks" },
-    { path: "/projects", icon: FolderKanban, label: "Projects" },
-    { path: "/time-tracking", icon: Clock, label: "Time Tracking" },
-  ];
+  const navItems: NavItem[] = useMemo(
+    () => {
+      const items: NavItem[] = [
+        { path: "/", icon: LayoutDashboard, label: "Dashboard" },
+        { path: "/tasks", icon: ClipboardList, label: "My Tasks" },
+        { path: "/admin/tasks", icon: ClipboardList, label: "All Tasks" },
+        { path: "/projects", icon: FolderKanban, label: "Projects" },
+        { path: "/time-tracking", icon: Clock, label: "Time Tracking" },
+        { path: "/admin/employees", icon: Users, label: "Employees" },
+        { path: "/admin/permissions", icon: Shield, label: "Permissions" },
+        { path: "/analytics", icon: BarChart3, label: "Analytics" },
+        {
+          path: "/task-chats",
+          icon: MessageSquare,
+          label: "Task Chats",
+          badge: taskChatsCount > 0 ? taskChatsCount : undefined,
+        },
+        { path: "/leaves", icon: CalendarDays, label: "Leaves" },
+      ];
+      if (canManageLeaves(user)) {
+        items.push({
+          path: "/leave-management",
+          icon: ClipboardCheck,
+          label: "Leave Management",
+        });
+        items.push({
+          path: "/recent-employees",
+          icon: UserMinus,
+          label: "Recent employees",
+        });
+      }
+      return items;
+    },
+    [taskChatsCount, user],
+  );
 
-  const insightsNav: NavItem[] = [
-    { path: "/analytics", icon: BarChart3, label: "Analytics" },
-  ];
-
-  const adminNav: NavItem[] = [
-    { path: "/admin/employees", icon: Users, label: "Employees" },
-    { path: "/admin/tasks", icon: ClipboardList, label: "All Tasks" },
-    { path: "/admin/permissions", icon: Shield, label: "Permissions" },
-  ];
-
-  const taskChatsNav: NavItem = {
-    path: "/task-chats",
-    icon: MessageSquare,
-    label: "Task chats",
-    badge: taskChatsCount > 0 ? taskChatsCount : undefined,
-  };
-
-  const filterNav = (items: NavItem[]) =>
-    items.filter((item) => canAccessRoute(user, item.path));
-
-  const visibleMain = filterNav(mainNav);
-  const visibleInsights = filterNav(insightsNav);
-  const visibleAdmin = filterNav(adminNav);
-  const showTaskChats = canAccessRoute(user, taskChatsNav.path);
+  const visibleNav = navItems.filter((item) => canAccessRoute(user, item.path));
 
   const isActive = (path: string) => {
     if (path === "/") return location.pathname === "/";
+    if (path === "/tasks") {
+      return (
+        location.pathname === "/tasks" ||
+        location.pathname.startsWith("/tasks/")
+      );
+    }
+    if (path === "/admin/tasks") {
+      return (
+        location.pathname === "/admin/tasks" ||
+        location.pathname.startsWith("/admin/tasks/")
+      );
+    }
+    if (path === "/projects") {
+      if (/\/projects\/[^/]+\/tasks\//i.test(location.pathname)) return false;
+      return location.pathname.startsWith("/projects");
+    }
     return location.pathname.startsWith(path);
+  };
+
+  const handleNav = (path: string) => {
+    if (path === "/" && location.pathname === "/") {
+      requestDashboardRefresh();
+      return;
+    }
+    onNavigate(path);
   };
 
   const renderNavItem = (item: NavItem) => (
     <button
       key={item.path}
-      onClick={() => navigate(item.path)}
-      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 group relative ${
+      type="button"
+      onClick={() => handleNav(item.path)}
+      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-white transition-all duration-150 group relative ${
         isActive(item.path)
-          ? "bg-white/10 text-white border-l-[3px] border-[#E2352D]"
-          : "text-gray-400 hover:bg-white/5 hover:text-white border-l-[3px] border-transparent"
+          ? "bg-white/20 border-l-[3px] border-white"
+          : "hover:bg-white/10 border-l-[3px] border-transparent"
       }`}
     >
-      <item.icon size={20} className={isActive(item.path) ? "text-[#E2352D]" : ""} />
+      <item.icon size={20} className="text-white shrink-0" />
       {!collapsed && (
         <>
-          <span className="flex-1 text-left">{item.label}</span>
+          <span className="flex-1 text-left text-white">{item.label}</span>
           {item.badge ? (
-            <span className="bg-[#E2352D] text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
+            <span className="bg-white text-[#1e3a5f] text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
               {item.badge}
             </span>
           ) : null}
         </>
       )}
       {collapsed && item.badge ? (
-        <span className="absolute -top-1 -right-1 bg-[#E2352D] text-white text-[8px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
+        <span className="absolute -top-1 -right-1 bg-white text-[#1e3a5f] text-[8px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
           {item.badge}
         </span>
       ) : null}
@@ -93,86 +155,119 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   );
 
   return (
-    <aside
-      className="fixed left-0 top-0 h-screen bg-[#1F2937] flex flex-col z-[120] transition-all duration-300"
-      style={{ width: collapsed ? 64 : 250 }}
-    >
-      <div className="h-16 flex items-center gap-3 px-4 border-b border-white/10">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-r from-[#E2352D] to-[#F25C54] flex items-center justify-center flex-shrink-0">
+    <div className="relative flex h-full flex-col bg-gradient-to-b from-[#1e3a5f] via-[#2563EB] to-[#1e40af]">
+      <div
+        className="pointer-events-none absolute inset-0 opacity-25 bg-[radial-gradient(circle_at_top,_white,_transparent_55%)]"
+        aria-hidden
+      />
+      <div
+        className={`relative h-14 sm:h-16 flex items-center border-b border-white/15 ${
+          collapsed ? "justify-center px-2" : "gap-3 px-4"
+        }`}
+      >
+        <div className="w-8 h-8 rounded-lg bg-gradient-to-r from-[#0EA5E9] to-[#38BDF8] flex items-center justify-center flex-shrink-0 shadow-sm">
           <span className="text-white font-bold text-sm">AT</span>
         </div>
         {!collapsed && (
-          <span className="text-white font-bold text-lg tracking-tight">Aumento Track</span>
+          <span className="text-white font-bold text-base sm:text-lg tracking-tight">
+            AumentoX26
+          </span>
         )}
-        <button
-          onClick={onToggle}
-          className="ml-auto text-gray-500 hover:text-white transition-colors"
-        >
-          {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-        </button>
+        {showCollapseToggle ? (
+          <button
+            type="button"
+            onClick={onToggle}
+            className={
+              collapsed
+                ? "absolute top-1/2 -translate-y-1/2 -right-3 z-[130] flex h-7 w-7 items-center justify-center rounded-full bg-white text-[#1e3a5f] shadow-md border border-white/80 hover:bg-blue-50 transition-colors"
+                : "ml-auto flex h-8 w-8 items-center justify-center rounded-lg text-white hover:bg-white/10 transition-colors"
+            }
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {collapsed ? <ChevronRight size={16} strokeWidth={2.5} /> : <ChevronLeft size={16} />}
+          </button>
+        ) : null}
       </div>
 
-      <nav className="flex-1 overflow-y-auto scrollbar-thin py-4 px-2 space-y-1">
-        {visibleMain.length > 0 && (
-          <>
-            {!collapsed && (
-              <div className="px-3 mb-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-                Main
-              </div>
-            )}
-            {collapsed && <div className="h-4" />}
-            {visibleMain.map(renderNavItem)}
-          </>
-        )}
-
-        {visibleInsights.length > 0 && (
-          <>
-            {!collapsed && (
-              <div className="px-3 mt-6 mb-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-                Insights
-              </div>
-            )}
-            {collapsed && <div className="h-4" />}
-            {visibleInsights.map(renderNavItem)}
-          </>
-        )}
-
-        {visibleAdmin.length > 0 && (
-          <>
-            {!collapsed && (
-              <div className="px-3 mt-6 mb-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-                Administration
-              </div>
-            )}
-            {collapsed && <div className="h-4" />}
-            {visibleAdmin.map(renderNavItem)}
-          </>
-        )}
-
-        {showTaskChats && renderNavItem(taskChatsNav)}
+      <nav className="relative flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin py-4 px-2 space-y-1">
+        {visibleNav.map(renderNavItem)}
       </nav>
 
-      <div className="border-t border-white/10 p-2 space-y-1">
+      <div className="relative border-t border-white/15 p-2 space-y-1 overflow-hidden">
         <button
-          onClick={() => navigate("/settings")}
-          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 ${
+          type="button"
+          onClick={() => handleNav("/settings")}
+          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-white transition-all duration-150 ${
             isActive("/settings")
-              ? "bg-white/10 text-white border-l-[3px] border-[#E2352D]"
-              : "text-gray-400 hover:bg-white/5 hover:text-white border-l-[3px] border-transparent"
+              ? "bg-white/20 border-l-[3px] border-white"
+              : "hover:bg-white/10 border-l-[3px] border-transparent"
           }`}
         >
-          <Settings size={20} />
-          {!collapsed && <span>Settings</span>}
+          <Settings size={20} className="text-white shrink-0" />
+          {!collapsed && <span className="text-white">Settings</span>}
         </button>
 
         <button
+          type="button"
           onClick={logout}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-gray-400 hover:bg-white/5 hover:text-white transition-all duration-150"
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-white hover:bg-white/10 transition-all duration-150"
         >
-          <LogOut size={20} />
-          {!collapsed && <span>Logout</span>}
+          <LogOut size={20} className="text-white shrink-0" />
+          {!collapsed && <span className="text-white">Logout</span>}
         </button>
       </div>
+    </div>
+  );
+}
+
+export function Sidebar({
+  collapsed,
+  onToggle,
+  drawerOpen,
+  onDrawerOpenChange,
+}: SidebarProps) {
+  const layoutMode = useLayoutMode();
+  const navigate = useNavigate();
+  const isDrawer = layoutMode === "drawer";
+  const sidebarWidth = getSidebarWidth(layoutMode, collapsed);
+
+  const handleNavigate = (path: string) => {
+    navigate(path);
+    if (isDrawer) {
+      onDrawerOpenChange(false);
+    }
+  };
+
+  if (isDrawer) {
+    return (
+      <Sheet open={drawerOpen} onOpenChange={onDrawerOpenChange}>
+        <SheetContent
+          side="left"
+          className="w-[min(280px,85vw)] max-w-[85vw] p-0 border-0 bg-transparent shadow-2xl [&>button]:hidden z-[140]"
+        >
+          <SidebarPanel
+            collapsed={false}
+            showCollapseToggle={false}
+            onToggle={onToggle}
+            onNavigate={handleNavigate}
+          />
+        </SheetContent>
+      </Sheet>
+    );
+  }
+
+  return (
+    <aside
+      className="fixed left-0 top-0 h-screen flex flex-col z-[120] transition-all duration-300 overflow-visible"
+      style={{ width: sidebarWidth }}
+    >
+      <SidebarPanel
+        collapsed={collapsed}
+        showCollapseToggle
+        onToggle={onToggle}
+        onNavigate={handleNavigate}
+      />
     </aside>
   );
 }

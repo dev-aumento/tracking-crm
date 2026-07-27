@@ -6,70 +6,55 @@ import { RoleBadge } from "@/components/shared/StatusBadge";
 import { AvatarPickerModal } from "@/components/settings/AvatarPickerModal";
 import { PersonalInformationPanel } from "@/components/settings/PersonalInformationPanel";
 import { writeProfilePrefs } from "@/lib/profile-prefs";
+import {
+  DEFAULT_NOTIFICATION_PREFS,
+  NOTIFICATION_PREF_ITEMS,
+  readNotificationPrefs,
+  writeNotificationPrefs,
+  type NotificationPrefs,
+} from "@/lib/notification-prefs";
+import {
+  WORK_TIMEZONE,
+  WORK_TIMEZONE_LABEL,
+} from "@/lib/timezone";
+import { departmentSelectOptions, departmentSelectScopeForRole } from "@/lib/department-options";
 import { motion } from "framer-motion";
 import { User, Building2, BellRing, Camera, Check, Loader2, IdCard } from "lucide-react";
 
 const TABS = [
   { key: "profile", label: "Profile", icon: User },
-  { key: "personal", label: "Personal information", icon: IdCard },
+  { key: "personal", label: "Personal Information", icon: IdCard },
   { key: "workspace", label: "Workspace", icon: Building2 },
   { key: "notifications", label: "Notifications", icon: BellRing },
 ];
 
 const WORKSPACE_KEY = "settings-workspace";
-const NOTIFICATIONS_KEY = "settings-notifications";
 
 type ProfileForm = {
   name: string;
   avatar: string | null;
+  department: string;
 };
 
 type WorkspaceForm = {
-  workspaceName: string;
   startTime: string;
   endTime: string;
   timezone: string;
 };
 
-type NotificationPrefs = Record<string, boolean>;
-
-const WORKSPACE_TIMEZONE = "Asia/Kolkata";
-const WORKSPACE_TIMEZONE_LABEL = "Mumbai (IST)";
-
 const DEFAULT_WORKSPACE: WorkspaceForm = {
-  workspaceName: "Aumento Track",
   startTime: "09:00",
   endTime: "21:00",
-  timezone: WORKSPACE_TIMEZONE,
+  timezone: WORK_TIMEZONE,
 };
-
-const NOTIFICATION_ITEMS = [
-  { key: "taskAssignments", label: "Task Assignments", desc: "When you are assigned to a new task", defaultChecked: true },
-  { key: "statusChanges", label: "Status Changes", desc: "When a task you follow changes status", defaultChecked: true },
-  { key: "mentions", label: "Mentions", desc: "When someone mentions you in a task", defaultChecked: true },
-  { key: "dueDateReminders", label: "Due Date Reminders", desc: "24 hours before task due dates", defaultChecked: true },
-  { key: "weeklySummary", label: "Weekly Summary", desc: "Weekly report of your activity", defaultChecked: false },
-];
 
 function readWorkspacePrefs(): WorkspaceForm {
   try {
     const raw = localStorage.getItem(WORKSPACE_KEY);
     const parsed = raw ? { ...DEFAULT_WORKSPACE, ...JSON.parse(raw) } : DEFAULT_WORKSPACE;
-    return { ...parsed, timezone: WORKSPACE_TIMEZONE };
+    return { ...parsed, timezone: WORK_TIMEZONE };
   } catch {
     return DEFAULT_WORKSPACE;
-  }
-}
-
-function readNotificationPrefs(): NotificationPrefs {
-  const defaults = Object.fromEntries(
-    NOTIFICATION_ITEMS.map((item) => [item.key, item.defaultChecked]),
-  );
-  try {
-    const raw = localStorage.getItem(NOTIFICATIONS_KEY);
-    return raw ? { ...defaults, ...JSON.parse(raw) } : defaults;
-  } catch {
-    return defaults;
   }
 }
 
@@ -84,18 +69,32 @@ export default function Settings() {
   const [profileForm, setProfileForm] = useState<ProfileForm>({
     name: "",
     avatar: null,
+    department: "",
   });
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
 
   const [workspaceForm, setWorkspaceForm] = useState<WorkspaceForm>(readWorkspacePrefs);
-  const [notificationPrefs, setNotificationPrefs] = useState<NotificationPrefs>(readNotificationPrefs);
+  const [notificationPrefs, setNotificationPrefs] = useState<NotificationPrefs>(
+    () => ({ ...DEFAULT_NOTIFICATION_PREFS }),
+  );
 
   useEffect(() => {
     if (!user) return;
     setProfileForm({
       name: user.name ?? "",
       avatar: user.avatar ?? null,
+      department: user.department ?? "",
     });
+    setNotificationPrefs(readNotificationPrefs(user.id));
   }, [user]);
+
+  useEffect(() => {
+    if (user?.role === "client" && activeTab === "workspace") {
+      setActiveTab("profile");
+    }
+  }, [user?.role, activeTab]);
 
   const updateProfileMutation = trpc.auth.updateProfile.useMutation({
     onSuccess: async (updatedUser) => {
@@ -103,7 +102,6 @@ export default function Settings() {
       writeProfilePrefs(updatedUser.id, {
         name: updatedUser.name,
         email: updatedUser.email,
-        department: updatedUser.department,
         position: updatedUser.position,
         phone: updatedUser.phone,
       });
@@ -119,7 +117,21 @@ export default function Settings() {
     },
   });
 
-  const isSaving = updateProfileMutation.isPending;
+  const changePasswordMutation = trpc.auth.changePassword.useMutation({
+    onSuccess: () => {
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setSaveError(null);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    },
+    onError: (error) => {
+      setSaveError(error.message || "Could not update password.");
+    },
+  });
+
+  const isSaving = updateProfileMutation.isPending || changePasswordMutation.isPending;
 
   const handleAvatarSelect = (avatarUrl: string) => {
     setProfileForm((prev) => ({ ...prev, avatar: avatarUrl }));
@@ -128,23 +140,53 @@ export default function Settings() {
     updateProfileMutation.mutate({ avatar: avatarUrl });
   };
 
-  const handleSaveProfile = () => {
+  const handleSaveProfile = async () => {
     setSaveError(null);
     if (!profileForm.name.trim()) {
       setSaveError("Name is required.");
       return;
     }
 
-    updateProfileMutation.mutate({
-      name: profileForm.name.trim(),
-      avatar: profileForm.avatar,
-    });
+    const wantsPasswordChange =
+      currentPassword.length > 0 || newPassword.length > 0 || confirmPassword.length > 0;
+
+    if (wantsPasswordChange) {
+      if (!currentPassword) {
+        setSaveError("Enter your current password to change it.");
+        return;
+      }
+      if (newPassword.length < 8) {
+        setSaveError("New password must be at least 8 characters.");
+        return;
+      }
+      if (newPassword !== confirmPassword) {
+        setSaveError("New password and confirmation do not match.");
+        return;
+      }
+    }
+
+    try {
+      await updateProfileMutation.mutateAsync({
+        name: profileForm.name.trim(),
+        avatar: profileForm.avatar,
+        department: profileForm.department.trim() || null,
+      });
+
+      if (wantsPasswordChange) {
+        await changePasswordMutation.mutateAsync({
+          currentPassword,
+          newPassword,
+        });
+      }
+    } catch {
+      // Errors are handled in mutation onError handlers.
+    }
   };
 
   const handleSaveWorkspace = () => {
     localStorage.setItem(
       WORKSPACE_KEY,
-      JSON.stringify({ ...workspaceForm, timezone: WORKSPACE_TIMEZONE }),
+      JSON.stringify({ ...workspaceForm, timezone: WORK_TIMEZONE }),
     );
     setSaveError(null);
     setSaved(true);
@@ -152,7 +194,11 @@ export default function Settings() {
   };
 
   const handleSaveNotifications = () => {
-    localStorage.setItem(NOTIFICATIONS_KEY, JSON.stringify(notificationPrefs));
+    if (!user) {
+      setSaveError("You must be signed in to save notification preferences.");
+      return;
+    }
+    writeNotificationPrefs(user.id, notificationPrefs);
     setSaveError(null);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -164,42 +210,48 @@ export default function Settings() {
     else handleSaveNotifications();
   };
 
+  const visibleTabs = TABS.filter(
+    (tab) => !(user?.role === "client" && tab.key === "workspace"),
+  );
+
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-4xl mx-auto space-y-6">
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-5xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-[#1F2937]">Settings</h1>
         <p className="text-sm text-gray-500 mt-0.5">Manage your account and preferences</p>
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden flex min-h-[500px]">
-        <div className="w-56 border-r border-gray-200 bg-gray-50/50 flex-shrink-0">
-          {TABS.map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => {
-                setActiveTab(tab.key);
-                setSaveError(null);
-              }}
-              className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium transition-all ${
-                activeTab === tab.key
-                  ? "bg-white text-[#2563EB] border-l-[3px] border-[#2563EB]"
-                  : "text-gray-600 hover:bg-white/60 border-l-[3px] border-transparent"
-              }`}
-            >
-              <tab.icon size={18} />
-              {tab.label}
-            </button>
-          ))}
+      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden flex flex-col lg:flex-row min-h-0 lg:min-h-[500px]">
+        <div className="lg:w-56 border-b lg:border-b-0 lg:border-r border-gray-200 bg-gray-50/50 flex-shrink-0 overflow-x-auto">
+          <nav className="flex lg:flex-col min-w-max lg:min-w-0">
+            {visibleTabs.map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => {
+                  setActiveTab(tab.key);
+                  setSaveError(null);
+                }}
+                className={`flex items-center gap-2 lg:gap-3 px-3 sm:px-4 py-2.5 lg:py-3 text-sm font-medium transition-all whitespace-nowrap lg:w-full ${
+                  activeTab === tab.key
+                    ? "bg-white text-[#2563EB] border-b-[3px] lg:border-b-0 lg:border-l-[3px] border-[#2563EB]"
+                    : "text-gray-600 hover:bg-white/60 border-b-[3px] lg:border-b-0 lg:border-l-[3px] border-transparent"
+                }`}
+              >
+                <tab.icon size={18} className="flex-shrink-0" />
+                {tab.label}
+              </button>
+            ))}
+          </nav>
         </div>
 
-        <div className="flex-1 p-6">
+        <div className="flex-1 p-4 sm:p-6 min-w-0 overflow-x-hidden">
           {activeTab === "profile" && (
             <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} className="space-y-6">
               <h2 className="text-lg font-semibold text-[#1F2937]">Profile Settings</h2>
 
-              <div className="flex items-center gap-5">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-5">
                 <UserAvatar name={profileForm.name || user?.name} avatar={profileForm.avatar} size={80} />
-                <div>
+                <div className="min-w-0">
                   <button
                     type="button"
                     onClick={() => setAvatarPickerOpen(true)}
@@ -213,9 +265,9 @@ export default function Settings() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-4 max-w-md">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Display name</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Display Name</label>
                   <input
                     type="text"
                     value={profileForm.name}
@@ -227,10 +279,97 @@ export default function Settings() {
                   </p>
                 </div>
                 <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="profile-email">
+                    Email
+                  </label>
+                  <input
+                    id="profile-email"
+                    type="email"
+                    value={user?.email ?? ""}
+                    disabled
+                    readOnly
+                    className="w-full h-10 px-3 border border-gray-200 rounded-lg text-sm bg-gray-50 text-gray-600 cursor-not-allowed"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">
+                    Email cannot be changed after it is set.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="profile-current-password">
+                    Current password
+                  </label>
+                  <input
+                    id="profile-current-password"
+                    type="password"
+                    autoComplete="current-password"
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    placeholder="Required only when changing password"
+                    className="w-full h-10 px-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="profile-new-password">
+                    New password
+                  </label>
+                  <input
+                    id="profile-new-password"
+                    type="password"
+                    autoComplete="new-password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="At least 8 characters"
+                    className="w-full h-10 px-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="profile-confirm-password">
+                    Confirm new password
+                  </label>
+                  <input
+                    id="profile-confirm-password"
+                    type="password"
+                    autoComplete="new-password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Re-enter new password"
+                    className="w-full h-10 px-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">
+                    Leave password fields blank to keep your current password.
+                  </p>
+                </div>
+                <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
                   <div className="h-10 flex items-center">
-                    <RoleBadge role={user?.role as "admin" | "manager" | "employee" || "employee"} />
+                    <RoleBadge role={user?.role as "admin" | "manager" | "employee" | "hr" | "client" || "employee"} />
                   </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="profile-department">
+                    Department
+                  </label>
+                  <select
+                    id="profile-department"
+                    value={profileForm.department}
+                    onChange={(e) =>
+                      setProfileForm((prev) => ({ ...prev, department: e.target.value }))
+                    }
+                    className="w-full h-10 px-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB] bg-white"
+                  >
+                    <option value="">Select department…</option>
+                    {departmentSelectOptions(
+                      profileForm.department,
+                      departmentSelectScopeForRole(user?.role),
+                    ).map((department) => (
+                      <option key={department} value={department}>
+                        {department}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Shown in the Projects table for projects you create.
+                  </p>
                 </div>
               </div>
             </motion.div>
@@ -253,15 +392,6 @@ export default function Settings() {
 
               <div className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Workspace Name</label>
-                  <input
-                    type="text"
-                    value={workspaceForm.workspaceName}
-                    onChange={(e) => setWorkspaceForm((prev) => ({ ...prev, workspaceName: e.target.value }))}
-                    className="w-full h-10 px-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
-                  />
-                </div>
-                <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Default Working Hours</label>
                   <div className="grid grid-cols-2 gap-3">
                     <input
@@ -282,7 +412,7 @@ export default function Settings() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">Timezone</label>
                   <input
                     type="text"
-                    value={WORKSPACE_TIMEZONE_LABEL}
+                    value={WORK_TIMEZONE_LABEL}
                     disabled
                     readOnly
                     className="w-full h-10 px-3 border border-gray-200 rounded-lg text-sm bg-gray-50 text-gray-600 cursor-not-allowed"
@@ -297,11 +427,11 @@ export default function Settings() {
               <h2 className="text-lg font-semibold text-[#1F2937]">Notification Preferences</h2>
 
               <div className="space-y-4">
-                {NOTIFICATION_ITEMS.map((item) => (
+                {NOTIFICATION_PREF_ITEMS.map((item) => (
                   <label key={item.key} className="flex items-start gap-3 p-3 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors">
                     <input
                       type="checkbox"
-                      checked={notificationPrefs[item.key] ?? item.defaultChecked}
+                      checked={notificationPrefs[item.key]}
                       onChange={(e) =>
                         setNotificationPrefs((prev) => ({ ...prev, [item.key]: e.target.checked }))
                       }

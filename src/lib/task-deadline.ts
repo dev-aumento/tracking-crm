@@ -1,3 +1,13 @@
+import {
+  formatWorkZoneDateTime,
+  startOfWorkZoneDay,
+  endOfWorkZoneDay,
+  workZoneDateKey,
+  workZoneDateParts,
+  workZoneWallTimeToUtc,
+  workZoneWeekday,
+} from "@/lib/timezone";
+
 export type DeadlineColumnKey =
   | "overdue"
   | "due_today"
@@ -27,23 +37,24 @@ type TaskLike = {
 };
 
 function startOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
+  return startOfWorkZoneDay(d);
 }
 
 function endOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
+  return endOfWorkZoneDay(d);
 }
 
+/** Sunday end of the IST week containing `d` (week ends Sunday). */
 function endOfWeek(d: Date) {
-  const x = startOfDay(d);
-  const day = x.getDay();
-  const daysUntilSunday = day === 0 ? 0 : 7 - day;
-  x.setDate(x.getDate() + daysUntilSunday);
-  return endOfDay(x);
+  const { year, month, day } = workZoneDateParts(d);
+  const weekday = workZoneWeekday(d);
+  const daysUntilSunday = weekday === 0 ? 0 : 7 - weekday;
+  return workZoneWallTimeToUtc(year, month, day + daysUntilSunday, 23, 59, 59, 999);
+}
+
+function istDateKeyOffset(from: Date, dayOffset: number) {
+  const { year, month, day } = workZoneDateParts(from);
+  return workZoneDateKey(workZoneWallTimeToUtc(year, month, day + dayOffset, 12));
 }
 
 export function getDeadlineColumn(task: TaskLike): DeadlineColumnKey {
@@ -59,9 +70,16 @@ export function getDeadlineColumn(task: TaskLike): DeadlineColumnKey {
   if (due <= endToday) return "due_today";
   if (due <= endThisWeek) return "due_this_week";
 
-  const startNextWeek = new Date(endThisWeek);
-  startNextWeek.setDate(startNextWeek.getDate() + 1);
-  startNextWeek.setHours(0, 0, 0, 0);
+  const endParts = workZoneDateParts(endThisWeek);
+  const startNextWeek = workZoneWallTimeToUtc(
+    endParts.year,
+    endParts.month,
+    endParts.day + 1,
+    0,
+    0,
+    0,
+    0,
+  );
   const endNextWeek = endOfWeek(startNextWeek);
 
   if (due <= endNextWeek) return "due_next_week";
@@ -114,13 +132,19 @@ export function isTaskDueAlert(task: TaskLike) {
 }
 
 export function formatDueLabel(dueDate: string | Date) {
-  const d = new Date(dueDate);
-  return d.toLocaleString("en-US", {
+  return formatWorkZoneDateTime(dueDate, {
     month: "long",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
+    hour12: true,
   });
+}
+
+/** Default new-task deadline: same calendar day in IST at 7:00 PM. */
+export function defaultTaskDeadlineIso(from: Date | string = new Date()): string {
+  const { year, month, day } = workZoneDateParts(from);
+  return workZoneWallTimeToUtc(year, month, day, 19, 0, 0, 0).toISOString();
 }
 
 export function formatOverdueLabel(dueDate: string | Date) {
@@ -166,36 +190,28 @@ export function deadlineColumnToTaskUpdate(columnKey: DeadlineColumnKey): {
     return { dueDate: null, status: "todo" };
   }
 
-  const at5pm = (d: Date) => {
-    const x = new Date(d);
-    x.setHours(17, 0, 0, 0);
-    return x.toISOString().slice(0, 10);
-  };
-
   if (columnKey === "overdue") {
-    const d = new Date(now);
-    d.setDate(d.getDate() - 2);
-    return { dueDate: at5pm(d), status: "todo" };
+    return { dueDate: istDateKeyOffset(now, -2), status: "todo" };
   }
 
   if (columnKey === "due_today") {
-    return { dueDate: at5pm(now), status: "todo" };
+    return { dueDate: istDateKeyOffset(now, 0), status: "todo" };
   }
 
   if (columnKey === "due_this_week") {
-    const d = new Date(now);
-    d.setDate(d.getDate() + 2);
-    return { dueDate: at5pm(d), status: "todo" };
+    return { dueDate: istDateKeyOffset(now, 2), status: "todo" };
   }
 
   if (columnKey === "due_next_week") {
     const endThis = endOfWeek(now);
-    const d = new Date(endThis);
-    d.setDate(d.getDate() + 3);
-    return { dueDate: at5pm(d), status: "todo" };
+    const parts = workZoneDateParts(endThis);
+    return {
+      dueDate: workZoneDateKey(
+        workZoneWallTimeToUtc(parts.year, parts.month, parts.day + 3, 12),
+      ),
+      status: "todo",
+    };
   }
 
-  const d = new Date(now);
-  d.setDate(d.getDate() + 21);
-  return { dueDate: at5pm(d), status: "todo" };
+  return { dueDate: istDateKeyOffset(now, 21), status: "todo" };
 }

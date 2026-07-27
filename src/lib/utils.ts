@@ -1,5 +1,6 @@
 import { type ClassValue, clsx } from "clsx"
 import { twMerge } from "tailwind-merge"
+import { formatInWorkZone, formatWorkZoneDate, formatWorkZoneTime } from "@/lib/timezone"
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -48,26 +49,26 @@ export function formatElapsedHMS(totalSeconds: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-/** When the time entry started — day + clock time for the log list. */
+/** When the time entry started — day + clock time for the log list (IST). */
 export function formatTimeEntryLogged(
   clockIn: Date | string,
   clockOut?: Date | string | null,
 ) {
-  const start = new Date(clockIn);
-  const datePart = start.toLocaleDateString("en-US", {
+  const datePart = formatWorkZoneDate(clockIn, {
     weekday: "short",
     month: "short",
     day: "numeric",
   });
-  const startTime = start.toLocaleTimeString("en-US", {
+  const startTime = formatWorkZoneTime(clockIn, {
     hour: "numeric",
     minute: "2-digit",
+    hour12: true,
   });
   if (!clockOut) return `${datePart} · ${startTime}`;
-  const end = new Date(clockOut);
-  const endTime = end.toLocaleTimeString("en-US", {
+  const endTime = formatWorkZoneTime(clockOut, {
     hour: "numeric",
     minute: "2-digit",
+    hour12: true,
   });
   return `${datePart} · ${startTime} – ${endTime}`;
 }
@@ -97,7 +98,22 @@ export function formatTimeAgo(date: Date | string): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
-  return then.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return formatInWorkZone(then, { month: "short", day: "numeric" });
+}
+
+/** Task chat timestamps: "just now" for the first minute, then wall-clock time. */
+export function formatChatTimestamp(date: Date | string, nowMs = Date.now()): string {
+  const then = new Date(date);
+  if (Number.isNaN(then.getTime())) return "";
+
+  const seconds = Math.floor((nowMs - then.getTime()) / 1000);
+  if (seconds < 60) return "just now";
+
+  return formatWorkZoneTime(then, {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
 }
 
 export const statusConfig = {
@@ -118,4 +134,6 @@ export const roleConfig = {
   admin: { label: "Admin", color: "#2563EB", bg: "#EFF6FF" },
   manager: { label: "Manager", color: "#2563EB", bg: "#DBEAFE" },
   employee: { label: "Employee", color: "#059669", bg: "#D1FAE5" },
+  hr: { label: "HR", color: "#7C3AED", bg: "#F5F3FF" },
+  client: { label: "Client", color: "#0D9488", bg: "#CCFBF1" },
 } as const;

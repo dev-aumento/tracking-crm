@@ -4,6 +4,7 @@ import * as React from "react"
 import { Drawer as DrawerPrimitive } from "vaul"
 
 import { cn } from "@/lib/utils"
+import { useBodyScrollLock } from "@/hooks/useBodyScrollLock"
 
 function Drawer({
   ...props
@@ -33,6 +34,7 @@ function DrawerOverlay({
   className,
   ...props
 }: React.ComponentProps<typeof DrawerPrimitive.Overlay>) {
+  useBodyScrollLock(true);
   return (
     <DrawerPrimitive.Overlay
       data-slot="drawer-overlay"

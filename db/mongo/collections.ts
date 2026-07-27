@@ -1,5 +1,6 @@
 export const Collections = {
   counters: "counters",
+  organizations: "organizations",
   users: "users",
   employees: "employees",
   employeeInvites: "employee_invites",
@@ -13,10 +14,16 @@ export const Collections = {
   timeEntries: "time_entries",
   taskActivity: "task_activity",
   taskAttachments: "task_attachments",
+  employeeDocuments: "employee_documents",
+  formerEmployees: "former_employees",
+  formerEmployeeDocuments: "former_employee_documents",
   notifications: "notifications",
   workSessions: "work_sessions",
   workBreaks: "work_breaks",
   timeApprovalRequests: "time_approval_requests",
+  leaveRequests: "leave_requests",
+  leaveUsageOverrides: "leave_usage_overrides",
+  publicHolidays: "public_holidays",
   appSettings: "app_settings",
 } as const;
 

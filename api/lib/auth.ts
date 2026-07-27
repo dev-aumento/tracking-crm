@@ -1,9 +1,21 @@
 import * as cookie from "cookie";
 import { Session } from "@contracts/constants";
 import { Errors } from "@contracts/errors";
+import type { SafeUser } from "../queries/users";
 import { findUserById, omitPasswordHash } from "../queries/users";
 import { getSessionCookieOptions } from "./cookies";
 import { signSessionToken, verifySessionToken } from "./session";
+
+const AUTH_USER_CACHE_TTL_MS = 20_000;
+const authUserCache = new Map<number, { user: SafeUser; expiresAt: number }>();
+
+export function invalidateAuthUserCache(userId?: number) {
+  if (typeof userId === "number") {
+    authUserCache.delete(userId);
+    return;
+  }
+  authUserCache.clear();
+}
 
 export async function authenticateRequest(headers: Headers) {
   const cookies = cookie.parse(headers.get("cookie") || "");
@@ -17,6 +29,11 @@ export async function authenticateRequest(headers: Headers) {
     throw Errors.forbidden("Invalid authentication token.");
   }
 
+  const cached = authUserCache.get(claim.userId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.user;
+  }
+
   const user = await findUserById(claim.userId);
   if (!user) {
     throw Errors.forbidden("User not found. Please sign in again.");
@@ -26,7 +43,12 @@ export async function authenticateRequest(headers: Headers) {
     throw Errors.forbidden("Account is not active.");
   }
 
-  return omitPasswordHash(user);
+  const safeUser = omitPasswordHash(user);
+  authUserCache.set(claim.userId, {
+    user: safeUser,
+    expiresAt: Date.now() + AUTH_USER_CACHE_TTL_MS,
+  });
+  return safeUser;
 }
 
 export async function createSessionForUser(
@@ -34,6 +56,7 @@ export async function createSessionForUser(
   reqHeaders: Headers,
   resHeaders: Headers,
 ) {
+  invalidateAuthUserCache(userId);
   const token = await signSessionToken({ userId });
   appendSessionCookie(resHeaders, reqHeaders, token);
 }

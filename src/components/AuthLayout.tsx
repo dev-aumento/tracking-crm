@@ -213,7 +213,7 @@ function AuthLayoutContent({
                     </AvatarFallback>
                   </Avatar>
                   <div className="flex-1 min-w-0 group-data-[collapsible=icon]:hidden">
-                    <p className="text-sm font-medium truncate leading-none">
+                    <p className="text-sm font-medium truncate leading-none capitalize">
                       {user?.name || "-"}
                     </p>
                     <p className="text-xs text-muted-foreground truncate mt-1.5">

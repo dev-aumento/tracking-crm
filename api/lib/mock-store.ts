@@ -1,11 +1,21 @@
 import { DEV_USER } from "./dev-mode";
+import {
+  countCompletedTasks,
+  countTodoTasks,
+} from "./dashboard-task-stats";
 import type { SafeUser } from "../queries/users";
-import { buildTimeStatsSummary, localDateKey, startOfCalendarWeek, computeSessionWorkSeconds, periodClockInBounds, dayBounds, roundHours, attendanceEntrySeconds } from "@/lib/work-hours-policy";
+import { buildTimeStatsSummary, localDateKey, startOfCalendarWeek, periodClockInBounds, dayBounds, roundHours, attendanceEntrySeconds, getAutoClockOutDeadline, isPastAutoClockOutDeadline, computeAttendanceWorkSeconds, resolveAttendanceDisplaySeconds, filterMeaningfulAttendanceEntries } from "@/lib/work-hours-policy";
+import { buildLeaveCoverageMap, eachLeaveDateKey, isWeekdayDateKey } from "@/lib/leave-policy";
 import {
   projectPerformancePercent,
 } from "@/lib/project-funnel";
-import { legacyStatusToStage } from "@/lib/task-kanban";
+import { legacyStatusToStage, createPipelineStageKey, nextCustomStageColor, resolveProjectPipelineStages, isPipelineStageDeletable, isCustomPipelineStageKey, movePipelineStageOrder, isMarkingTaskComplete } from "@/lib/task-kanban";
 import { taskMatchesUnifiedSearch } from "@/lib/unified-search";
+import { extractMentionedUserIds, formatCommentPreview } from "@/lib/task-comment-mentions";
+import { extractMentionedUserIdsFromComment, richCommentPlainText } from "@/lib/rich-comment";
+import { readCommentReactions, toggleUserReaction } from "@/lib/comment-reactions";
+import { formatWorkZoneTime, startOfWorkZoneDay } from "@/lib/timezone";
+import { defaultTaskDeadlineIso } from "@/lib/task-deadline";
 
 function daysAgo(n: number) {
   const d = new Date();
@@ -30,6 +40,7 @@ const users: SafeUser[] = [
   {
     id: 2,
     unionId: "manager_union_001",
+    organizationId: 1,
     name: "Sarah Chen",
     email: "sarah@aumento.io",
     avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Sarah",
@@ -38,6 +49,23 @@ const users: SafeUser[] = [
     department: "Engineering",
     position: "Engineering Lead",
     phone: "+1-555-0102",
+    firstName: "Sarah",
+    lastName: "Chen",
+    secondName: null,
+    dateOfBirth: null,
+    dateOfJoining: null,
+    sex: null,
+    city: null,
+    address: null,
+    familyContactNumber: null,
+    personalEmail: null,
+    bloodGroup: null,
+    aadhaarCard: null,
+    panCard: null,
+    notificationLanguage: "en",
+    employmentType: "full_time",
+    headOfDepartmentUserIds: [],
+    permissions: [],
     createdAt: daysAgo(90),
     updatedAt: daysAgo(1),
     lastSignInAt: daysAgo(0),
@@ -45,6 +73,7 @@ const users: SafeUser[] = [
   {
     id: 4,
     unionId: "emp_union_001",
+    organizationId: 1,
     name: "Emily Rodriguez",
     email: "emily@aumento.io",
     avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Emily",
@@ -53,6 +82,23 @@ const users: SafeUser[] = [
     department: "Engineering",
     position: "Frontend Developer",
     phone: "+1-555-0104",
+    firstName: "Emily",
+    lastName: "Rodriguez",
+    secondName: null,
+    dateOfBirth: null,
+    dateOfJoining: null,
+    sex: null,
+    city: null,
+    address: null,
+    familyContactNumber: null,
+    personalEmail: null,
+    bloodGroup: null,
+    aadhaarCard: null,
+    panCard: null,
+    notificationLanguage: "en",
+    employmentType: "full_time",
+    headOfDepartmentUserIds: [],
+    permissions: [],
     createdAt: daysAgo(60),
     updatedAt: daysAgo(2),
     lastSignInAt: daysAgo(0),
@@ -63,6 +109,9 @@ function userById(id: number) {
   return users.find((u) => u.id === id) ?? null;
 }
 
+/** Owner-only notes kept separate from SafeUser so admin APIs never see them. */
+const privateNotesByUserId: Record<number, string | null> = {};
+
 const projects = [
   {
     id: 1,
@@ -70,6 +119,8 @@ const projects = [
     description: "Complete overhaul of the company website with modern design.",
     status: "active" as const,
     color: "#2563EB",
+    icon: "folder-kanban",
+    clientName: "Aumento Infoway",
     createdBy: 1,
     createdAt: daysAgo(30),
     updatedAt: daysAgo(2),
@@ -83,6 +134,8 @@ const projects = [
     description: "Second version of the mobile app with offline support.",
     status: "active" as const,
     color: "#3B82F6",
+    icon: "rocket",
+    clientName: "Mobile Labs",
     createdBy: 2,
     createdAt: daysAgo(20),
     updatedAt: daysAgo(1),
@@ -96,6 +149,8 @@ const projects = [
     description: "Refresh public website content and branding for AGPL.",
     status: "active" as const,
     color: "#10B981",
+    icon: "globe",
+    clientName: "AGPL",
     createdBy: 1,
     createdAt: daysAgo(45),
     updatedAt: daysAgo(0),
@@ -109,6 +164,8 @@ const projects = [
     description: "AI integration and automation for CyperX platform.",
     status: "active" as const,
     color: "#8B5CF6",
+    icon: "laptop",
+    clientName: "CyperX",
     createdBy: 2,
     createdAt: daysAgo(60),
     updatedAt: daysAgo(3),
@@ -122,6 +179,8 @@ const projects = [
     description: "Self-service portal for enterprise clients.",
     status: "active" as const,
     color: "#F59E0B",
+    icon: "building-2",
+    clientName: "Enterprise Clients",
     createdBy: 1,
     createdAt: daysAgo(15),
     updatedAt: daysAgo(5),
@@ -135,6 +194,8 @@ const projects = [
     description: "HR onboarding and leave management modules.",
     status: "archived" as const,
     color: "#6B7280",
+    icon: "users",
+    clientName: "Internal",
     createdBy: 2,
     createdAt: daysAgo(120),
     updatedAt: daysAgo(30),
@@ -385,22 +446,22 @@ const notifications = [
   },
 ];
 
-export function mockDashboardStats(userId: number) {
-  const userTasks = tasks.filter((t) => t.assigneeId === userId);
-  const ongoing = userTasks.filter((t) => t.status === "in_progress").length;
-  const completed = userTasks.filter((t) => t.status === "done").length;
-  const total = userTasks.length || 1;
-  const done = userTasks.filter((t) => t.status === "done").length;
-  const weekAgo = new Date(Date.now() - 7 * 86400000);
-  const weekMinutes = allUserTimeEntries(userId)
-    .filter((e) => e.clockOut && e.clockIn >= weekAgo)
+export function mockDashboardStats(userId: number, role?: string) {
+  const isAdminOrManager = role === "admin" || role === "manager";
+  const scopedTasks = isAdminOrManager
+    ? tasks
+    : tasks.filter((t) => t.assigneeId === userId);
+  const ongoing = countTodoTasks(scopedTasks);
+  const completed = countCompletedTasks(scopedTasks);
+  const startOfToday = startOfWorkZoneDay();
+  const todayMinutes = allUserTimeEntries(userId)
+    .filter((e) => e.clockOut && e.clockIn >= startOfToday)
     .reduce((sum, e) => sum + (e.duration ?? 0), 0);
 
   return {
     ongoingTasks: ongoing,
     completedTasks: completed,
-    hoursTracked: Math.round((weekMinutes / 60) * 10) / 10,
-    teamPerformance: Math.round((done / total) * 100),
+    hoursTracked: Math.round((todayMinutes / 60) * 10) / 10,
   };
 }
 
@@ -420,9 +481,10 @@ export function mockWeeklyActivity() {
 }
 
 export function mockWorkload() {
+  const weekStart = startOfCalendarWeek();
   return users.map((user) => {
     const totalMinutes = allUserTimeEntries(user.id)
-      .filter((e) => e.clockOut)
+      .filter((e) => e.clockOut && new Date(e.clockIn) >= weekStart)
       .reduce((sum, e) => sum + (e.duration ?? 0), 0);
     return {
       userId: user.id,
@@ -517,6 +579,7 @@ const taskAttachments: Record<number, Array<{
   mimeType: string;
   fileSize: number;
   dataBase64: string;
+  listedInFiles?: boolean;
   uploadedBy: number;
   createdAt: Date;
 }>> = {};
@@ -525,7 +588,7 @@ const taskActivities: Record<number, Array<{
   id: number;
   taskId: number;
   userId: number | null;
-  action: "created" | "updated" | "status_changed" | "assigned" | "commented" | "time_logged" | "subtask_completed" | "tag_added" | "participant_added" | "observer_added";
+  action: "created" | "updated" | "status_changed" | "stage_changed" | "priority_changed" | "title_changed" | "assigned" | "owner_changed" | "commented" | "time_logged" | "subtask_completed" | "tag_added" | "participant_added" | "observer_added";
   oldValue: string | null;
   newValue: string | null;
   metadata: unknown;
@@ -650,20 +713,23 @@ let nextApprovalId = 9000;
 const timeApprovalRequests: MockTimeApprovalRequest[] = [];
 
 function mockNotifyAdmins(actor: SafeUser, title: string, message: string, approvalRequestId: number) {
-  const admin = users.find((u) => u.role === "admin");
-  if (!admin || admin.id === actor.id) return;
-  notifications.unshift({
-    id: Date.now() + Math.random(),
-    userId: admin.id,
-    actorId: actor.id,
-    taskId: null,
-    type: "time_approval_pending",
-    title,
-    message,
-    approvalRequestId,
-    read: false,
-    createdAt: new Date(),
-  } as (typeof notifications)[number] & { approvalRequestId: number; actorId: number });
+  const recipients = users.filter(
+    (u) => (u.role === "admin" || u.role === "hr") && u.id !== actor.id && u.status === "active",
+  );
+  for (const recipient of recipients) {
+    notifications.unshift({
+      id: Date.now() + Math.random(),
+      userId: recipient.id,
+      actorId: actor.id,
+      taskId: null,
+      type: "time_approval_pending",
+      title,
+      message,
+      approvalRequestId,
+      read: false,
+      createdAt: new Date(),
+    } as (typeof notifications)[number] & { approvalRequestId: number; actorId: number });
+  }
 }
 
 function mockActorLabel(actor: SafeUser) {
@@ -676,27 +742,36 @@ function mockNotifyTaskMembers({
   type,
   title,
   message,
+  activityId = null,
   extraRecipientIds = [],
   excludeUserIds = [],
+  includeAssignee = true,
 }: {
   taskId: number;
   actor: SafeUser;
   type: (typeof notifications)[number]["type"];
   title: string;
   message: string;
+  activityId?: number | null;
   extraRecipientIds?: number[];
   excludeUserIds?: number[];
+  includeAssignee?: boolean;
 }) {
   const task = tasks.find((t) => t.id === taskId);
   const excluded = new Set([actor.id, ...excludeUserIds]);
   const recipientIds = new Set<number>();
-  if (task?.assigneeId != null) recipientIds.add(task.assigneeId);
-  for (const participant of taskParticipants[taskId] ?? []) {
-    recipientIds.add(participant.id);
-  }
+  if (includeAssignee && task?.assigneeId != null) recipientIds.add(task.assigneeId);
   for (const id of extraRecipientIds) recipientIds.add(id);
 
-  const recipients = [...recipientIds].filter((id) => !excluded.has(id));
+  const recipients = [...recipientIds].filter((id) => {
+    if (excluded.has(id)) return false;
+    const recipient = users.find((u) => u.id === id);
+    if (!recipient) return true;
+    // Keep mock aligned with production: HR department users skip task alerts.
+    const dept = (recipient.department ?? "").trim().toLowerCase();
+    if (recipient.role !== "admin" && dept === "hr") return false;
+    return true;
+  });
   if (recipients.length === 0) return;
 
   const now = new Date();
@@ -706,13 +781,16 @@ function mockNotifyTaskMembers({
       userId,
       actorId: actor.id,
       taskId,
+      activityId,
       type,
       title,
       message,
       read: false,
-      link: `/tasks?task=${taskId}`,
+      link: activityId
+        ? `/tasks?task=${taskId}&activity=${activityId}`
+        : `/tasks?task=${taskId}`,
       createdAt: now,
-    } as (typeof notifications)[number] & { actorId: number });
+    } as (typeof notifications)[number] & { actorId: number; activityId?: number | null });
   }
 }
 
@@ -725,18 +803,77 @@ function mockApplyClockInApproval(
   const deltaSeconds = Math.floor(
     (request.originalClockIn.getTime() - request.requestedClockIn.getTime()) / 1000,
   );
-  session.startTime = request.requestedClockIn;
-  session.accumulatedWorkSeconds += deltaSeconds;
-  if (entry) entry.clockIn = request.requestedClockIn;
+  if (deltaSeconds <= 0) return;
+
+  const now = new Date();
+  const requestedClockIn = request.requestedClockIn;
+  const breaks = mockFindBreaksOverlappingWindow(
+    session.userId,
+    requestedClockIn,
+    session.endTime ?? now,
+  );
+
+  session.startTime = requestedClockIn;
+
+  if (session.active) {
+    if (session.paused) {
+      const pauseAt = session.breakStartedAt ?? now;
+      session.accumulatedWorkSeconds = computeAttendanceWorkSeconds(
+        requestedClockIn,
+        pauseAt,
+        breaks,
+        now,
+      );
+      session.workSegmentStartedAt = null;
+    } else {
+      const segmentStart = session.workSegmentStartedAt;
+      const segmentIsOriginalClockIn =
+        !!segmentStart &&
+        Math.abs(segmentStart.getTime() - request.originalClockIn.getTime()) < 2000;
+
+      if (!segmentStart || segmentIsOriginalClockIn) {
+        session.accumulatedWorkSeconds = computeAttendanceWorkSeconds(
+          requestedClockIn,
+          now,
+          breaks,
+          now,
+        );
+        session.workSegmentStartedAt = now;
+      } else {
+        session.accumulatedWorkSeconds = computeAttendanceWorkSeconds(
+          requestedClockIn,
+          segmentStart,
+          breaks,
+          now,
+        );
+      }
+    }
+  }
+
+  if (entry) {
+    entry.clockIn = requestedClockIn;
+    if (entry.clockOut) {
+      entry.durationSeconds = computeAttendanceWorkSeconds(
+        requestedClockIn,
+        entry.clockOut,
+        breaks,
+        now,
+      );
+      entry.duration = Math.floor(entry.durationSeconds / 60);
+    }
+  }
 }
 
-function workSessionTiming(session: MockWorkSession) {
-  const workElapsedSeconds = computeSessionWorkSeconds({
-    ...session,
-    startTime: session.startTime,
-  });
+function workSessionTiming(session: MockWorkSession, now = new Date()) {
+  const breaks = mockFindBreaksOverlappingWindow(session.userId, session.startTime, now);
+  const workElapsedSeconds = computeAttendanceWorkSeconds(
+    session.startTime,
+    now,
+    breaks,
+    now,
+  );
   const breakElapsedSeconds = session.breakStartedAt
-    ? Math.floor((Date.now() - session.breakStartedAt.getTime()) / 1000)
+    ? Math.floor((now.getTime() - session.breakStartedAt.getTime()) / 1000)
     : 0;
   return { workElapsedSeconds, breakElapsedSeconds };
 }
@@ -792,9 +929,7 @@ const userWorkEntries: MockWorkEntry[] = [
 function periodStart(period: "today" | "week" | "month") {
   const now = new Date();
   if (period === "today") {
-    const start = new Date(now);
-    start.setHours(0, 0, 0, 0);
-    return start;
+    return startOfWorkZoneDay(now);
   }
   if (period === "week") {
     return startOfCalendarWeek(now);
@@ -841,13 +976,29 @@ function allUserTimeEntries(userId: number): MockWorkEntry[] {
 export function mockTaskById(id: number) {
   const task = tasks.find((t) => t.id === id);
   if (!task) return null;
-  const project = projects.find((p) => p.id === task.projectId) ?? null;
+  const project = projects.find((p) => p.id === task.projectId) as
+    | ((typeof projects)[number] & {
+        customPipelineStages?: Array<{ key: string; label: string; color: string }> | null;
+        pipelineStageLabelOverrides?: Record<string, string> | null;
+      })
+    | null
+    | undefined;
+  const customStages = project?.customPipelineStages ?? [];
   return {
     ...task,
-    project,
+    project: project
+      ? {
+          ...project,
+          customPipelineStages: customStages,
+          pipelineStageLabelOverrides: project.pipelineStageLabelOverrides ?? {},
+        }
+      : null,
+    pipelineStages: resolveProjectPipelineStages(project),
     creator: userById(task.createdBy ?? 1),
     subtasks: [...(taskSubtasks[id] ?? [])],
-    attachments: [...(taskAttachments[id] ?? [])].map(({ dataBase64: _data, ...meta }) => meta),
+    attachments: [...(taskAttachments[id] ?? [])]
+      .filter((a) => a.listedInFiles !== false)
+      .map(({ dataBase64: _data, ...meta }) => meta),
     participants: taskParticipants[id] ?? [],
     observers: taskObservers[id] ?? [],
     activities: (taskActivities[id] ?? []).map((a) => ({ ...a })),
@@ -889,9 +1040,18 @@ export function mockUpdateTaskTimeEntry(
   const clockOut = new Date(input.clockOut);
   if (clockOut <= clockIn) throw new Error("End time must be after start time");
 
+  const previousDurationSeconds =
+    typeof entry.durationSeconds === "number" && entry.durationSeconds >= 0
+      ? entry.durationSeconds
+      : (entry.duration ?? 0) * 60;
+  const durationSeconds = Math.max(
+    0,
+    Math.floor((clockOut.getTime() - clockIn.getTime()) / 1000),
+  );
   entry.clockIn = clockIn;
   entry.clockOut = clockOut;
-  entry.duration = Math.floor((clockOut.getTime() - clockIn.getTime()) / 60000);
+  entry.durationSeconds = durationSeconds;
+  entry.duration = Math.floor(durationSeconds / 60);
   const noteSuffix = `(edited: ${input.reason.trim()})`;
   entry.note = entry.note ? `${entry.note} ${noteSuffix}` : noteSuffix;
 
@@ -909,6 +1069,12 @@ export function mockUpdateTaskTimeEntry(
   });
 
   const task = tasks.find((t) => t.id === input.taskId);
+  if (task) {
+    const currentActualHours = parseFloat(task.actualHours ?? "0") || 0;
+    const adjustedActualHours =
+      currentActualHours + (durationSeconds - previousDurationSeconds) / 3600;
+    task.actualHours = Math.max(0, adjustedActualHours).toFixed(2);
+  }
   mockNotifyTaskMembers({
     taskId: input.taskId,
     actor,
@@ -1053,15 +1219,60 @@ export function mockGetActiveTaskTimer(userId: number, taskId?: number) {
   };
 }
 
+export function mockGetMyActiveTaskTimer(userId: number) {
+  const active = activeTaskTimers[userId];
+  if (!active || active.paused || !active.clockIn) return null;
+  const task = tasks.find((t) => t.id === active.taskId);
+  if (!task) return null;
+  return {
+    taskId: active.taskId,
+    taskTitle: task.title,
+    startedAt: active.clockIn,
+    paused: false,
+    accumulatedSeconds: active.accumulatedSeconds,
+  };
+}
+
+function mockCanManageTaskTime(actor: SafeUser, taskId: number) {
+  const task = tasks.find((t) => t.id === taskId);
+  if (!task) return false;
+  if (
+    actor.role === "admin"
+    || actor.role === "manager"
+    || task.createdBy === actor.id
+    || task.assigneeId === actor.id
+  ) {
+    return true;
+  }
+  return (taskParticipants[taskId] ?? []).some((p) => p.id === actor.id);
+}
+
 export function mockStartTaskTimer(userId: number, taskId: number, actor: SafeUser) {
+  if (!mockCanManageTaskTime(actor, taskId)) {
+    throw new Error("Only the assignee or participants can start the timer on this task");
+  }
   const task = tasks.find((t) => t.id === taskId);
   const label = mockActorLabel(actor);
   const taskTitle = task?.title ?? "a task";
 
   const existing = activeTaskTimers[userId];
-  if (existing?.taskId === taskId && existing.paused) {
-    existing.paused = false;
-    existing.clockIn = new Date();
+  if (
+    existing
+    && existing.taskId !== taskId
+    && !existing.paused
+    && existing.clockIn
+  ) {
+    mockPauseTaskTimer(userId, existing.taskId, actor);
+  } else if (existing && existing.taskId !== taskId) {
+    delete activeTaskTimers[userId];
+  }
+
+  const current = activeTaskTimers[userId];
+  if (current?.taskId === taskId && current.paused) {
+    // Each Start/Resume begins a fresh session from 00:00:00.
+    current.paused = false;
+    current.clockIn = new Date();
+    current.accumulatedSeconds = 0;
     const list = taskActivities[taskId] ?? (taskActivities[taskId] = []);
     list.unshift({
       id: Date.now(),
@@ -1081,7 +1292,7 @@ export function mockStartTaskTimer(userId: number, taskId: number, actor: SafeUs
       title: "Timer started",
       message: `${label} resumed the timer on "${taskTitle}"`,
     });
-    return { taskId, startedAt: existing.clockIn, resumed: true };
+    return { taskId, startedAt: current.clockIn, resumed: true };
   }
 
   activeTaskTimers[userId] = {
@@ -1114,6 +1325,9 @@ export function mockStartTaskTimer(userId: number, taskId: number, actor: SafeUs
 }
 
 export function mockPauseTaskTimer(userId: number, taskId: number, actor: SafeUser) {
+  if (!mockCanManageTaskTime(actor, taskId)) {
+    throw new Error("Only the assignee or participants can pause the timer on this task");
+  }
   const active = activeTaskTimers[userId];
   if (!active || active.taskId !== taskId || active.paused || !active.clockIn) {
     throw new Error("No running timer for this task");
@@ -1123,6 +1337,7 @@ export function mockPauseTaskTimer(userId: number, taskId: number, actor: SafeUs
   active.clockIn = null;
 
   const secondsToSave = active.accumulatedSeconds;
+  const durationMinutes = Math.floor(secondsToSave / 60);
   if (secondsToSave >= 1) {
     persistTaskTimeEntry(taskId, userId, actor, secondsToSave, "Task timer (paused)");
     active.accumulatedSeconds = 0;
@@ -1137,7 +1352,7 @@ export function mockPauseTaskTimer(userId: number, taskId: number, actor: SafeUs
     userId: actor.id,
     action: "time_logged",
     oldValue: null,
-    newValue: "paused timer",
+    newValue: durationMinutes > 0 ? `paused timer ${durationMinutes} minutes` : "paused timer",
     metadata: null,
     createdAt: new Date(),
     user: actor,
@@ -1156,6 +1371,9 @@ export function mockPauseTaskTimer(userId: number, taskId: number, actor: SafeUs
 }
 
 export function mockStopTaskTimer(userId: number, taskId: number, actor: SafeUser) {
+  if (!mockCanManageTaskTime(actor, taskId)) {
+    throw new Error("Only the assignee or participants can stop the timer on this task");
+  }
   const active = activeTaskTimers[userId];
   if (!active || active.taskId !== taskId) {
     throw new Error("No active timer for this task");
@@ -1183,6 +1401,15 @@ export function mockStopTaskTimer(userId: number, taskId: number, actor: SafeUse
   return { durationMinutes };
 }
 
+export function mockPauseAllRunningTaskTimers(userId: number, actor: SafeUser) {
+  const active = activeTaskTimers[userId];
+  if (!active || active.paused || !active.clockIn) return [];
+
+  const taskId = active.taskId;
+  mockPauseTaskTimer(userId, taskId, actor);
+  return [{ taskId, durationSeconds: 0 }];
+}
+
 export function mockAddTaskComment(taskId: number, message: string, actor: SafeUser) {
   const task = tasks.find((t) => t.id === taskId);
   if (!task) throw new Error("Task not found");
@@ -1202,16 +1429,136 @@ export function mockAddTaskComment(taskId: number, message: string, actor: SafeU
   list.unshift(activity);
   task.updatedAt = new Date();
 
-  const preview = message.length > 120 ? `${message.slice(0, 120)}…` : message;
-  mockNotifyTaskMembers({
-    taskId,
-    actor,
-    type: "mention",
-    title: "New comment on task",
-    message: `${mockActorLabel(actor)}: ${preview}`,
-  });
+  const previewSource = richCommentPlainText(message) || formatCommentPreview(message);
+  const preview = previewSource.length > 120 ? `${previewSource.slice(0, 120)}…` : previewSource;
+  const mentionedUserIds = extractMentionedUserIdsFromComment(message);
+
+  if (mentionedUserIds.length > 0) {
+    mockNotifyTaskMembers({
+      taskId,
+      actor,
+      type: "mention",
+      title: "You were mentioned in a comment",
+      message: `${mockActorLabel(actor)} mentioned you on "${task.title}": ${preview}`,
+      activityId: activity.id,
+      extraRecipientIds: mentionedUserIds,
+      includeAssignee: false,
+    });
+  } else {
+    mockNotifyTaskMembers({
+      taskId,
+      actor,
+      type: "mention",
+      title: "New comment on task",
+      message: `${mockActorLabel(actor)}: ${preview}`,
+      activityId: activity.id,
+    });
+  }
 
   return activity;
+}
+
+export function mockEditTaskComment(
+  taskId: number,
+  activityId: number,
+  message: string,
+  actor: SafeUser,
+) {
+  const task = tasks.find((t) => t.id === taskId);
+  if (!task) throw new Error("Task not found");
+
+  const list = taskActivities[taskId] ?? [];
+  const activity = list.find((item) => item.id === activityId);
+  if (!activity) throw new Error("Comment not found");
+  if (activity.action !== "commented") throw new Error("Only comments can be edited");
+  if (activity.userId !== actor.id) throw new Error("You can only edit your own comments");
+  if (activity.metadata && typeof activity.metadata === "object" && "subtaskId" in activity.metadata) {
+    throw new Error("This message cannot be edited");
+  }
+
+  activity.oldValue = activity.newValue;
+  activity.newValue = message;
+  activity.metadata = {
+    ...(activity.metadata && typeof activity.metadata === "object" ? activity.metadata : {}),
+    editedAt: new Date().toISOString(),
+  };
+  task.updatedAt = new Date();
+
+  return activity;
+}
+
+export function mockDeleteTaskComment(
+  taskId: number,
+  activityId: number,
+  actor: SafeUser,
+) {
+  const task = tasks.find((t) => t.id === taskId);
+  if (!task) throw new Error("Task not found");
+
+  const list = taskActivities[taskId] ?? [];
+  const index = list.findIndex((item) => item.id === activityId);
+  if (index < 0) throw new Error("Comment not found");
+
+  const activity = list[index];
+  if (activity.action !== "commented") throw new Error("Only comments can be deleted");
+  if (activity.userId !== actor.id) throw new Error("You can only delete your own comments");
+  if (activity.metadata && typeof activity.metadata === "object" && "subtaskId" in activity.metadata) {
+    throw new Error("This message cannot be deleted");
+  }
+
+  list.splice(index, 1);
+  task.updatedAt = new Date();
+
+  return { success: true };
+}
+
+export function mockToggleCommentReaction(
+  taskId: number,
+  activityId: number,
+  emoji: string,
+  actor: SafeUser,
+) {
+  const task = tasks.find((t) => t.id === taskId);
+  if (!task) throw new Error("Task not found");
+
+  const list = taskActivities[taskId] ?? [];
+  const activity = list.find((item) => item.id === activityId);
+  if (!activity) throw new Error("Comment not found");
+  if (activity.action !== "commented") throw new Error("Only comments can be reacted to");
+  if (activity.metadata && typeof activity.metadata === "object" && "subtaskId" in activity.metadata) {
+    throw new Error("This message cannot be reacted to");
+  }
+
+  const emojiValue = emoji.trim();
+  const baseMeta =
+    activity.metadata && typeof activity.metadata === "object"
+      ? { ...(activity.metadata as Record<string, unknown>) }
+      : {};
+  const previousReactions = readCommentReactions(baseMeta);
+  const reactions = toggleUserReaction(previousReactions, emojiValue, actor.id);
+  const added =
+    Boolean(reactions[emojiValue]?.includes(actor.id)) &&
+    !Boolean(previousReactions[emojiValue]?.includes(actor.id));
+
+  activity.metadata = {
+    ...baseMeta,
+    reactions,
+  };
+  task.updatedAt = new Date();
+
+  if (added) {
+    mockNotifyTaskMembers({
+      taskId,
+      actor,
+      type: "task_updated",
+      title: "New reaction on comment",
+      message: `${mockActorLabel(actor)} reacted ${emojiValue} on a comment in "${task.title}"`,
+      activityId: activity.id,
+      includeAssignee: true,
+    });
+  }
+
+  return { success: true, reactions };
 }
 
 export function mockCreateSubtask(taskId: number, title: string, actor: SafeUser) {
@@ -1252,6 +1599,7 @@ export function mockCreateTask(
     description?: string;
     priority?: string;
     assigneeId?: number;
+    createdBy?: number;
     projectId?: number | null;
     dueDate?: string;
     estimatedHours?: number | string;
@@ -1272,8 +1620,8 @@ export function mockCreateTask(
     priority: (input.priority ?? "medium") as "low" | "medium" | "high" | "urgent",
     assigneeId: input.assigneeId,
     projectId: input.projectId ?? undefined,
-    createdBy: actor.id,
-    dueDate: input.dueDate ? new Date(input.dueDate) : null,
+    createdBy: input.createdBy != null ? Number(input.createdBy) : actor.id,
+    dueDate: input.dueDate ? new Date(input.dueDate) : new Date(defaultTaskDeadlineIso()),
     estimatedHours: input.estimatedHours != null ? String(input.estimatedHours) : null,
     actualHours: "0.00",
     position: tasks.length,
@@ -1339,13 +1687,16 @@ export function mockDeleteTask(id: number, actor: SafeUser) {
 export function mockUpdateTask(
   id: number,
   data: {
+    title?: string;
     assigneeId?: number | null;
     createdBy?: number | null;
     status?: string;
     stage?: string;
+    priority?: string;
     description?: string;
     dueDate?: string | null;
     projectId?: number | null;
+    estimatedHours?: number | string | null;
   },
   actor: SafeUser,
 ) {
@@ -1353,10 +1704,38 @@ export function mockUpdateTask(
   if (!task) return null;
 
   const label = mockActorLabel(actor);
+  const previousTitle = task.title;
+
+  if (data.title !== undefined) {
+    const nextTitle = data.title.trim();
+    if (nextTitle && nextTitle !== task.title) {
+      const list = taskActivities[id] ?? (taskActivities[id] = []);
+      list.unshift({
+        id: Date.now(),
+        taskId: id,
+        userId: actor.id,
+        action: "title_changed",
+        oldValue: task.title,
+        newValue: nextTitle,
+        metadata: null,
+        createdAt: new Date(),
+        user: actor,
+      });
+      task.title = nextTitle;
+      mockNotifyTaskMembers({
+        taskId: id,
+        actor,
+        type: "task_updated",
+        title: "Task renamed",
+        message: `${label} renamed "${previousTitle}" to "${nextTitle}"`,
+      });
+    }
+  }
+
   const taskTitle = task.title;
 
   if (data.description !== undefined) task.description = data.description;
-  if (data.createdBy !== undefined && data.createdBy !== null) {
+  if (data.createdBy !== undefined) {
     task.createdBy = data.createdBy;
   }
   if (data.dueDate !== undefined) {
@@ -1379,6 +1758,9 @@ export function mockUpdateTask(
       user: actor,
     });
     task.status = data.status as typeof task.status;
+    if (data.stage === undefined) {
+      task.stage = legacyStatusToStage(data.status) as typeof task.stage;
+    }
     mockNotifyTaskMembers({
       taskId: id,
       actor,
@@ -1414,6 +1796,76 @@ export function mockUpdateTask(
       title: "Task stage changed",
       message: `${label} moved "${taskTitle}" to ${data.stage}`,
     });
+  }
+
+  // Completing a task (Done / Finished) always clears the assignee.
+  if (isMarkingTaskComplete(data) && (task.assigneeId != null || data.assigneeId !== undefined)) {
+    const oldAssigneeId = task.assigneeId ?? null;
+    if (oldAssigneeId != null || data.assigneeId != null) {
+      const oldName = userById(oldAssigneeId ?? 0)?.name ?? "Unassigned";
+      task.assigneeId = undefined;
+      task.assignee = undefined;
+      const list = taskActivities[id] ?? (taskActivities[id] = []);
+      list.unshift({
+        id: Date.now() + 3,
+        taskId: id,
+        userId: actor.id,
+        action: "assigned",
+        oldValue: oldName,
+        newValue: "Unassigned",
+        metadata: { reason: "task_completed" },
+        createdAt: new Date(),
+        user: actor,
+      });
+    }
+    // Skip normal assignee update below when completing.
+    data = { ...data, assigneeId: undefined };
+  }
+  if (data.priority !== undefined && data.priority !== task.priority) {
+    const oldPriority = task.priority;
+    task.priority = data.priority as typeof task.priority;
+    const formatPriority = (value: string) =>
+      value.charAt(0).toUpperCase() + value.slice(1);
+    const priorityTitle =
+      data.priority === "urgent" ? "Task marked urgent" : "Task priority changed";
+    const priorityMessage =
+      data.priority === "urgent"
+        ? `${label} marked "${taskTitle}" as urgent`
+        : `${label} changed priority on "${taskTitle}" from ${formatPriority(oldPriority)} to ${formatPriority(data.priority)}`;
+
+    const list = taskActivities[id] ?? (taskActivities[id] = []);
+    list.unshift({
+      id: Date.now() + 3,
+      taskId: id,
+      userId: actor.id,
+      action: "priority_changed",
+      oldValue: oldPriority,
+      newValue: data.priority,
+      metadata: null,
+      createdAt: new Date(),
+      user: actor,
+    });
+    mockNotifyTaskMembers({
+      taskId: id,
+      actor,
+      type: "task_updated",
+      title: priorityTitle,
+      message: priorityMessage,
+    });
+    for (const lead of users.filter((u) => u.role === "admin" || u.role === "manager")) {
+      if (lead.id === actor.id || lead.id === task.assigneeId) continue;
+      notifications.unshift({
+        id: Date.now() + Math.floor(Math.random() * 10_000),
+        userId: lead.id,
+        actorId: actor.id,
+        taskId: id,
+        type: "task_updated",
+        title: priorityTitle,
+        message: priorityMessage,
+        read: false,
+        createdAt: new Date(),
+      } as (typeof notifications)[number]);
+    }
   }
   if (data.assigneeId !== undefined) {
     const oldAssigneeId = task.assigneeId ?? null;
@@ -1460,9 +1912,47 @@ export function mockUpdateTask(
         message: `${label} removed the assignee from "${taskTitle}"`,
       });
     }
+
+    if (oldAssigneeId && oldAssigneeId !== newAssigneeId && oldAssigneeId !== actor.id) {
+      notifications.unshift({
+        id: Date.now() + Math.floor(Math.random() * 10_000),
+        userId: oldAssigneeId,
+        actorId: actor.id,
+        taskId: id,
+        type: "task_updated",
+        title: "Task reassigned",
+        message: `${label} reassigned "${taskTitle}" to another team member`,
+        read: false,
+        createdAt: new Date(),
+      } as (typeof notifications)[number]);
+    }
+
+    for (const lead of users.filter((u) => u.role === "admin" || u.role === "manager")) {
+      if (
+        lead.id === actor.id
+        || lead.id === newAssigneeId
+        || lead.id === oldAssigneeId
+      ) {
+        continue;
+      }
+      notifications.unshift({
+        id: Date.now() + Math.floor(Math.random() * 10_000),
+        userId: lead.id,
+        actorId: actor.id,
+        taskId: id,
+        type: "task_updated",
+        title: "Task assignee changed",
+        message: `${label} updated assignee on "${taskTitle}"`,
+        read: false,
+        createdAt: new Date(),
+      } as (typeof notifications)[number]);
+    }
   }
   if (data.projectId !== undefined) {
     task.projectId = data.projectId ?? undefined;
+  }
+  if (data.estimatedHours !== undefined) {
+    task.estimatedHours = data.estimatedHours != null ? String(data.estimatedHours) : null;
   }
   task.updatedAt = new Date();
   return task;
@@ -1497,8 +1987,9 @@ export function mockAddParticipant(taskId: number, userId: number, actor: SafeUs
       actor,
       type: "task_updated",
       title: "Added as participant",
-      message: `${mockActorLabel(actor)} added ${user.name ?? user.email ?? "someone"} as a participant on "${task?.title ?? "a task"}"`,
+      message: `${mockActorLabel(actor)} added you as a participant on "${task?.title ?? "a task"}"`,
       extraRecipientIds: [userId],
+      includeAssignee: false,
     });
   }
   return { success: true };
@@ -1546,8 +2037,9 @@ export function mockAddObserver(
       actor,
       type: "task_updated",
       title: "Added as observer",
-      message: `${mockActorLabel(actor)} added ${user.name ?? user.email ?? "someone"} as an observer on "${task.title}"`,
+      message: `${mockActorLabel(actor)} added you as an observer on "${task.title}"`,
       extraRecipientIds: [userId],
+      includeAssignee: false,
     });
   }
   return { success: true };
@@ -1651,6 +2143,21 @@ export function mockProjectById(id: number, currentUserId = DEV_USER.id) {
 
   return {
     ...project,
+    customPipelineStages:
+      (project as { customPipelineStages?: Array<{ key: string; label: string; color: string }> })
+        .customPipelineStages ?? [],
+    pipelineStageLabelOverrides:
+      (project as { pipelineStageLabelOverrides?: Record<string, string> }).pipelineStageLabelOverrides ??
+      {},
+    hiddenPipelineStageKeys:
+      (project as { hiddenPipelineStageKeys?: string[] }).hiddenPipelineStageKeys ?? [],
+    pipelineStages: resolveProjectPipelineStages(
+      project as {
+        customPipelineStages?: Array<{ key: string; label: string; color: string }> | null;
+        pipelineStageLabelOverrides?: Record<string, string> | null;
+        hiddenPipelineStageKeys?: string[] | null;
+      },
+    ),
     creator: userById(project.createdBy),
     stats: {
       total: projectTasks.length,
@@ -1703,6 +2210,11 @@ export function mockBulkTaskAction(
     if (!ids.has(task.id)) continue;
     if (input.action === "status" && input.status) {
       task.status = input.status;
+      task.stage = legacyStatusToStage(input.status) as typeof task.stage;
+      if (input.status === "done") {
+        task.assigneeId = undefined;
+        task.assignee = undefined;
+      }
     }
     if (input.action === "move_project") {
       task.projectId = input.projectId ?? null;
@@ -1711,6 +2223,184 @@ export function mockBulkTaskAction(
   }
 
   return { success: true, affected: input.taskIds.length };
+}
+
+export function mockAddPipelineStage(
+  projectId: number,
+  label: string,
+  color?: string,
+) {
+  const project = projects.find((p) => p.id === projectId) as
+    | (typeof projects)[number] & {
+        customPipelineStages?: Array<{ key: string; label: string; color: string }> | null;
+        pipelineStageOrder?: string[] | null;
+      }
+    | undefined;
+  if (!project) throw new Error("Project not found");
+
+  const custom = [...(project.customPipelineStages ?? [])];
+  const existing = resolveProjectPipelineStages(project);
+  const key = createPipelineStageKey(
+    label,
+    existing.map((s) => s.key),
+  );
+  const stage = {
+    key,
+    label: label.trim(),
+    color: color ?? nextCustomStageColor(custom.length),
+  };
+  custom.push(stage);
+  project.customPipelineStages = custom;
+  project.pipelineStageOrder = [...existing.map((s) => s.key), stage.key];
+  project.updatedAt = new Date();
+
+  return {
+    project,
+    stage,
+    stages: resolveProjectPipelineStages(project),
+    customPipelineStages: custom,
+    pipelineStageOrder: project.pipelineStageOrder,
+  };
+}
+
+export function mockRenamePipelineStage(
+  projectId: number,
+  key: string,
+  label: string,
+) {
+  const project = projects.find((p) => p.id === projectId) as
+    | (typeof projects)[number] & {
+        customPipelineStages?: Array<{ key: string; label: string; color: string }> | null;
+        pipelineStageLabelOverrides?: Record<string, string> | null;
+      }
+    | undefined;
+  if (!project) throw new Error("Project not found");
+
+  const stages = resolveProjectPipelineStages(project);
+  if (!stages.some((s) => s.key === key)) {
+    throw new Error("Section not found on this project");
+  }
+
+  const nextLabel = label.trim();
+  const overrides = { ...(project.pipelineStageLabelOverrides ?? {}) };
+  overrides[key] = nextLabel;
+  project.pipelineStageLabelOverrides = overrides;
+  project.customPipelineStages = (project.customPipelineStages ?? []).map((stage) =>
+    stage.key === key ? { ...stage, label: nextLabel } : stage,
+  );
+  project.updatedAt = new Date();
+
+  return {
+    project,
+    key,
+    label: nextLabel,
+    stages: resolveProjectPipelineStages(project),
+    pipelineStageLabelOverrides: overrides,
+  };
+}
+
+export function mockDeletePipelineStage(projectId: number, key: string) {
+  const project = projects.find((p) => p.id === projectId) as
+    | (typeof projects)[number] & {
+        customPipelineStages?: Array<{ key: string; label: string; color: string }> | null;
+        pipelineStageLabelOverrides?: Record<string, string> | null;
+        hiddenPipelineStageKeys?: string[] | null;
+        pipelineStageOrder?: string[] | null;
+      }
+    | undefined;
+  if (!project) throw new Error("Project not found");
+
+  if (!isPipelineStageDeletable(key)) {
+    throw new Error("To Do and Finished sections cannot be deleted");
+  }
+
+  const stages = resolveProjectPipelineStages(project);
+  if (!stages.some((s) => s.key === key)) {
+    throw new Error("Section not found on this project");
+  }
+
+  let movedTaskCount = 0;
+  for (const task of tasks) {
+    if (task.projectId === projectId && task.stage === key) {
+      task.stage = "new";
+      task.status = "todo";
+      task.updatedAt = new Date();
+      movedTaskCount += 1;
+    }
+  }
+
+  const overrides = { ...(project.pipelineStageLabelOverrides ?? {}) };
+  delete overrides[key];
+  project.pipelineStageLabelOverrides = overrides;
+
+  if (isCustomPipelineStageKey(key)) {
+    project.customPipelineStages = (project.customPipelineStages ?? []).filter(
+      (stage) => stage.key !== key,
+    );
+  } else {
+    const hidden = [...(project.hiddenPipelineStageKeys ?? [])];
+    if (!hidden.includes(key)) hidden.push(key);
+    project.hiddenPipelineStageKeys = hidden;
+  }
+  project.pipelineStageOrder = (project.pipelineStageOrder ?? stages.map((s) => s.key)).filter(
+    (stageKey) => stageKey !== key,
+  );
+  project.updatedAt = new Date();
+
+  return {
+    project,
+    key,
+    movedTaskCount,
+    stages: resolveProjectPipelineStages(project),
+    customPipelineStages: project.customPipelineStages ?? [],
+    pipelineStageLabelOverrides: overrides,
+    hiddenPipelineStageKeys: project.hiddenPipelineStageKeys ?? [],
+    pipelineStageOrder: project.pipelineStageOrder ?? [],
+  };
+}
+
+export function mockReorderPipelineStage(
+  projectId: number,
+  key: string,
+  direction: "left" | "right",
+) {
+  const project = projects.find((p) => p.id === projectId) as
+    | (typeof projects)[number] & {
+        pipelineStageOrder?: string[] | null;
+      }
+    | undefined;
+  if (!project) throw new Error("Project not found");
+
+  const stages = resolveProjectPipelineStages(project);
+  if (!stages.some((s) => s.key === key)) {
+    throw new Error("Section not found on this project");
+  }
+
+  const pipelineStageOrder = movePipelineStageOrder(
+    stages.map((s) => s.key),
+    key,
+    direction,
+  );
+  if (!pipelineStageOrder) {
+    return {
+      project,
+      key,
+      direction,
+      stages,
+      pipelineStageOrder: project.pipelineStageOrder ?? stages.map((s) => s.key),
+    };
+  }
+
+  project.pipelineStageOrder = pipelineStageOrder;
+  project.updatedAt = new Date();
+
+  return {
+    project,
+    key,
+    direction,
+    stages: resolveProjectPipelineStages(project),
+    pipelineStageOrder,
+  };
 }
 
 export function mockDeleteProject(id: number) {
@@ -1769,6 +2459,18 @@ export function mockMarkNotificationRead(userId: number, id: number) {
   return notif ?? null;
 }
 
+export function mockMarkTaskNotificationsRead(userId: number, taskId: number) {
+  let count = 0;
+  for (const n of notifications) {
+    if (n.userId !== userId || n.read) continue;
+    if (n.taskId === taskId) {
+      n.read = true;
+      count += 1;
+    }
+  }
+  return { success: true, count };
+}
+
 export function mockDeleteNotification(userId: number, id: number) {
   const index = notifications.findIndex((n) => n.id === id && n.userId === userId);
   if (index >= 0) notifications.splice(index, 1);
@@ -1776,12 +2478,52 @@ export function mockDeleteNotification(userId: number, id: number) {
 }
 
 export function mockUserList() {
-  return { users: users.map((u) => ({ ...u })), total: users.length };
+  const sorted = [...users].sort((a, b) => {
+    const aOrder = a.sortOrder ?? a.id;
+    const bOrder = b.sortOrder ?? b.id;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    return a.id - b.id;
+  });
+  return { users: sorted.map((u) => ({ ...u })), total: sorted.length };
+}
+
+export function mockReorderUsers(orderedIds: number[]) {
+  orderedIds.forEach((id, index) => {
+    const user = users.find((u) => u.id === id);
+    if (user) {
+      user.sortOrder = index;
+      user.updatedAt = new Date();
+    }
+  });
+  return { success: true };
+}
+
+export function mockAdminUpdateUser(input: {
+  id: number;
+  name?: string;
+  role?: "admin" | "manager" | "employee" | "hr" | "client";
+  status?: "active" | "inactive" | "suspended";
+  department?: string | null;
+  position?: string | null;
+  phone?: string | null;
+  permissions?: string[];
+}) {
+  const user = userById(input.id);
+  if (!user) return null;
+
+  if (input.name !== undefined) user.name = input.name;
+  if (input.role !== undefined) user.role = input.role;
+  if (input.status !== undefined) user.status = input.status;
+  if (input.department !== undefined) user.department = input.department;
+  if (input.position !== undefined) user.position = input.position;
+  if (input.phone !== undefined) user.phone = input.phone;
+  if (input.permissions !== undefined) user.permissions = input.permissions;
+  user.updatedAt = new Date();
+  return { ...user };
 }
 
 export type ProfileUpdateInput = {
   name?: string;
-  email?: string;
   department?: string | null;
   position?: string | null;
   phone?: string | null;
@@ -1795,7 +2537,6 @@ export function mockUpdateUserProfile(userId: number, data: ProfileUpdateInput) 
   }
 
   if (data.name !== undefined) user.name = data.name;
-  if (data.email !== undefined) user.email = data.email;
   if (data.department !== undefined) user.department = data.department;
   if (data.position !== undefined) user.position = data.position;
   if (data.phone !== undefined) user.phone = data.phone;
@@ -1814,13 +2555,25 @@ export type PersonalInfoUpdateInput = {
   position?: string | null;
   phone?: string | null;
   city?: string | null;
+  address?: string | null;
+  familyContactNumber?: string | null;
+  personalEmail?: string | null;
+  bloodGroup?: string | null;
+  aadhaarCard?: string | null;
+  panCard?: string | null;
   dateOfBirth?: string | null;
+  dateOfJoining?: string | null;
   sex?: "male" | "female" | "other" | "prefer_not_to_say" | null;
   notificationLanguage?: string | null;
   headOfDepartmentUserIds?: number[];
+  privateNotes?: string | null;
+  employmentType?: "full_time" | "intern";
 };
 
-function mockPersonalRecord(user: SafeUser) {
+function mockPersonalRecord(
+  user: SafeUser,
+  options?: { includePrivateNotes?: boolean },
+) {
   const parts = (user.name ?? "").trim().split(/\s+/);
   const firstName = user.firstName ?? parts[0] ?? null;
   const lastName = user.lastName ?? (parts.length > 1 ? parts.slice(1).join(" ") : null);
@@ -1834,24 +2587,42 @@ function mockPersonalRecord(user: SafeUser) {
     department: user.department ?? null,
     phone: user.phone ?? null,
     city: user.city ?? null,
+    address: user.address ?? null,
+    familyContactNumber: user.familyContactNumber ?? null,
+    personalEmail: user.personalEmail ?? null,
+    bloodGroup: user.bloodGroup ?? null,
+    aadhaarCard: user.aadhaarCard ?? null,
+    panCard: user.panCard ?? null,
     dateOfBirth: user.dateOfBirth ?? null,
+    dateOfJoining: user.dateOfJoining ?? null,
     sex: user.sex ?? null,
     notificationLanguage: user.notificationLanguage ?? "en",
+    employmentType: user.employmentType === "intern" ? "intern" : "full_time",
     headOfDepartmentUserIds: headIds,
     headsOfDepartment: headIds
       .map((id) => userById(id))
       .filter((u): u is SafeUser => Boolean(u))
       .map((u) => ({ id: u.id, name: u.name })),
+    ...(options?.includePrivateNotes
+      ? { privateNotes: privateNotesByUserId[user.id] ?? null }
+      : {}),
   };
 }
 
-export function mockGetPersonalInfo(userId: number) {
+export function mockGetPersonalInfo(
+  userId: number,
+  options?: { includePrivateNotes?: boolean },
+) {
   const user = userById(userId);
   if (!user) throw new Error("User not found");
-  return mockPersonalRecord(user);
+  return mockPersonalRecord(user, options);
 }
 
-export function mockUpdatePersonalInfo(userId: number, data: PersonalInfoUpdateInput) {
+export function mockUpdatePersonalInfo(
+  userId: number,
+  data: PersonalInfoUpdateInput,
+  options?: { includePrivateNotes?: boolean },
+) {
   const user = userById(userId);
   if (!user) throw new Error("User not found");
 
@@ -1863,9 +2634,22 @@ export function mockUpdatePersonalInfo(userId: number, data: PersonalInfoUpdateI
   if (data.position !== undefined) user.position = data.position;
   if (data.phone !== undefined) user.phone = data.phone;
   if (data.city !== undefined) user.city = data.city;
+  if (data.address !== undefined) user.address = data.address;
+  if (data.familyContactNumber !== undefined) {
+    user.familyContactNumber = data.familyContactNumber;
+  }
+  if (data.personalEmail !== undefined) {
+    user.personalEmail = data.personalEmail?.trim() || null;
+  }
+  if (data.bloodGroup !== undefined) user.bloodGroup = data.bloodGroup;
+  if (data.aadhaarCard !== undefined) user.aadhaarCard = data.aadhaarCard;
+  if (data.panCard !== undefined) user.panCard = data.panCard;
   if (data.sex !== undefined) user.sex = data.sex;
   if (data.notificationLanguage !== undefined) {
     user.notificationLanguage = data.notificationLanguage;
+  }
+  if (data.employmentType !== undefined) {
+    user.employmentType = data.employmentType;
   }
   if (data.headOfDepartmentUserIds !== undefined) {
     user.headOfDepartmentUserIds = data.headOfDepartmentUserIds;
@@ -1873,16 +2657,23 @@ export function mockUpdatePersonalInfo(userId: number, data: PersonalInfoUpdateI
   if (data.dateOfBirth !== undefined) {
     user.dateOfBirth = data.dateOfBirth ? new Date(data.dateOfBirth) : null;
   }
+  if (data.dateOfJoining !== undefined) {
+    user.dateOfJoining = data.dateOfJoining ? new Date(data.dateOfJoining) : null;
+  }
+  if (options?.includePrivateNotes && data.privateNotes !== undefined) {
+    privateNotesByUserId[userId] = data.privateNotes;
+  }
   if (data.firstName !== undefined || data.lastName !== undefined) {
     const combined = [user.firstName, user.lastName].filter(Boolean).join(" ");
     if (combined) user.name = combined;
   }
   user.updatedAt = new Date();
 
-  return mockPersonalRecord(user);
+  return mockPersonalRecord(user, options);
 }
 
 export function mockCurrentSession(userId: number) {
+  mockRunAutoClockOutForUser(userId);
   const session = workSessionsByUser[userId];
   if (!session?.active) return null;
   const view = mockWorkSessionView(session);
@@ -1913,8 +2704,23 @@ export function mockCurrentSession(userId: number) {
 export function mockClockIn(userId: number, note?: string) {
   const now = new Date();
   const existing = workSessionsByUser[userId];
-  if (existing?.active) {
-    mockClockOut(userId);
+  const orphanOpen = userWorkEntries.find(
+    (e) => e.userId === userId && !e.clockOut && e.taskId == null,
+  );
+  if (existing?.active || orphanOpen) {
+    if (existing?.active && isPastAutoClockOutDeadline(existing.startTime, now)) {
+      mockRunAutoClockOutForUser(userId, now);
+    } else {
+      mockClockOut(userId, { note: "Clocked out for new session" });
+    }
+  }
+
+  // Remove any leftover open attendance rows so only the new session remains.
+  for (let i = userWorkEntries.length - 1; i >= 0; i--) {
+    const e = userWorkEntries[i];
+    if (e.userId === userId && !e.clockOut && e.taskId == null) {
+      userWorkEntries.splice(i, 1);
+    }
   }
 
   const sessionId = nextWorkEntryId++;
@@ -1949,12 +2755,40 @@ export function mockClockIn(userId: number, note?: string) {
   return { entry, session: mockWorkSessionView(workSessionsByUser[userId]) };
 }
 
-export function mockClockOut(userId: number, note?: string) {
+export function mockClockOut(
+  userId: number,
+  input?: { note?: string; clockIn?: string; clockOut?: string },
+) {
   const now = new Date();
+  const clockOutTime = input?.clockOut ? new Date(input.clockOut) : now;
+  const clockInTime = input?.clockIn ? new Date(input.clockIn) : undefined;
+
+  if (Number.isNaN(clockOutTime.getTime())) {
+    throw new Error("Invalid clock out time");
+  }
+  if (clockInTime && Number.isNaN(clockInTime.getTime())) {
+    throw new Error("Invalid clock in time");
+  }
+  if (clockOutTime.getTime() > now.getTime()) {
+    throw new Error("Clock out time cannot be in the future");
+  }
+
   const session = workSessionsByUser[userId];
-  const openEntry = userWorkEntries.find(
-    (e) => e.userId === userId && !e.clockOut && e.taskId == null,
-  );
+  const openEntries = userWorkEntries
+    .filter((e) => e.userId === userId && !e.clockOut && e.taskId == null)
+    .sort(
+      (a, b) =>
+        a.clockIn.getTime() - b.clockIn.getTime() || a.id - b.id,
+    );
+  const openEntry = openEntries[0];
+
+  const effectiveClockIn = clockInTime ?? openEntry?.clockIn ?? session?.startTime;
+  if (!effectiveClockIn) {
+    throw new Error("No active clock-in session found");
+  }
+  if (clockOutTime.getTime() <= effectiveClockIn.getTime()) {
+    throw new Error("Clock out time must be after clock in time");
+  }
 
   let durationSeconds = 0;
   if (session?.active) {
@@ -1963,31 +2797,59 @@ export function mockClockOut(userId: number, note?: string) {
         (b) => b.workSessionId === session.id && !b.endTime,
       );
       if (openBreak) {
-        openBreak.endTime = now;
+        openBreak.endTime = clockOutTime;
         openBreak.updatedAt = now;
       }
     }
-    const { workElapsedSeconds } = workSessionTiming(session);
-    durationSeconds = Math.max(0, workElapsedSeconds);
+    const breaks = mockFindBreaksOverlappingWindow(
+      userId,
+      effectiveClockIn,
+      clockOutTime,
+    );
+    durationSeconds = computeAttendanceWorkSeconds(
+      effectiveClockIn,
+      clockOutTime,
+      breaks,
+      now,
+    );
     session.active = false;
-    session.endTime = now;
+    session.endTime = clockOutTime;
     session.paused = false;
     session.workSegmentStartedAt = null;
     session.breakStartedAt = null;
+    if (clockInTime) session.startTime = clockInTime;
   }
 
   if (openEntry) {
+    if (clockInTime) openEntry.clockIn = clockInTime;
     if (!durationSeconds) {
-      durationSeconds = Math.max(
-        0,
-        Math.floor((now.getTime() - openEntry.clockIn.getTime()) / 1000),
+      const breaks = mockFindBreaksOverlappingWindow(
+        userId,
+        openEntry.clockIn,
+        clockOutTime,
+      );
+      durationSeconds = computeAttendanceWorkSeconds(
+        openEntry.clockIn,
+        clockOutTime,
+        breaks,
+        now,
       );
     }
-    openEntry.clockOut = now;
+    openEntry.clockOut = clockOutTime;
     openEntry.durationSeconds = durationSeconds;
     openEntry.duration = Math.floor(durationSeconds / 60);
     openEntry.updatedAt = now;
-    if (note) openEntry.note = `${openEntry.note || ""} - ${note}`.trim();
+    if (input?.note) {
+      openEntry.note = openEntry.note
+        ? `${openEntry.note} - ${input.note}`
+        : input.note;
+    }
+  }
+
+  // Drop duplicate open attendance rows instead of leaving zero-duration junk.
+  for (const dup of openEntries.slice(1)) {
+    const idx = userWorkEntries.findIndex((e) => e.id === dup.id);
+    if (idx >= 0) userWorkEntries.splice(idx, 1);
   }
 
   return {
@@ -1995,6 +2857,28 @@ export function mockClockOut(userId: number, note?: string) {
     duration: Math.floor(durationSeconds / 60),
     entry: openEntry ? { ...openEntry } : null,
   };
+}
+
+export function mockRunAutoClockOutForUser(userId: number, now = new Date()) {
+  const session = workSessionsByUser[userId];
+  if (!session?.active) return null;
+  if (!isPastAutoClockOutDeadline(session.startTime, now)) return null;
+
+  const deadline = getAutoClockOutDeadline(session.startTime);
+  return mockClockOut(userId, {
+    clockOut: deadline.toISOString(),
+    note: "Auto clock-out at 10:00 PM",
+  });
+}
+
+export function mockRunAutoClockOutJob(now = new Date()) {
+  const results = [];
+  for (const session of Object.values(workSessionsByUser)) {
+    if (!session.active) continue;
+    const result = mockRunAutoClockOutForUser(session.userId, now);
+    if (result) results.push(result);
+  }
+  return results;
 }
 
 export function mockPauseWorkSession(userId: number) {
@@ -2072,18 +2956,22 @@ export function mockTimeEntryList(userId: number, opts?: { limit?: number }) {
 export function mockTimeStats(userId: number, period: "today" | "week" | "month" = "week") {
   const now = new Date();
   const { start, end } = periodClockInBounds(period, now);
-  const entries = allUserTimeEntries(userId).filter(
-    (e) =>
-      e.taskId == null &&
-      e.clockOut &&
-      e.clockIn >= start &&
-      e.clockIn <= end,
+  const entries = filterMeaningfulAttendanceEntries(
+    allUserTimeEntries(userId).filter(
+      (e) =>
+        e.taskId == null &&
+        e.clockOut &&
+        e.clockIn >= start &&
+        e.clockIn <= end,
+    ),
   );
 
   const dailyMapSeconds = new Map<string, number>();
   for (const e of entries) {
     const date = localDateKey(e.clockIn);
-    dailyMapSeconds.set(date, (dailyMapSeconds.get(date) ?? 0) + attendanceEntrySeconds(e));
+    const breaks = mockFindBreaksOverlappingWindow(userId, e.clockIn, e.clockOut!);
+    const seconds = resolveAttendanceDisplaySeconds(e, breaks, now);
+    dailyMapSeconds.set(date, (dailyMapSeconds.get(date) ?? 0) + seconds);
   }
 
   const session = workSessionsByUser[userId];
@@ -2091,10 +2979,13 @@ export function mockTimeStats(userId: number, period: "today" | "week" | "month"
 
   if (session?.active && session.startTime >= start && session.startTime <= end) {
     const sessionDate = localDateKey(session.startTime);
-    const workSeconds = computeSessionWorkSeconds({
-      ...session,
-      startTime: session.startTime,
-    }, now);
+    const breaks = mockFindBreaksOverlappingWindow(userId, session.startTime, now);
+    const workSeconds = computeAttendanceWorkSeconds(
+      session.startTime,
+      now,
+      breaks,
+      now,
+    );
     dailyMapSeconds.set(
       sessionDate,
       (dailyMapSeconds.get(sessionDate) ?? 0) + workSeconds,
@@ -2106,7 +2997,21 @@ export function mockTimeStats(userId: number, period: "today" | "week" | "month"
   const dailyMapMinutes = new Map(
     Array.from(dailyMapSeconds.entries()).map(([date, seconds]) => [date, seconds / 60]),
   );
-  const summary = buildTimeStatsSummary(totalSeconds / 60, dailyMapMinutes, period);
+  const rangeStartKey = localDateKey(start);
+  const rangeEndKey = localDateKey(end);
+  const leaveByDate = buildLeaveCoverageMap(
+    leaveRequests.filter(
+      (r) =>
+        r.userId === userId &&
+        r.status === "approved" &&
+        r.startDate <= rangeEndKey &&
+        r.endDate >= rangeStartKey,
+    ),
+  );
+  const summary = buildTimeStatsSummary(totalSeconds / 60, dailyMapMinutes, period, {
+    leaveByDate,
+    referenceDate: now,
+  });
 
   return {
     ...summary,
@@ -2118,7 +3023,7 @@ export function mockTimeStats(userId: number, period: "today" | "week" | "month"
 
 function mockDayEntriesForUser(userId: number, dateStr: string, now = new Date()) {
   const { start, end } = dayBounds(dateStr);
-  const completed = userWorkEntries.filter(
+  const dayEntries = userWorkEntries.filter(
     (e) =>
       e.userId === userId &&
       e.taskId == null &&
@@ -2126,40 +3031,56 @@ function mockDayEntriesForUser(userId: number, dateStr: string, now = new Date()
       e.clockIn <= end,
   );
 
-  const openAttendance = userWorkEntries.find(
-    (e) =>
-      e.userId === userId &&
-      !e.clockOut &&
-      e.taskId == null &&
-      e.clockIn >= start &&
-      e.clockIn <= end,
+  const openEntries = dayEntries.filter((e) => !e.clockOut);
+  const openAttendance =
+    openEntries.length === 0
+      ? undefined
+      : openEntries.reduce((best, entry) =>
+          entry.clockIn.getTime() < best.clockIn.getTime() ||
+          (entry.clockIn.getTime() === best.clockIn.getTime() && entry.id < best.id)
+            ? entry
+            : best,
+        );
+
+  const meaningful = filterMeaningfulAttendanceEntries(dayEntries);
+  const completed = meaningful.filter((e) => e.clockOut);
+  const entries = filterMeaningfulAttendanceEntries(
+    openAttendance ? [...completed, openAttendance] : completed,
   );
-
-  const entries = [...completed];
-  if (openAttendance && !entries.some((e) => e.id === openAttendance.id)) {
-    entries.push(openAttendance);
-  }
-
-  entries.sort((a, b) => a.clockIn.getTime() - b.clockIn.getTime());
 
   let attendanceLiveSeconds = 0;
   const session = workSessionsByUser[userId];
   if (session?.active && localDateKey(session.startTime) === dateStr) {
-    attendanceLiveSeconds = computeSessionWorkSeconds(
-      { ...session, startTime: session.startTime },
+    attendanceLiveSeconds = workSessionTiming(session, now).workElapsedSeconds;
+  } else if (openAttendance) {
+    const breaks = mockFindBreaksOverlappingWindow(
+      userId,
+      openAttendance.clockIn,
       now,
     );
-  } else if (openAttendance) {
-    attendanceLiveSeconds = Math.max(
-      0,
-      Math.floor((now.getTime() - openAttendance.clockIn.getTime()) / 1000),
+    attendanceLiveSeconds = computeAttendanceWorkSeconds(
+      openAttendance.clockIn,
+      now,
+      breaks,
+      now,
     );
   }
 
-  const totalSeconds = sumAttendanceDaySeconds(entries, attendanceLiveSeconds);
-
   const enrichedEntries = entries.map((entry) => {
-    const durationSeconds = displayAttendanceDurationSeconds(entry, attendanceLiveSeconds);
+    let durationSeconds: number | null;
+    if (entry.clockOut) {
+      const entryBreaks = mockFindBreaksOverlappingWindow(
+        userId,
+        entry.clockIn,
+        entry.clockOut,
+      );
+      durationSeconds = resolveAttendanceDisplaySeconds(entry, entryBreaks, now);
+    } else {
+      durationSeconds =
+        openAttendance?.id === entry.id && attendanceLiveSeconds > 0
+          ? attendanceLiveSeconds
+          : null;
+    }
     return {
       id: entry.id,
       clockIn: entry.clockIn,
@@ -2170,12 +3091,17 @@ function mockDayEntriesForUser(userId: number, dateStr: string, now = new Date()
     };
   });
 
+  const totalSeconds = enrichedEntries.reduce(
+    (sum, entry) => sum + (entry.durationSeconds ?? 0),
+    0,
+  );
+
   return {
     entries: enrichedEntries,
     totalMinutes: totalSeconds / 60,
     totalSeconds,
     totalHours: roundHours(totalSeconds / 3600),
-    entriesCount: entries.length,
+    entriesCount: enrichedEntries.length,
   };
 }
 
@@ -2184,21 +3110,15 @@ function sumAttendanceDaySeconds(
   attendanceLiveSeconds: number,
 ) {
   let totalSeconds = 0;
-  let countedAttendanceLive = false;
 
   for (const entry of entries) {
     if (entry.clockOut) {
       totalSeconds += attendanceEntrySeconds(entry);
-      continue;
-    }
-
-    if (!entry.clockOut && attendanceLiveSeconds > 0) {
-      totalSeconds += attendanceLiveSeconds;
-      countedAttendanceLive = true;
     }
   }
 
-  if (attendanceLiveSeconds > 0 && !countedAttendanceLive) {
+  // Live session time must only be counted once.
+  if (attendanceLiveSeconds > 0) {
     totalSeconds += attendanceLiveSeconds;
   }
 
@@ -2216,14 +3136,153 @@ function displayAttendanceDurationSeconds(
   return null;
 }
 
-export function mockGetBreaks(userId: number, dateStr: string) {
-  const { start, end } = dayBounds(dateStr);
-  const breaks = (workBreaksByUser[userId] ?? []).filter(
-    (b) => b.startTime >= start && b.startTime <= end,
+export function mockFindBreaksOverlappingWindow(
+  userId: number,
+  windowStart: Date,
+  windowEnd: Date,
+) {
+  return (workBreaksByUser[userId] ?? []).filter(
+    (b) =>
+      b.startTime.getTime() < windowEnd.getTime() &&
+      ((b.endTime && b.endTime.getTime() > windowStart.getTime()) || !b.endTime),
   );
+}
+
+export function mockRefreshAttendanceEntriesOverlappingBreak(
+  userId: number,
+  breakStart: Date,
+  breakEnd: Date,
+  now = new Date(),
+) {
+  const entries = allUserTimeEntries(userId).filter(
+    (e) =>
+      e.taskId == null &&
+      e.clockOut &&
+      e.clockOut.getTime() > breakStart.getTime() &&
+      e.clockIn.getTime() < breakEnd.getTime(),
+  );
+  for (const entry of entries) {
+    if (!entry.clockOut) continue;
+    const breaks = mockFindBreaksOverlappingWindow(userId, entry.clockIn, entry.clockOut);
+    entry.durationSeconds = computeAttendanceWorkSeconds(
+      entry.clockIn,
+      entry.clockOut,
+      breaks,
+      now,
+    );
+    entry.duration = Math.floor(entry.durationSeconds / 60);
+  }
+}
+
+export function mockResyncActiveSessionFromBreaks(userId: number, now = new Date()) {
+  const session = workSessionsByUser[userId];
+  if (!session?.active) return;
+  const breaks = mockFindBreaksOverlappingWindow(userId, session.startTime, now);
+  const workSeconds = computeAttendanceWorkSeconds(
+    session.startTime,
+    now,
+    breaks,
+    now,
+  );
+  if (session.paused) {
+    session.accumulatedWorkSeconds = workSeconds;
+    session.workSegmentStartedAt = null;
+  } else {
+    session.accumulatedWorkSeconds = workSeconds;
+    session.workSegmentStartedAt = now;
+  }
+}
+
+export function mockCreateBreak(
+  actor: SafeUser,
+  input: {
+    userId?: number;
+    startTime: string;
+    endTime: string;
+    reason: string;
+  },
+) {
+  const targetUserId =
+    input.userId && actor.role === "admin" ? input.userId : actor.id;
+  if (input.userId && input.userId !== actor.id && actor.role !== "admin") {
+    throw new Error("Not allowed to add a break for this user");
+  }
+
+  const startTime = new Date(input.startTime);
+  const endTime = new Date(input.endTime);
+  if (Number.isNaN(startTime.getTime()) || Number.isNaN(endTime.getTime())) {
+    throw new Error("Invalid break times");
+  }
+  if (endTime <= startTime) {
+    throw new Error("Break end must be after break start");
+  }
+  if (endTime.getTime() > Date.now()) {
+    throw new Error("Break end cannot be in the future");
+  }
+
+  const entry = allUserTimeEntries(targetUserId).find(
+    (e) =>
+      e.taskId == null &&
+      e.clockIn.getTime() < endTime.getTime() &&
+      ((e.clockOut && e.clockOut.getTime() > startTime.getTime()) || !e.clockOut),
+  );
+  const openEntry = userWorkEntries.find(
+    (e) => e.userId === targetUserId && !e.clockOut && e.taskId == null,
+  );
+  const attendance = entry ?? openEntry;
+  if (!attendance) {
+    throw new Error(
+      "No attendance entry covers this break time. You must have been clocked in.",
+    );
+  }
+
+  const session = workSessionsByUser[targetUserId];
+  const sessionOk =
+    session &&
+    session.startTime.getTime() < endTime.getTime() &&
+    ((session.endTime && session.endTime.getTime() > startTime.getTime()) ||
+      session.active ||
+      !session.endTime);
+  if (!sessionOk) {
+    throw new Error(
+      "No work session found for that time. Add the break while the day still has a session, or contact admin.",
+    );
+  }
+
+  const now = new Date();
+  const list = workBreaksByUser[targetUserId] ?? (workBreaksByUser[targetUserId] = []);
+  const created = {
+    id: nextWorkBreakId++,
+    userId: targetUserId,
+    workSessionId: session.id,
+    timeEntryId: attendance.id,
+    startTime,
+    endTime,
+    reason: input.reason.trim(),
+    manuallyEdited: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+  list.push(created);
+  list.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+
+  mockRefreshAttendanceEntriesOverlappingBreak(targetUserId, startTime, endTime, now);
+  mockResyncActiveSessionFromBreaks(targetUserId, now);
+
+  return { ...created, requiresApproval: false };
+}
+
+export function mockGetBreaksForWindow(userId: number, windowStart: Date, windowEnd: Date) {
+  const breaks = mockFindBreaksOverlappingWindow(userId, windowStart, windowEnd);
   const pendingByBreakId = new Map(
     timeApprovalRequests
-      .filter((r) => r.userId === userId && r.type === "break" && r.status === "pending" && r.workBreakId)
+      .filter(
+        (r) =>
+          r.userId === userId &&
+          r.type === "break" &&
+          r.status === "pending" &&
+          r.workBreakId,
+      )
       .map((r) => [r.workBreakId!, r]),
   );
 
@@ -2247,67 +3306,179 @@ export function mockGetBreaks(userId: number, dateStr: string) {
   };
 }
 
-export function mockRequestBreakEdit(
+export function mockGetBreaks(userId: number, dateStr: string) {
+  const { start, end } = dayBounds(dateStr);
+  return mockGetBreaksForWindow(userId, start, end);
+}
+
+export function mockUpdateBreak(
   actor: SafeUser,
   input: { id: number; startTime: string; endTime?: string | null; reason: string },
 ) {
   const list = workBreaksByUser[actor.id] ?? [];
   const existing = list.find((b) => b.id === input.id);
+  if (!existing && actor.role === "admin") {
+    for (const breaks of Object.values(workBreaksByUser)) {
+      const found = breaks.find((b) => b.id === input.id);
+      if (found) {
+        return mockUpdateBreakForBreak(actor, found, input);
+      }
+    }
+  }
   if (!existing) throw new Error("Break not found");
+  if (existing.userId !== actor.id && actor.role !== "admin") {
+    throw new Error("Not allowed to edit this break");
+  }
+  return mockUpdateBreakForBreak(actor, existing, input);
+}
 
+function mockUpdateBreakForBreak(
+  actor: SafeUser,
+  existing: {
+    id: number;
+    userId: number;
+    workSessionId: number;
+    startTime: Date;
+    endTime: Date | null;
+    reason: string | null;
+    manuallyEdited: boolean;
+    updatedAt: Date;
+  },
+  input: { id: number; startTime: string; endTime?: string | null; reason: string },
+) {
   const startTime = new Date(input.startTime);
   const endTime = input.endTime ? new Date(input.endTime) : null;
   if (endTime && endTime <= startTime) {
     throw new Error("Break end must be after break start");
   }
-
-  if (actor.role === "admin") {
-    existing.startTime = startTime;
-    existing.endTime = endTime;
-    existing.reason = input.reason.trim();
-    existing.manuallyEdited = true;
-    existing.updatedAt = new Date();
-    return { ...existing, requiresApproval: false };
+  if (endTime && endTime.getTime() > Date.now()) {
+    throw new Error("Break end cannot be in the future");
   }
 
-  const existingPending = timeApprovalRequests.find(
-    (r) => r.workBreakId === input.id && r.type === "break" && r.status === "pending",
-  );
-  if (existingPending) throw new Error("A break edit request is already pending approval");
+  const wasOpen = !existing.endTime;
+  const previousStart = existing.startTime;
+  const previousEnd = existing.endTime;
+  existing.startTime = startTime;
+  existing.endTime = endTime;
+  existing.reason = input.reason.trim();
+  existing.manuallyEdited = true;
+  existing.updatedAt = new Date();
 
+  const session = Object.values(workSessionsByUser).find(
+    (s) => s.id === existing.workSessionId && s.active,
+  );
+  if (session?.paused && session.breakStartedAt) {
+    if (wasOpen && endTime) {
+      session.workSegmentStartedAt = endTime;
+      session.breakStartedAt = null;
+      session.paused = false;
+    } else if (!endTime) {
+      session.breakStartedAt = startTime;
+    }
+  }
+
+  for (const request of timeApprovalRequests) {
+    if (
+      request.workBreakId === input.id &&
+      request.type === "break" &&
+      request.status === "pending"
+    ) {
+      request.status = "approved";
+      request.reviewedBy = actor.id;
+      request.reviewedAt = new Date();
+      request.reviewNote = "Applied directly by employee (approval no longer required)";
+      request.updatedAt = new Date();
+    }
+  }
+
+  const refreshEnd = endTime ?? new Date();
+  mockRefreshAttendanceEntriesOverlappingBreak(
+    existing.userId,
+    startTime,
+    refreshEnd,
+  );
+  mockRefreshAttendanceEntriesOverlappingBreak(
+    existing.userId,
+    previousStart,
+    previousEnd ?? refreshEnd,
+  );
+  mockResyncActiveSessionFromBreaks(existing.userId);
+
+  return { ...existing, requiresApproval: false };
+}
+
+/** @deprecated Use mockUpdateBreak — kept for older callers. */
+export function mockRequestBreakEdit(
+  actor: SafeUser,
+  input: { id: number; startTime: string; endTime?: string | null; reason: string },
+) {
+  return mockUpdateBreak(actor, input);
+}
+
+export function mockUpdateAttendanceEntry(
+  actor: SafeUser,
+  input: { id: number; clockIn: string; clockOut: string; breakMinutes?: number; reason: string },
+) {
+  const entry = userWorkEntries.find(
+    (e) => e.id === input.id && e.taskId == null,
+  );
+  if (!entry) throw new Error("Attendance entry not found");
+  if (entry.userId !== actor.id && actor.role !== "admin") {
+    throw new Error("Not allowed to edit this attendance entry");
+  }
+  if (!entry.clockOut) {
+    throw new Error("Cannot edit an active session — clock out first");
+  }
+
+  const clockIn = new Date(input.clockIn);
+  const clockOut = new Date(input.clockOut);
+  if (Number.isNaN(clockIn.getTime()) || Number.isNaN(clockOut.getTime())) {
+    throw new Error("Invalid clock in or clock out time");
+  }
+  if (clockOut <= clockIn) {
+    throw new Error("Clock out must be after clock in");
+  }
+  if (clockOut.getTime() > Date.now()) {
+    throw new Error("Clock out time cannot be in the future");
+  }
+
+  let durationSeconds: number;
+  if (input.breakMinutes != null) {
+    const spanSeconds = Math.floor((clockOut.getTime() - clockIn.getTime()) / 1000);
+    const breakSeconds = Math.min(input.breakMinutes * 60, spanSeconds);
+    durationSeconds = Math.max(0, spanSeconds - breakSeconds);
+  } else {
+    durationSeconds = computeAttendanceWorkSeconds(
+      clockIn,
+      clockOut,
+      mockFindBreaksOverlappingWindow(entry.userId, clockIn, clockOut),
+      new Date(),
+    );
+  }
   const now = new Date();
-  const request: MockTimeApprovalRequest = {
-    id: nextApprovalId++,
-    userId: actor.id,
-    type: "break",
-    status: "pending",
-    reason: input.reason.trim(),
-    workSessionId: existing.workSessionId,
-    timeEntryId: existing.timeEntryId,
-    workBreakId: existing.id,
-    originalClockIn: null,
-    originalBreakStart: existing.startTime,
-    originalBreakEnd: existing.endTime,
-    requestedClockIn: null,
-    requestedBreakStart: startTime,
-    requestedBreakEnd: endTime,
-    reviewedBy: null,
-    reviewedAt: null,
-    reviewNote: null,
-    createdAt: now,
-    updatedAt: now,
-  };
-  timeApprovalRequests.unshift(request);
+  const originalClockIn = entry.clockIn;
 
-  const actorName = actor.name || actor.email || "An employee";
-  mockNotifyAdmins(
-    actor,
-    "Break edit needs approval",
-    `${actorName} requested a break time change: ${input.reason.trim()}`,
-    request.id,
+  entry.clockIn = clockIn;
+  entry.clockOut = clockOut;
+  entry.durationSeconds = durationSeconds;
+  entry.duration = Math.floor(durationSeconds / 60);
+  entry.note = entry.note
+    ? `${entry.note} — ${input.reason.trim()}`
+    : input.reason.trim();
+  entry.updatedAt = now;
+
+  const session = Object.values(workSessionsByUser).find(
+    (s) =>
+      s.userId === entry.userId &&
+      !s.active &&
+      s.startTime.getTime() === originalClockIn.getTime(),
   );
+  if (session) {
+    session.startTime = clockIn;
+    session.endTime = clockOut;
+  }
 
-  return { ...request, requiresApproval: true };
+  return { ...entry };
 }
 
 export function mockRequestManualClockIn(
@@ -2362,11 +3533,11 @@ export function mockRequestManualClockIn(
   timeApprovalRequests.unshift(request);
 
   const actorName = actor.name || actor.email || "An employee";
-  const requestedLabel = requestedClockIn.toLocaleTimeString("en-US", {
+  const requestedLabel = formatWorkZoneTime(requestedClockIn, {
     hour: "numeric",
     minute: "2-digit",
   });
-  const actualLabel = actualClockIn.toLocaleTimeString("en-US", {
+  const actualLabel = formatWorkZoneTime(actualClockIn, {
     hour: "numeric",
     minute: "2-digit",
   });
@@ -2442,36 +3613,13 @@ export function mockReviewTimeApproval(
     type: approved ? "time_approved" : "time_rejected",
     title: approved ? "Time adjustment approved" : "Time adjustment rejected",
     message: approved
-      ? `Your ${request.type === "clock_in" ? "manual clock-in" : "break edit"} request was approved.`
-      : `Your ${request.type === "clock_in" ? "manual clock-in" : "break edit"} request was rejected.${input.reviewNote ? ` Note: ${input.reviewNote.trim()}` : ""}`,
+      ? `Your ${request.type === "clock_in" ? "manual clock-in" : "break edit"} request has been approved.`
+      : `Your ${request.type === "clock_in" ? "manual clock-in" : "break edit"} request has been rejected.${input.reviewNote ? ` Note: ${input.reviewNote.trim()}` : ""}`,
     read: false,
     createdAt: new Date(),
   } as (typeof notifications)[number] & { actorId: number });
 
   return { success: true, approved, employeeName: employee?.name || "Employee" };
-}
-
-export function mockUpdateBreak(
-  userId: number,
-  input: { id: number; startTime: string; endTime?: string | null; reason: string },
-) {
-  const list = workBreaksByUser[userId] ?? [];
-  const existing = list.find((b) => b.id === input.id);
-  if (!existing) throw new Error("Break not found");
-
-  const startTime = new Date(input.startTime);
-  const endTime = input.endTime ? new Date(input.endTime) : null;
-  if (endTime && endTime <= startTime) {
-    throw new Error("Break end must be after break start");
-  }
-
-  existing.startTime = startTime;
-  existing.endTime = endTime;
-  existing.reason = input.reason.trim();
-  existing.manuallyEdited = true;
-  existing.updatedAt = new Date();
-
-  return existing;
 }
 
 export function mockGetDayHours(userId: number, dateStr: string) {
@@ -2511,8 +3659,202 @@ export function mockAdminStats() {
   };
 }
 
+export function mockAssignedTaskStatusCounts() {
+  const assigned = tasks.filter((t) => t.assigneeId != null);
+  const counts = { todo: 0, in_progress: 0, review: 0, done: 0 };
+  for (const task of assigned) {
+    if (task.status in counts) {
+      counts[task.status as keyof typeof counts] += 1;
+    }
+  }
+  return [
+    { name: "To Do", value: counts.todo, status: "todo" as const },
+    { name: "In Progress", value: counts.in_progress, status: "in_progress" as const },
+    { name: "Review", value: counts.review, status: "review" as const },
+    { name: "Done", value: counts.done, status: "done" as const },
+  ];
+}
+
+export function mockActiveClockIns() {
+  return Object.values(workSessionsByUser)
+    .filter((s) => s.active)
+    .map((session) => {
+      const user = userById(session.userId);
+      return {
+        sessionId: session.id,
+        userId: session.userId,
+        name: user?.name || "Unknown",
+        avatar: user?.avatar ?? null,
+        role: user?.role ?? "employee",
+        department: user?.department ?? null,
+        startTime: session.startTime,
+        paused: !!session.paused,
+        workElapsedSeconds: workSessionTiming(session).workElapsedSeconds,
+      };
+    });
+}
+
+export function mockHrDashboard() {
+  const active = users.filter((u) => u.status === "active");
+  const totalEmployees = Math.max(active.length, 1);
+  const presentToday = Object.values(workSessionsByUser).filter((s) => s.active).length;
+  const presentPct = Math.round((presentToday / totalEmployees) * 100);
+  const byDepartmentMap = new Map<string, number>([
+    ["Developer", 0],
+    ["Designer", 0],
+    ["QA", 0],
+    ["UI/UX", 0],
+  ]);
+  let staffInOverview = 0;
+  for (const u of active) {
+    const raw = (u.department ?? "").trim().toLowerCase();
+    let label: string | null = null;
+    if (raw.includes("ui") && raw.includes("ux")) label = "UI/UX";
+    else if (raw === "qa" || raw.startsWith("qa ")) label = "QA";
+    else if (raw === "developer" || raw === "developers") label = "Developer";
+    else if (raw === "designer" || raw === "designers") label = "Designer";
+    if (!label) continue;
+    byDepartmentMap.set(label, (byDepartmentMap.get(label) ?? 0) + 1);
+    staffInOverview += 1;
+  }
+  const byDepartment = [...byDepartmentMap.entries()]
+    .map(([name, count]) => ({
+      name,
+      count,
+      percent: staffInOverview > 0 ? Math.round((count / staffInOverview) * 100) : 0,
+    }))
+    .filter((row) => row.count > 0)
+    .sort((a, b) => b.count - a.count);
+
+  const now = new Date();
+  const todayKey = localDateKey(now);
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowKey = localDateKey(tomorrow);
+
+  const upcomingLeaveItems: Array<{
+    id: string;
+    leaveId: number;
+    day: number;
+    dateKey: string;
+    section: "today" | "tomorrow" | "upcoming";
+    name: string;
+    avatar: string | null;
+    leaveType: string;
+    leaveTypeLabel: string;
+  }> = [];
+  const upcomingWfhItems: typeof upcomingLeaveItems = [];
+
+  for (const l of leaveRequests.filter(
+    (r) =>
+      (r.status === "approved" || r.status === "pending") &&
+      r.endDate >= todayKey,
+  )) {
+    const isWfh = l.leaveType === "wfh";
+    if (!isWfh && l.status !== "approved") continue;
+    const rangeStart = l.startDate < todayKey ? todayKey : l.startDate;
+    for (const dateKey of eachLeaveDateKey(rangeStart, l.endDate)) {
+      if (!isWeekdayDateKey(dateKey) || dateKey < todayKey) continue;
+      const user = userById(l.userId);
+      const section =
+        dateKey === todayKey
+          ? "today"
+          : dateKey === tomorrowKey
+            ? "tomorrow"
+            : "upcoming";
+      const item = {
+        id: `${l.id}-${dateKey}`,
+        leaveId: l.id,
+        day: Number(dateKey.slice(8, 10)),
+        dateKey,
+        section: section as "today" | "tomorrow" | "upcoming",
+        name: user?.name || "Employee",
+        avatar: user?.avatar ?? null,
+        leaveType: leaveTypeShort(l.leaveType),
+        leaveTypeLabel:
+          l.leaveType === "paid"
+            ? "Paid"
+            : l.leaveType === "sick"
+              ? "Sick"
+              : l.leaveType === "unpaid"
+                ? "Unpaid"
+                : l.leaveType === "wfh"
+                  ? "Work from home"
+                  : "Half day",
+      };
+      if (isWfh) {
+        upcomingWfhItems.push(item);
+      } else {
+        upcomingLeaveItems.push(item);
+      }
+    }
+  }
+
+  upcomingLeaveItems.sort(
+    (a, b) => a.dateKey.localeCompare(b.dateKey) || a.name.localeCompare(b.name),
+  );
+  upcomingWfhItems.sort(
+    (a, b) => a.dateKey.localeCompare(b.dateKey) || a.name.localeCompare(b.name),
+  );
+
+  return {
+    totalEmployees: active.length,
+    presentToday,
+    presentPct,
+    presentDeltaPct: 0,
+    onLeaveToday: 0,
+    onLeavePct: 0,
+    onLeaveDeltaPct: 0,
+    newJoinersThisMonth: active.filter(
+      (u) => u.createdAt.getTime() > Date.now() - 30 * 86400000,
+    ).length,
+    joinersDelta: 0,
+    departmentsCount: byDepartment.length,
+    overviewStaffTotal: staffInOverview,
+    byDepartment,
+    leaveMonthLabel: new Date().toLocaleString("en-IN", { month: "long" }),
+    upcomingLeaves: upcomingLeaveItems,
+    upcomingWfh: upcomingWfhItems,
+    recentJoiners: active
+      .slice()
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, 5)
+      .map((u) => ({
+        id: u.id,
+        name: u.name || "Employee",
+        avatar: u.avatar ?? null,
+        position: u.position || u.department || "Team member",
+        joinedAt: u.createdAt,
+        joinedLabel: u.createdAt.toLocaleDateString("en-IN", {
+          day: "numeric",
+          month: "short",
+          year: "numeric",
+        }),
+      })),
+    upcomingBirthdays: [] as Array<{
+      id: number;
+      name: string;
+      avatar: string | null;
+      position: string;
+      daysLeft: number;
+      dateLabel: string;
+    }>,
+  };
+}
+
+export function mockLeaveSummary() {
+  const data = mockHrDashboard();
+  return {
+    leaveMonthLabel: data.leaveMonthLabel,
+    upcomingLeaves: data.upcomingLeaves,
+    upcomingWfh: data.upcomingWfh,
+  };
+}
+
 export function mockListTaskAttachments(taskId: number) {
-  return (taskAttachments[taskId] ?? []).map(({ dataBase64: _data, ...meta }) => meta);
+  return (taskAttachments[taskId] ?? [])
+    .filter((a) => a.listedInFiles !== false)
+    .map(({ dataBase64: _data, ...meta }) => meta);
 }
 
 export function mockGetTaskAttachment(id: number) {
@@ -2530,6 +3872,7 @@ export function mockAddTaskAttachment(
     mimeType: string;
     fileSize: number;
     dataBase64: string;
+    listedInFiles?: boolean;
   },
   actor: SafeUser,
 ) {
@@ -2542,6 +3885,7 @@ export function mockAddTaskAttachment(
     mimeType: input.mimeType,
     fileSize: input.fileSize,
     dataBase64: input.dataBase64,
+    listedInFiles: input.listedInFiles ?? true,
     uploadedBy: actor.id,
     createdAt: new Date(),
   };
@@ -2559,4 +3903,807 @@ export function mockDeleteTaskAttachment(id: number) {
     }
   }
   throw new Error("Attachment not found");
+}
+
+import {
+  TOTAL_PAID_LEAVES,
+  TOTAL_SICK_LEAVES,
+  accruedPaidLeavesForYear,
+  annualPaidLeaveEntitlement,
+  canCancelLeaveRequest,
+  canEditLeaveRequest,
+  consumesPaidBalance,
+  consumesSickBalance,
+  formatLeaveDays,
+  allowsHalfDayLeave,
+  employeeLeaveReviewMessage,
+  isHalfDayLeave,
+  isInProbationPeriod,
+  isWorkFromHomeLeave,
+  leaveBalanceUnits,
+  leaveDayUnits,
+  leaveDaysInYear,
+  leaveYearsInRange,
+  firstOverlappingLeaveDate,
+  alreadyAppliedLeaveMessage,
+  leaveRequestNotificationTitle,
+  paidLeaveLockPeriodLabel,
+  resolveEmploymentType,
+  toJoiningDateKey,
+  leaveTypeLabel,
+  leaveTypeShort,
+  managerLeaveNotificationMessage,
+  manualLeaveEntryMessage,
+  MONTHLY_PAID_LEAVES,
+  roundLeaveUnits,
+  type LeaveType,
+} from "@/lib/leave-policy";
+import { workZoneDateKey, workZoneDateParts } from "@/lib/timezone";
+import type { LeaveRequestDoc, LeaveUsageOverrideDoc, PublicHolidayDoc } from "@db/mongo/types";
+import { defaultHolidaysForYear } from "@/lib/public-holidays";
+
+const leaveRequests: LeaveRequestDoc[] = [];
+let nextLeaveId = 1;
+
+function mockComputeLeaveUsage(
+  userId: number,
+  year: number,
+  options?: { excludeRequestId?: number },
+) {
+  const requests = leaveRequests.filter(
+    (r) =>
+      r.userId === userId &&
+      (r.status === "pending" || r.status === "approved") &&
+      r.id !== options?.excludeRequestId,
+  );
+  let approvedPaid = 0;
+  let approvedSick = 0;
+  let pendingPaid = 0;
+  let pendingSick = 0;
+  for (const req of requests) {
+    const units = leaveDaysInYear(
+      req.startDate,
+      req.endDate,
+      year,
+      req.leaveType,
+      isHalfDayLeave(req),
+    );
+    if (units <= 0) continue;
+    if (consumesPaidBalance(req.leaveType)) {
+      if (req.status === "approved") approvedPaid += units;
+      else pendingPaid += units;
+    } else if (consumesSickBalance(req.leaveType)) {
+      if (req.status === "approved") approvedSick += units;
+      else pendingSick += units;
+    }
+  }
+  const usedPaid = approvedPaid + pendingPaid;
+  const usedSick = approvedSick + pendingSick;
+  const dateOfJoining = userById(userId)?.dateOfJoining ?? null;
+  const joiningKey = toJoiningDateKey(dateOfJoining);
+  const employmentType = resolveEmploymentType(userById(userId));
+  const paidAccrued = accruedPaidLeavesForYear(year, new Date(), joiningKey, employmentType);
+  const paidAnnual = annualPaidLeaveEntitlement(year, joiningKey, employmentType);
+  return {
+    year,
+    paidTotal: paidAccrued,
+    paidAnnualTotal: paidAnnual,
+    sickTotal: TOTAL_SICK_LEAVES,
+    paidRemaining: roundLeaveUnits(Math.max(0, paidAccrued - usedPaid)),
+    sickRemaining: roundLeaveUnits(Math.max(0, TOTAL_SICK_LEAVES - usedSick)),
+    paidUsed: roundLeaveUnits(approvedPaid),
+    sickUsed: roundLeaveUnits(approvedSick),
+    paidPending: roundLeaveUnits(pendingPaid),
+    sickPending: roundLeaveUnits(pendingSick),
+    usedLeaves: roundLeaveUnits(approvedPaid + approvedSick),
+    dateOfJoining: joiningKey ?? dateOfJoining,
+    employmentType,
+    inProbation: isInProbationPeriod(joiningKey, new Date(), employmentType),
+    paidLeaveLockLabel: paidLeaveLockPeriodLabel(employmentType),
+  };
+}
+
+function mockAssertYearScopedBalance(params: {
+  userId: number;
+  leaveType: string;
+  startDate: string;
+  endDate: string;
+  isHalfDay: boolean;
+  excludeRequestId?: number;
+  forEmployee?: boolean;
+}) {
+  if (!consumesPaidBalance(params.leaveType) && !consumesSickBalance(params.leaveType)) {
+    return;
+  }
+
+  const endDate = params.isHalfDay ? params.startDate : params.endDate;
+  const short = leaveTypeShort(params.leaveType);
+  const employeeSuffix = params.forEmployee ? " for this employee" : "";
+
+  for (const year of leaveYearsInRange(params.startDate, endDate)) {
+    const needed = leaveDaysInYear(
+      params.startDate,
+      endDate,
+      year,
+      params.leaveType,
+      params.isHalfDay,
+    );
+    if (needed <= 0) continue;
+
+    const usage = mockComputeLeaveUsage(params.userId, year, {
+      excludeRequestId: params.excludeRequestId,
+    });
+    const remaining = consumesPaidBalance(params.leaveType)
+      ? usage.paidRemaining
+      : usage.sickRemaining;
+
+    if (needed > remaining) {
+      throw new Error(
+        `Only ${remaining} ${short} day(s) remaining for ${year}${employeeSuffix}`,
+      );
+    }
+  }
+}
+
+function mockAssertNoOverlappingLeave(params: {
+  userId: number;
+  startDate: string;
+  endDate: string;
+  excludeRequestId?: number;
+}) {
+  for (const req of leaveRequests) {
+    if (req.userId !== params.userId) continue;
+    if (req.status !== "pending" && req.status !== "approved") continue;
+    if (params.excludeRequestId != null && req.id === params.excludeRequestId) continue;
+    const conflict = firstOverlappingLeaveDate(params.startDate, params.endDate, req);
+    if (conflict) {
+      throw new Error(alreadyAppliedLeaveMessage(conflict));
+    }
+  }
+}
+
+export function mockLeaveBalance(userId: number, year = workZoneDateParts(new Date()).year) {
+  return mockComputeLeaveUsage(userId, year);
+}
+
+export function mockMyLeaveRequests(userId: number) {
+  return {
+    requests: leaveRequests
+      .filter((r) => r.userId === userId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()),
+  };
+}
+
+export function mockApprovedLeavesInRange(
+  userId: number,
+  startDate: string,
+  endDate: string,
+) {
+  return {
+    leaves: leaveRequests
+      .filter(
+        (r) =>
+          r.userId === userId &&
+          r.status === "approved" &&
+          r.startDate <= endDate &&
+          r.endDate >= startDate,
+      )
+      .map((r) => ({
+        id: r.id,
+        leaveType: r.leaveType,
+        startDate: r.startDate,
+        endDate: r.endDate,
+        days: r.days,
+        isHalfDay: Boolean(r.isHalfDay) || r.leaveType === "half" || r.days === 0.5,
+      })),
+  };
+}
+
+export function mockApplyLeave(
+  userId: number,
+  input: {
+    leaveType: LeaveType;
+    startDate: string;
+    endDate: string;
+    reason: string;
+    isHalfDay?: boolean;
+  },
+) {
+  const isHalfDay = Boolean(input.isHalfDay) && !isWorkFromHomeLeave(input.leaveType);
+  if (isHalfDay && !allowsHalfDayLeave(input.leaveType)) {
+    throw new Error("Half day is not available for this leave type");
+  }
+  if (isWorkFromHomeLeave(input.leaveType) && input.isHalfDay) {
+    throw new Error("Work from home is full day only");
+  }
+
+  if (isHalfDay && input.startDate !== input.endDate) {
+    throw new Error("Half day leave must be for a single day only");
+  }
+  const days = isHalfDay
+    ? 0.5
+    : leaveDayUnits(input.leaveType, input.startDate, input.endDate, false);
+  if (days <= 0) throw new Error("End date must be on or after the start date");
+  const todayKey = workZoneDateKey(new Date());
+  if (input.startDate < todayKey) throw new Error("Leave cannot start in the past");
+  const requestEndDate = isHalfDay ? input.startDate : input.endDate;
+  mockAssertNoOverlappingLeave({
+    userId,
+    startDate: input.startDate,
+    endDate: requestEndDate,
+  });
+  mockAssertYearScopedBalance({
+    userId,
+    leaveType: input.leaveType,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    isHalfDay,
+  });
+  const now = new Date();
+  const request: LeaveRequestDoc = {
+    id: nextLeaveId++,
+    userId,
+    organizationId: userById(userId)?.organizationId ?? 1,
+    leaveType: input.leaveType,
+    isHalfDay,
+    startDate: input.startDate,
+    endDate: requestEndDate,
+    days,
+    reason: input.reason,
+    status: "pending",
+    reviewedBy: null,
+    reviewedAt: null,
+    reviewNote: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  leaveRequests.push(request);
+
+  const actor = userById(userId);
+  const dateLabel =
+    input.startDate === input.endDate
+      ? input.startDate
+      : `${input.startDate} → ${input.endDate}`;
+  for (const manager of users.filter(
+    (u) =>
+      u.id !== userId &&
+      (u.role === "admin" ||
+        u.role === "hr" ||
+        (u.department ?? "").trim().toLowerCase() === "hr"),
+  )) {
+    notifications.push({
+      id: notifications.reduce((max, n) => Math.max(max, n.id), 0) + 1,
+      userId: manager.id,
+      actorId: userId,
+      type: "leave_request_pending" as const,
+      title: leaveRequestNotificationTitle(input.leaveType, "new"),
+      message: managerLeaveNotificationMessage({
+        actorName: actor?.name ?? "An employee",
+        leaveType: input.leaveType,
+        action: "submitted",
+        days,
+        dateLabel,
+        isHalfDay,
+      }),
+      taskId: null,
+      leaveRequestId: request.id,
+      read: false,
+      createdAt: now,
+    });
+  }
+
+  return { request, balance: mockComputeLeaveUsage(userId, Number(input.startDate.slice(0, 4))) };
+}
+
+export function mockUpdateMyLeave(
+  userId: number,
+  input: {
+    id: number;
+    leaveType: LeaveType;
+    startDate: string;
+    endDate: string;
+    reason: string;
+    isHalfDay?: boolean;
+  },
+) {
+  const existing = leaveRequests.find((r) => r.id === input.id);
+  if (!existing) throw new Error("Leave request not found");
+  if (existing.userId !== userId) {
+    throw new Error("You can only edit your own leave requests");
+  }
+  const todayKey = workZoneDateKey(new Date());
+  if (!canEditLeaveRequest(existing, todayKey)) {
+    throw new Error(
+      existing.status === "approved"
+        ? "Approved leave cannot be edited"
+        : "Only pending leave requests can be edited",
+    );
+  }
+
+  const isHalfDay = Boolean(input.isHalfDay) && !isWorkFromHomeLeave(input.leaveType);
+  if (isWorkFromHomeLeave(input.leaveType) && input.isHalfDay) {
+    throw new Error("Work from home is full day only");
+  }
+  if (isHalfDay && !allowsHalfDayLeave(input.leaveType)) {
+    throw new Error("Half day is not available for this leave type");
+  }
+  if (isHalfDay && input.startDate !== input.endDate) {
+    throw new Error("Half day leave must be for a single day only");
+  }
+  const days = isHalfDay
+    ? 0.5
+    : leaveDayUnits(input.leaveType, input.startDate, input.endDate, false);
+  if (days <= 0) throw new Error("End date must be on or after the start date");
+  if (input.startDate < todayKey) throw new Error("Leave cannot start in the past");
+
+  const requestEndDate = isHalfDay ? input.startDate : input.endDate;
+  mockAssertNoOverlappingLeave({
+    userId,
+    startDate: input.startDate,
+    endDate: requestEndDate,
+    excludeRequestId: existing.id,
+  });
+  mockAssertYearScopedBalance({
+    userId,
+    leaveType: input.leaveType,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    isHalfDay,
+    excludeRequestId: existing.id,
+  });
+
+  const wasApproved = existing.status === "approved";
+  const now = new Date();
+  existing.leaveType = input.leaveType;
+  existing.isHalfDay = isHalfDay;
+  existing.startDate = input.startDate;
+  existing.endDate = requestEndDate;
+  existing.days = days;
+  existing.reason = input.reason;
+  existing.status = "pending";
+  existing.reviewedBy = null;
+  existing.reviewedAt = null;
+  existing.reviewNote = wasApproved ? "Re-submitted after employee edit" : existing.reviewNote;
+  existing.updatedAt = now;
+
+  const actor = userById(userId);
+  const dateLabel =
+    existing.startDate === existing.endDate
+      ? existing.startDate
+      : `${existing.startDate} → ${existing.endDate}`;
+  for (const manager of users.filter(
+    (u) =>
+      u.id !== userId &&
+      (u.role === "admin" ||
+        u.role === "hr" ||
+        (u.department ?? "").trim().toLowerCase() === "hr"),
+  )) {
+    notifications.push({
+      id: notifications.reduce((max, n) => Math.max(max, n.id), 0) + 1,
+      userId: manager.id,
+      actorId: userId,
+      type: "leave_request_pending" as const,
+      title: leaveRequestNotificationTitle(
+        input.leaveType,
+        wasApproved ? "resubmitted" : "updated",
+      ),
+      message: managerLeaveNotificationMessage({
+        actorName: actor?.name ?? "An employee",
+        leaveType: input.leaveType,
+        action: wasApproved ? "resubmitted" : "updated",
+        days,
+        dateLabel,
+        isHalfDay,
+      }),
+      taskId: null,
+      leaveRequestId: existing.id,
+      read: false,
+      createdAt: now,
+    });
+  }
+
+  return { request: { ...existing }, balance: mockComputeLeaveUsage(userId, Number(input.startDate.slice(0, 4))) };
+}
+
+export function mockCreateManualLeave(
+  reviewerId: number,
+  input: {
+    userId: number;
+    leaveType: LeaveType;
+    startDate: string;
+    endDate: string;
+    reason?: string;
+    isHalfDay?: boolean;
+    status: "approved" | "rejected";
+    reviewNote?: string;
+  },
+) {
+  const employee = userById(input.userId);
+  if (!employee) throw new Error("Employee not found");
+
+  if (!isWorkFromHomeLeave(input.leaveType) && (input.reason?.trim().length ?? 0) < 3) {
+    throw new Error("Please enter a reason (at least 3 characters)");
+  }
+
+  const isHalfDay = Boolean(input.isHalfDay) && !isWorkFromHomeLeave(input.leaveType);
+  if (isWorkFromHomeLeave(input.leaveType) && input.isHalfDay) {
+    throw new Error("Work from home is full day only");
+  }
+  if (isHalfDay && !allowsHalfDayLeave(input.leaveType)) {
+    throw new Error("Half day is not available for this leave type");
+  }
+  if (isHalfDay && input.startDate !== input.endDate) {
+    throw new Error("Half day leave must be for a single day only");
+  }
+  const days = isHalfDay
+    ? 0.5
+    : leaveDayUnits(input.leaveType, input.startDate, input.endDate, false);
+  if (days <= 0) throw new Error("End date must be on or after the start date");
+
+  const requestEndDate = isHalfDay ? input.startDate : input.endDate;
+  if (input.status === "approved") {
+    mockAssertNoOverlappingLeave({
+      userId: input.userId,
+      startDate: input.startDate,
+      endDate: requestEndDate,
+    });
+    mockAssertYearScopedBalance({
+      userId: input.userId,
+      leaveType: input.leaveType,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      isHalfDay,
+      forEmployee: true,
+    });
+  }
+
+  const now = new Date();
+  const reviewNote =
+    input.reviewNote?.trim() ||
+    (input.status === "approved" ? "Added manually by HR" : "Rejected via manual entry");
+
+  const request: LeaveRequestDoc = {
+    id: nextLeaveId++,
+    userId: input.userId,
+    organizationId: userById(input.userId)?.organizationId ?? 1,
+    leaveType: input.leaveType,
+    isHalfDay,
+    startDate: input.startDate,
+    endDate: requestEndDate,
+    days,
+    reason:
+      input.reason?.trim() ||
+      (isWorkFromHomeLeave(input.leaveType) ? "Work from home" : ""),
+    status: input.status,
+    reviewedBy: reviewerId,
+    reviewedAt: now,
+    reviewNote,
+    createdAt: now,
+    updatedAt: now,
+  };
+  leaveRequests.push(request);
+
+  const dateLabel =
+    request.startDate === request.endDate
+      ? request.startDate
+      : `${request.startDate} → ${request.endDate}`;
+
+  notifications.push({
+    id: notifications.reduce((max, n) => Math.max(max, n.id), 0) + 1,
+    userId: input.userId,
+    actorId: reviewerId,
+    type: (input.status === "approved" ? "leave_approved" : "leave_rejected") as
+      | "leave_approved"
+      | "leave_rejected",
+    title: leaveRequestNotificationTitle(
+      input.leaveType,
+      input.status === "approved" ? "recorded" : "rejected",
+    ),
+    message: manualLeaveEntryMessage(input.leaveType, {
+      status: input.status,
+      days,
+      dateLabel,
+      isHalfDay,
+      reviewNote,
+    }),
+    taskId: null,
+    leaveRequestId: request.id,
+    read: false,
+    createdAt: now,
+  });
+
+  return { request };
+}
+
+export function mockListLeaveRequests() {
+  return {
+    requests: [...leaveRequests]
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .map((r) => ({
+        ...r,
+        employee: userById(r.userId)
+          ? {
+              id: r.userId,
+              name: userById(r.userId)!.name,
+              email: userById(r.userId)!.email,
+              avatar: userById(r.userId)!.avatar,
+              department: userById(r.userId)!.department,
+            }
+          : null,
+      })),
+  };
+}
+
+export function mockReviewLeave(
+  reviewerId: number,
+  input: {
+    id: number;
+    status: "approved" | "rejected" | "cancelled" | "pending";
+    reviewNote?: string;
+  },
+) {
+  const existing = leaveRequests.find((r) => r.id === input.id);
+  if (!existing) throw new Error("Leave request not found");
+  if (existing.status === input.status) {
+    throw new Error(`This leave request is already ${input.status}`);
+  }
+
+  if (input.status === "approved") {
+    mockAssertNoOverlappingLeave({
+      userId: existing.userId,
+      startDate: existing.startDate,
+      endDate: existing.endDate,
+      excludeRequestId: existing.id,
+    });
+    mockAssertYearScopedBalance({
+      userId: existing.userId,
+      leaveType: existing.leaveType,
+      startDate: existing.startDate,
+      endDate: existing.endDate,
+      isHalfDay: isHalfDayLeave(existing),
+      excludeRequestId: existing.id,
+      forEmployee: true,
+    });
+  }
+
+  const now = new Date();
+  const normalizedHalf = Boolean(existing.isHalfDay) || existing.leaveType === "half" || existing.days === 0.5;
+  const normalizedDays = leaveBalanceUnits(existing);
+  existing.status = input.status;
+  existing.reviewedBy = input.status === "pending" ? null : reviewerId;
+  existing.reviewedAt = input.status === "pending" ? null : now;
+  existing.reviewNote =
+    input.reviewNote?.trim() ||
+    (input.status === "cancelled"
+      ? "Cancelled by HR"
+      : input.status === "pending"
+        ? null
+        : existing.reviewNote);
+  existing.isHalfDay = normalizedHalf;
+  existing.days = normalizedDays;
+  if (normalizedHalf) existing.endDate = existing.startDate;
+  existing.updatedAt = now;
+
+  const notifType =
+    input.status === "approved"
+      ? ("leave_approved" as const)
+      : input.status === "rejected"
+        ? ("leave_rejected" as const)
+        : input.status === "cancelled"
+          ? ("leave_cancelled" as const)
+          : ("leave_request_pending" as const);
+
+  notifications.push({
+    id: notifications.reduce((max, n) => Math.max(max, n.id), 0) + 1,
+    userId: existing.userId,
+    actorId: reviewerId,
+    type: notifType,
+    title:
+      input.status === "approved"
+        ? leaveRequestNotificationTitle(existing.leaveType, "approved")
+        : input.status === "rejected"
+          ? leaveRequestNotificationTitle(existing.leaveType, "rejected")
+          : input.status === "cancelled"
+            ? leaveRequestNotificationTitle(existing.leaveType, "cancelled")
+            : leaveRequestNotificationTitle(existing.leaveType, "pending"),
+    message: employeeLeaveReviewMessage(existing.leaveType, {
+      status:
+        input.status === "approved"
+          ? "approved"
+          : input.status === "rejected"
+            ? "rejected"
+            : input.status === "cancelled"
+              ? "cancelled"
+              : "pending",
+      startDate: existing.startDate,
+      endDate: existing.endDate,
+      reviewNote: input.reviewNote,
+      isHalfDay: existing.isHalfDay,
+      days: existing.days,
+    }),
+    taskId: null,
+    leaveRequestId: existing.id,
+    read: false,
+    createdAt: now,
+  });
+
+  return { request: { ...existing } };
+}
+
+export function mockCancelLeave(userId: number, id: number) {
+  const existing = leaveRequests.find((r) => r.id === id);
+  if (!existing) throw new Error("Leave request not found");
+  if (existing.userId !== userId) {
+    throw new Error("You can only cancel your own leave requests");
+  }
+  const todayKey = workZoneDateKey(new Date());
+  if (!canCancelLeaveRequest(existing, todayKey)) {
+    throw new Error(
+      existing.status === "approved"
+        ? "Approved leave that has already started cannot be cancelled"
+        : "Only pending or upcoming approved leaves can be cancelled",
+    );
+  }
+
+  const now = new Date();
+  existing.status = "cancelled";
+  existing.reviewedBy = userId;
+  existing.reviewedAt = now;
+  existing.reviewNote = "Cancelled by employee";
+  existing.updatedAt = now;
+
+  const actor = userById(userId);
+  const dateLabel =
+    existing.startDate === existing.endDate
+      ? existing.startDate
+      : `${existing.startDate} → ${existing.endDate}`;
+
+  for (const manager of users.filter(
+    (u) =>
+      u.id !== userId &&
+      (u.role === "admin" ||
+        u.role === "hr" ||
+        (u.department ?? "").trim().toLowerCase() === "hr"),
+  )) {
+    notifications.push({
+      id: notifications.reduce((max, n) => Math.max(max, n.id), 0) + 1,
+      userId: manager.id,
+      actorId: userId,
+      type: "leave_cancelled" as const,
+      title: leaveRequestNotificationTitle(existing.leaveType, "cancelled"),
+      message: managerLeaveNotificationMessage({
+        actorName: actor?.name ?? "An employee",
+        leaveType: existing.leaveType,
+        action: "cancelled",
+        days: existing.days,
+        dateLabel,
+        isHalfDay: Boolean(existing.isHalfDay),
+      }),
+      taskId: null,
+      leaveRequestId: existing.id,
+      read: false,
+      createdAt: now,
+    });
+  }
+
+  return {
+    request: { ...existing },
+    balance: mockComputeLeaveUsage(userId, Number(existing.startDate.slice(0, 4))),
+  };
+}
+
+const publicHolidays: PublicHolidayDoc[] = [];
+let nextHolidayId = 1;
+let holidaysSeeded = false;
+
+function seedMockHolidaysIfEmpty() {
+  if (holidaysSeeded || publicHolidays.length > 0) return;
+  holidaysSeeded = true;
+  const year = workZoneDateParts(new Date()).year;
+  const now = new Date();
+  for (const h of defaultHolidaysForYear(year)) {
+    publicHolidays.push({
+      id: nextHolidayId++,
+      date: h.date,
+      name: h.name,
+      organizationId: 1,
+      createdBy: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+}
+
+export function mockListPublicHolidays(year?: number) {
+  seedMockHolidaysIfEmpty();
+  const list = [...publicHolidays].sort((a, b) => a.date.localeCompare(b.date));
+  if (year == null) return { holidays: list };
+  const prefix = `${year}-`;
+  return { holidays: list.filter((h) => h.date.startsWith(prefix)) };
+}
+
+export function mockAddPublicHoliday(
+  actorId: number,
+  input: { date: string; name: string },
+) {
+  seedMockHolidaysIfEmpty();
+  const name = input.name.trim();
+  if (name.length < 2) throw new Error("Holiday name must be at least 2 characters");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) throw new Error("Invalid holiday date");
+  if (publicHolidays.some((h) => h.date === input.date)) {
+    throw new Error("A holiday is already set for this date");
+  }
+  const now = new Date();
+  const holiday: PublicHolidayDoc = {
+    id: nextHolidayId++,
+    date: input.date,
+    name,
+    organizationId: 1,
+    createdBy: actorId,
+    createdAt: now,
+    updatedAt: now,
+  };
+  publicHolidays.push(holiday);
+  return { holiday };
+}
+
+export function mockDeletePublicHoliday(id: number) {
+  const idx = publicHolidays.findIndex((h) => h.id === id);
+  if (idx < 0) throw new Error("Holiday not found");
+  publicHolidays.splice(idx, 1);
+  return { success: true };
+}
+
+const leaveUsageOverrides: LeaveUsageOverrideDoc[] = [];
+let nextLeaveUsageOverrideId = 1;
+
+export function mockListLeaveUsageOverrides(year: number) {
+  return {
+    overrides: leaveUsageOverrides.filter((o) => o.year === year),
+  };
+}
+
+export function mockSetLeaveUsageOverride(
+  reviewerId: number,
+  input: { userId: number; year: number; month: number; remainingPaid: number },
+) {
+  const employee = userById(input.userId);
+  if (!employee) throw new Error("Employee not found");
+
+  const paidDaysUsed =
+    Math.round((MONTHLY_PAID_LEAVES - input.remainingPaid) * 10) / 10;
+  const existingIdx = leaveUsageOverrides.findIndex(
+    (o) =>
+      o.userId === input.userId &&
+      o.year === input.year &&
+      o.month === input.month,
+  );
+  const now = new Date();
+
+  if (paidDaysUsed <= 0) {
+    if (existingIdx >= 0) leaveUsageOverrides.splice(existingIdx, 1);
+    return { override: null };
+  }
+
+  if (existingIdx >= 0) {
+    const existing = leaveUsageOverrides[existingIdx];
+    existing.paidDaysUsed = paidDaysUsed;
+    existing.updatedBy = reviewerId;
+    existing.updatedAt = now;
+    return { override: { ...existing } };
+  }
+
+  const override: LeaveUsageOverrideDoc = {
+    id: nextLeaveUsageOverrideId++,
+    userId: input.userId,
+    organizationId: userById(input.userId)?.organizationId ?? 1,
+    year: input.year,
+    month: input.month,
+    paidDaysUsed,
+    updatedBy: reviewerId,
+    createdAt: now,
+    updatedAt: now,
+  };
+  leaveUsageOverrides.push(override);
+  return { override: { ...override } };
 }

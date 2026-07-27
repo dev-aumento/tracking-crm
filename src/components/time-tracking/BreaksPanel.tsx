@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { trpc } from "@/providers/trpc";
+import { useAuth } from "@/hooks/useAuth";
 import { formatDuration } from "@/lib/utils";
 import { formatHoursMinutes } from "@/lib/work-hours-policy";
-import { Coffee, Loader2, Pencil, X, Check } from "lucide-react";
+import { formatWorkZoneTime } from "@/lib/timezone";
+import { Coffee, Loader2, Pencil, Plus, X, Check } from "lucide-react";
 
 function formatBreakTime(value: Date | string) {
-  return new Date(value).toLocaleTimeString("en-IN", {
+  return formatWorkZoneTime(value, {
     hour: "2-digit",
     minute: "2-digit",
     hour12: true,
@@ -16,6 +18,19 @@ function toDatetimeLocalValue(value: Date | string) {
   const d = new Date(value);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function defaultBreakWindow(date: string) {
+  const base = new Date(`${date}T13:00:00`);
+  if (Number.isNaN(base.getTime())) {
+    const now = new Date();
+    const end = new Date(now.getTime() - 5 * 60_000);
+    const start = new Date(end.getTime() - 30 * 60_000);
+    return { start: toDatetimeLocalValue(start), end: toDatetimeLocalValue(end) };
+  }
+  const start = new Date(base);
+  const end = new Date(base.getTime() + 30 * 60_000);
+  return { start: toDatetimeLocalValue(start), end: toDatetimeLocalValue(end) };
 }
 
 function breakDurationMinutes(start: Date, end: Date | null, now = new Date()) {
@@ -37,6 +52,18 @@ type BreakRow = {
   } | null;
 };
 
+function invalidateBreakRelatedQueries(
+  utils: ReturnType<typeof trpc.useUtils>,
+) {
+  utils.timeEntry.getBreaks.invalidate();
+  utils.timeEntry.getCurrentSession.invalidate();
+  utils.timeEntry.list.invalidate();
+  utils.timeEntry.getStats.invalidate();
+  utils.timeEntry.getDayHours.invalidate();
+  utils.timeEntry.getTeamHours.invalidate();
+  utils.dashboard.getStats.invalidate();
+}
+
 function BreakEditForm({
   breakItem,
   onCancel,
@@ -54,21 +81,26 @@ function BreakEditForm({
   const utils = trpc.useUtils();
 
   const updateMutation = trpc.timeEntry.updateBreak.useMutation({
-    onSuccess: (result) => {
-      utils.timeEntry.getBreaks.invalidate();
+    onSuccess: async () => {
+      invalidateBreakRelatedQueries(utils);
+      await Promise.all([
+        utils.timeEntry.getStats.refetch(),
+        utils.timeEntry.getCurrentSession.refetch(),
+      ]);
       onSaved();
-      if (result && "requiresApproval" in result && result.requiresApproval) {
-        // pending state shown via pendingEdit on refetch
-      }
     },
   });
 
-  const canSave = reason.trim().length > 0 && !updateMutation.isPending;
+  const canSave =
+    reason.trim().length > 0 &&
+    startTime.trim().length > 0 &&
+    endTime.trim().length > 0 &&
+    !updateMutation.isPending;
 
   return (
-    <div className="px-5 py-4 bg-amber-50/60 border-t border-amber-100 space-y-3">
-      <p className="text-xs text-amber-800 font-medium">
-        Edit break times — submit for admin approval. A reason is required.
+    <div className="px-5 py-4 bg-gray-50/80 border-t border-gray-100 space-y-3">
+      <p className="text-xs text-gray-600 font-medium">
+        Edit break times. A reason is required.
       </p>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className="block text-xs text-gray-600">
@@ -86,11 +118,12 @@ function BreakEditForm({
             type="datetime-local"
             value={endTime}
             onChange={(e) => setEndTime(e.target.value)}
-            disabled={!breakItem.endTime}
-            className="mt-1 w-full h-9 px-3 border border-gray-200 rounded-lg text-sm bg-white disabled:bg-gray-100"
+            className="mt-1 w-full h-9 px-3 border border-gray-200 rounded-lg text-sm bg-white"
           />
           {!breakItem.endTime ? (
-            <span className="text-[10px] text-gray-400 mt-1 block">Ends when you resume work</span>
+            <span className="text-[10px] text-gray-400 mt-1 block">
+              Set an end time if you forgot to stop the break
+            </span>
           ) : null}
         </label>
       </div>
@@ -130,11 +163,117 @@ function BreakEditForm({
           ) : (
             <Check size={14} />
           )}
-          Submit for approval
+          Save
         </button>
       </div>
       {updateMutation.error ? (
         <p className="text-xs text-red-600">{updateMutation.error.message}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function AddBreakForm({
+  date,
+  userId,
+  onCancel,
+  onSaved,
+}: {
+  date: string;
+  userId?: number;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const defaults = defaultBreakWindow(date);
+  const [startTime, setStartTime] = useState(defaults.start);
+  const [endTime, setEndTime] = useState(defaults.end);
+  const [reason, setReason] = useState("");
+  const utils = trpc.useUtils();
+
+  const createMutation = trpc.timeEntry.createBreak.useMutation({
+    onSuccess: async () => {
+      invalidateBreakRelatedQueries(utils);
+      await Promise.all([
+        utils.timeEntry.getStats.refetch(),
+        utils.timeEntry.getCurrentSession.refetch(),
+      ]);
+      onSaved();
+    },
+  });
+
+  const canSave =
+    reason.trim().length > 0 &&
+    startTime.trim().length > 0 &&
+    endTime.trim().length > 0 &&
+    !createMutation.isPending;
+
+  return (
+    <div className="px-5 py-4 bg-blue-50/40 border-t border-gray-100 space-y-3">
+      <p className="text-xs text-gray-600 font-medium">
+        Add a custom break (for example if you forgot to start break). This time is
+        excluded from the day total.
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label className="block text-xs text-gray-600">
+          Break start
+          <input
+            type="datetime-local"
+            value={startTime}
+            onChange={(e) => setStartTime(e.target.value)}
+            className="mt-1 w-full h-9 px-3 border border-gray-200 rounded-lg text-sm bg-white"
+          />
+        </label>
+        <label className="block text-xs text-gray-600">
+          Break end
+          <input
+            type="datetime-local"
+            value={endTime}
+            onChange={(e) => setEndTime(e.target.value)}
+            className="mt-1 w-full h-9 px-3 border border-gray-200 rounded-lg text-sm bg-white"
+          />
+        </label>
+      </div>
+      <label className="block text-xs text-gray-600">
+        Reason
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          rows={2}
+          placeholder="Why are you adding this break?"
+          className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white resize-none"
+        />
+      </label>
+      <div className="flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="h-8 px-3 rounded-lg text-xs font-medium text-gray-600 hover:bg-white border border-gray-200"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          disabled={!canSave}
+          onClick={() =>
+            createMutation.mutate({
+              ...(userId != null ? { userId } : {}),
+              startTime: new Date(startTime).toISOString(),
+              endTime: new Date(endTime).toISOString(),
+              reason: reason.trim(),
+            })
+          }
+          className="h-8 px-3 rounded-lg text-xs font-medium text-white bg-[#2563EB] hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1.5"
+        >
+          {createMutation.isPending ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : (
+            <Check size={14} />
+          )}
+          Add break
+        </button>
+      </div>
+      {createMutation.error ? (
+        <p className="text-xs text-red-600">{createMutation.error.message}</p>
       ) : null}
     </div>
   );
@@ -147,7 +286,9 @@ export function BreaksPanel({
   date: string;
   userId?: number;
 }) {
+  const { user } = useAuth();
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [adding, setAdding] = useState(false);
 
   const { data, isLoading } = trpc.timeEntry.getBreaks.useQuery(
     { date, userId },
@@ -157,6 +298,9 @@ export function BreaksPanel({
   const [tick, setTick] = useState(0);
   const breaks = data?.breaks ?? [];
   const hasActiveBreak = breaks.some((b) => !b.endTime);
+
+  const canAddBreak =
+    !userId || userId === user?.id || user?.role === "admin";
 
   useEffect(() => {
     if (!hasActiveBreak) return;
@@ -186,77 +330,95 @@ export function BreaksPanel({
     );
   }
 
-  if (breaks.length === 0) {
-    return (
-      <div className="border border-gray-200 rounded-xl px-5 py-8 text-center text-sm text-gray-400">
-        No breaks recorded for this day.
-      </div>
-    );
-  }
-
   return (
     <div className="border border-gray-200 rounded-xl overflow-hidden">
-      <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 bg-gray-50/50">
-        <div className="flex items-center gap-2">
-          <Coffee size={16} className="text-amber-600" />
+      <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-gray-100 bg-gray-50/50">
+        <div className="flex items-center gap-2 min-w-0">
+          <Coffee size={16} className="text-amber-600 shrink-0" />
           <h3 className="font-semibold text-[#1F2937]">Breaks</h3>
+          {breaks.length > 0 ? (
+            <span className="text-sm font-medium text-amber-700">
+              {formatHoursMinutes(totalBreakMinutes / 60)} total
+            </span>
+          ) : null}
         </div>
-        <span className="text-sm font-medium text-amber-700">
-          {formatHoursMinutes(totalBreakMinutes / 60)} total
-        </span>
+        {canAddBreak ? (
+          <button
+            type="button"
+            onClick={() => {
+              setEditingId(null);
+              setAdding((open) => !open);
+            }}
+            className="h-8 px-2.5 rounded-lg text-xs font-medium text-[#2563EB] hover:bg-blue-50 flex items-center gap-1 shrink-0"
+          >
+            {adding ? <X size={14} /> : <Plus size={14} />}
+            {adding ? "Close" : "Add break"}
+          </button>
+        ) : null}
       </div>
 
-      <div className="divide-y divide-gray-50">
-        {breakRows.map((breakItem) => {
-          const isEditing = editingId === breakItem.id;
+      {adding && canAddBreak ? (
+        <AddBreakForm
+          date={date}
+          userId={userId}
+          onCancel={() => setAdding(false)}
+          onSaved={() => setAdding(false)}
+        />
+      ) : null}
 
-          return (
-            <div key={breakItem.id}>
-              <div className="flex items-center gap-4 px-5 py-3 hover:bg-gray-50 transition-colors">
-                <Coffee size={14} className="text-amber-500 shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm text-gray-700">
-                    {formatBreakTime(breakItem.startTime)}
-                    {" – "}
-                    {breakItem.endTime ? formatBreakTime(breakItem.endTime) : "In progress"}
+      {breaks.length === 0 && !adding ? (
+        <div className="px-5 py-8 text-center text-sm text-gray-400">
+          No breaks recorded for this day.
+          {canAddBreak ? " Use Add break if you forgot to start one." : null}
+        </div>
+      ) : null}
+
+      {breaks.length > 0 ? (
+        <div className="divide-y divide-gray-50">
+          {breakRows.map((breakItem) => {
+            const isEditing = editingId === breakItem.id;
+
+            return (
+              <div key={breakItem.id}>
+                <div className="flex items-center gap-4 px-5 py-3 hover:bg-gray-50 transition-colors">
+                  <Coffee size={14} className="text-amber-500 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-gray-700">
+                      {formatBreakTime(breakItem.startTime)}
+                      {" – "}
+                      {breakItem.endTime ? formatBreakTime(breakItem.endTime) : "In progress"}
+                    </div>
+                    <div className="text-xs text-gray-400">
+                      {formatDuration(breakItem.minutes)}
+                      {breakItem.manuallyEdited && breakItem.reason ? (
+                        <span className="ml-2 text-amber-600">· Edited: {breakItem.reason}</span>
+                      ) : null}
+                    </div>
                   </div>
-                  <div className="text-xs text-gray-400">
-                    {formatDuration(breakItem.minutes)}
-                    {breakItem.manuallyEdited && breakItem.reason ? (
-                      <span className="ml-2 text-amber-600">· Edited: {breakItem.reason}</span>
-                    ) : null}
-                    {breakItem.pendingEdit ? (
-                      <span className="ml-2 text-blue-600">
-                        · Pending approval: {formatBreakTime(breakItem.pendingEdit.requestedBreakStart)}
-                        {" – "}
-                        {breakItem.pendingEdit.requestedBreakEnd
-                          ? formatBreakTime(breakItem.pendingEdit.requestedBreakEnd)
-                          : "In progress"}
-                      </span>
-                    ) : null}
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAdding(false);
+                      setEditingId(isEditing ? null : breakItem.id);
+                    }}
+                    className="h-8 px-2.5 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-100 flex items-center gap-1 shrink-0"
+                  >
+                    {isEditing ? <X size={14} /> : <Pencil size={14} />}
+                    {isEditing ? "Close" : "Edit"}
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setEditingId(isEditing ? null : breakItem.id)}
-                  disabled={!!breakItem.pendingEdit}
-                  className="h-8 px-2.5 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-100 flex items-center gap-1 shrink-0 disabled:opacity-40"
-                >
-                  {isEditing ? <X size={14} /> : <Pencil size={14} />}
-                  {isEditing ? "Close" : "Edit"}
-                </button>
+                {isEditing ? (
+                  <BreakEditForm
+                    breakItem={breakItem}
+                    onCancel={() => setEditingId(null)}
+                    onSaved={() => setEditingId(null)}
+                  />
+                ) : null}
               </div>
-              {isEditing ? (
-                <BreakEditForm
-                  breakItem={breakItem}
-                  onCancel={() => setEditingId(null)}
-                  onSaved={() => setEditingId(null)}
-                />
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }

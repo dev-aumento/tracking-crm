@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { trpc } from "@/providers/trpc";
+import { formatWorkZoneTime } from "@/lib/timezone";
 import { Loader2, Send } from "lucide-react";
 
 function toDatetimeLocalValue(value: Date | string) {
@@ -9,7 +10,7 @@ function toDatetimeLocalValue(value: Date | string) {
 }
 
 function formatTime(value: Date | string) {
-  return new Date(value).toLocaleTimeString("en-US", {
+  return formatWorkZoneTime(value, {
     hour: "numeric",
     minute: "2-digit",
   });

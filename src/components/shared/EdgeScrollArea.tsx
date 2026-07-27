@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, type ReactNode } from "react";
+import { cn } from "@/lib/utils";
 
 const EDGE_ZONE_PX = 80;
 const MAX_SPEED = 16;
@@ -6,9 +7,15 @@ const MAX_SPEED = 16;
 interface EdgeScrollAreaProps {
   children: ReactNode;
   className?: string;
+  /** Show a visible horizontal scrollbar at the bottom. */
+  showScrollbar?: boolean;
 }
 
-export function EdgeScrollArea({ children, className = "" }: EdgeScrollAreaProps) {
+export function EdgeScrollArea({
+  children,
+  className = "",
+  showScrollbar = false,
+}: EdgeScrollAreaProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const directionRef = useRef(0);
 
@@ -56,6 +63,13 @@ export function EdgeScrollArea({ children, className = "" }: EdgeScrollAreaProps
     directionRef.current = 0;
   }, []);
 
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      updateDirection(e.clientX);
+    },
+    [updateDirection],
+  );
+
   const handleMouseLeave = useCallback(() => {
     directionRef.current = 0;
   }, []);
@@ -75,7 +89,12 @@ export function EdgeScrollArea({ children, className = "" }: EdgeScrollAreaProps
   return (
     <div
       ref={scrollRef}
-      className={`funnel-h-scroll w-full ${className}`}
+      className={cn(
+        "w-full",
+        showScrollbar ? "funnel-h-scroll-bar" : "funnel-h-scroll",
+        className,
+      )}
+      onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}

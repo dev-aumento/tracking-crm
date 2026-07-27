@@ -13,6 +13,7 @@ export const PERMISSION_GROUPS = [
       { key: "tasks.create", label: "Create tasks" },
       { key: "tasks.edit_own", label: "Edit own tasks" },
       { key: "tasks.edit_all", label: "Edit all tasks" },
+      { key: "tasks.change_assignee", label: "Change task assignee" },
       { key: "tasks.delete", label: "Delete tasks" },
     ],
   },
@@ -26,7 +27,7 @@ export const PERMISSION_GROUPS = [
   },
   {
     id: "time",
-    label: "Time tracking",
+    label: "Time Tracking",
     permissions: [
       { key: "time.edit_own", label: "Clock in/out & own time" },
       { key: "time.view_team", label: "View team time entries" },
@@ -37,6 +38,16 @@ export const PERMISSION_GROUPS = [
     id: "analytics",
     label: "Analytics",
     permissions: [{ key: "analytics.view", label: "View analytics" }],
+  },
+  {
+    id: "profile",
+    label: "Profile",
+    permissions: [
+      {
+        key: "profile.head_of_department",
+        label: "Set head of department",
+      },
+    ],
   },
   {
     id: "admin",
@@ -61,7 +72,7 @@ export const ROUTE_PERMISSIONS: Record<string, AppPermissionKey | AppPermissionK
   "/projects": ["projects.view", "projects.manage"],
   "/time-tracking": ["time.edit_own", "time.view_team", "time.edit_all"],
   "/analytics": "analytics.view",
-  "/admin/employees": "employees.manage",
+  "/admin/employees": ["employees.manage", "permissions.manage"],
   "/admin/permissions": "permissions.manage",
   "/admin/tasks": "tasks.view_all",
 };

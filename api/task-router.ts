@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { createRouter, authedQuery } from "./middleware";
 import { isAuthDisabled } from "./lib/dev-mode";
 import * as mock from "./lib/mock-store";
@@ -11,11 +12,17 @@ import {
   countDocs,
   hasMongoConfigured,
 } from "./queries/connection";
+import {
+  deleteAttachmentFromGridFs,
+  downloadAttachmentFromGridFs,
+  uploadAttachmentToGridFs,
+} from "./queries/attachment-storage";
 import { omitPasswordHash } from "./queries/users";
 import { notifyLeads } from "./lib/notify-leads";
 import { notifyTaskMembers } from "./lib/notify-task-members";
-import { assertPermission, hasPermission } from "./lib/permissions";
+import { assertPermission, assertCanChangeTaskAssignee, hasPermission } from "./lib/permissions";
 import { isProjectMember, canViewProjectTasks } from "./queries/project-members";
+import { defaultTaskDeadlineIso } from "@/lib/task-deadline";
 import { Collections } from "@db/mongo/collections";
 import type {
   UserDoc,
@@ -29,11 +36,19 @@ import type {
   NotificationDoc,
   SafeUser,
 } from "@db/mongo/types";
-import { PROJECT_PIPELINE_STAGE_KEYS } from "@/lib/task-kanban";
+import { PIPELINE_STAGE_KEY_REGEX, resolveProjectPipelineStages, legacyStatusToStage, isMarkingTaskComplete } from "@/lib/task-kanban";
+import { extractMentionedUserIds, formatCommentPreview } from "@/lib/task-comment-mentions";
+import { extractMentionedUserIdsFromComment, richCommentPlainText } from "@/lib/rich-comment";
+import { readCommentReactions, toggleUserReaction } from "@/lib/comment-reactions";
+import { pauseOtherRunningTaskTimers } from "./lib/task-timers";
+import { belongsToUserOrg, orgFilter, requireOrganizationId } from "./lib/tenant";
 
-const projectStageSchema = z.enum(
-  PROJECT_PIPELINE_STAGE_KEYS as [string, ...string[]],
-);
+/** Comment reactions are stored on activity.metadata.reactions */
+const projectStageSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(PIPELINE_STAGE_KEY_REGEX, "Invalid pipeline stage key");
 
 function useTaskMock() {
   return isAuthDisabled() || !hasMongoConfigured();
@@ -43,21 +58,39 @@ function actorLabel(user: SafeUser) {
   return user.name || user.email || "Someone";
 }
 
-function canManageTaskTime(user: SafeUser, task: TaskDoc): boolean {
-  return (
+async function isTaskParticipant(taskId: number, userId: number): Promise<boolean> {
+  const participantCol = await getCollection<TaskParticipantDoc>(Collections.taskParticipants);
+  const row = await participantCol.findOne({
+    taskId,
+    userId,
+    role: "participant",
+  });
+  return !!row;
+}
+
+async function canManageTaskTime(user: SafeUser, task: TaskDoc): Promise<boolean> {
+  if (
     user.role === "admin"
     || user.role === "manager"
     || task.createdBy === user.id
     || task.assigneeId === user.id
-  );
-}
-
-function canEditTaskTimeEntry(user: SafeUser, task: TaskDoc, entry: TimeEntryDoc): boolean {
-  return canManageTaskTime(user, task) || entry.userId === user.id;
+  ) {
+    return true;
+  }
+  return isTaskParticipant(task.id, user.id);
 }
 
 function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function canEditTaskTimeEntry(
+  user: SafeUser,
+  task: TaskDoc,
+  entry: TimeEntryDoc,
+): Promise<boolean> {
+  if (entry.userId === user.id) return true;
+  return canManageTaskTime(user, task);
 }
 
 async function findUsersByIds(ids: number[]): Promise<Map<number, SafeUser>> {
@@ -68,9 +101,14 @@ async function findUsersByIds(ids: number[]): Promise<Map<number, SafeUser>> {
 }
 
 function attachmentMeta(doc: TaskAttachmentDoc) {
-  const { dataBase64: _, ...meta } = doc;
+  const { dataBase64: _data, gridFsId: _grid, ...meta } = doc;
   return meta;
 }
+
+/** Files section / task.attachments: exclude comment-only media. */
+const LISTED_IN_FILES_FILTER = {
+  $or: [{ listedInFiles: { $exists: false } }, { listedInFiles: true }],
+};
 
 export const taskRouter = createRouter({
   list: authedQuery
@@ -93,7 +131,7 @@ export const taskRouter = createRouter({
 
       if (projectId != null) {
         const project = await findById<ProjectDoc>(Collections.projects, projectId);
-        if (!project) {
+        if (!project || !belongsToUserOrg(ctx.user, project.organizationId)) {
           return { tasks: [], total: 0 };
         }
 
@@ -105,7 +143,7 @@ export const taskRouter = createRouter({
 
       const skip = (page - 1) * limit;
 
-      const filter: Record<string, unknown> = {};
+      const filter: Record<string, unknown> = { ...orgFilter(ctx.user) };
       if (status) filter.status = status;
       if (priority) filter.priority = priority;
       if (assigneeId) filter.assigneeId = assigneeId;
@@ -170,23 +208,37 @@ export const taskRouter = createRouter({
 
   getById: authedQuery
     .input(z.object({ id: z.number() }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       if (useTaskMock()) return mock.mockTaskById(input.id);
 
       await ensureSchema();
       const task = await findById<TaskDoc>(Collections.tasks, input.id);
-      if (!task) return null;
+      if (!task || !belongsToUserOrg(ctx.user, task.organizationId)) return null;
 
       const subtaskCol = await getCollection<SubtaskDoc>(Collections.subtasks);
       const participantCol = await getCollection<TaskParticipantDoc>(Collections.taskParticipants);
       const activityCol = await getCollection<TaskActivityDoc>(Collections.taskActivity);
       const attachmentCol = await getCollection<TaskAttachmentDoc>(Collections.taskAttachments);
 
+      const ATTACHMENT_META_PROJECTION = {
+        dataBase64: 0,
+        gridFsId: 0,
+      } as const;
+      const ACTIVITY_LIMIT = 80;
+
       const [subtasksList, participants, activities, attachmentsList] = await Promise.all([
         subtaskCol.find({ taskId: task.id }).sort({ position: 1 }).toArray(),
         participantCol.find({ taskId: task.id }).toArray(),
-        activityCol.find({ taskId: task.id }).sort({ createdAt: -1 }).toArray(),
-        attachmentCol.find({ taskId: task.id }).sort({ createdAt: -1 }).toArray(),
+        activityCol
+          .find({ taskId: task.id })
+          .sort({ createdAt: -1 })
+          .limit(ACTIVITY_LIMIT)
+          .toArray(),
+        attachmentCol
+          .find({ taskId: task.id, ...LISTED_IN_FILES_FILTER })
+          .project(ATTACHMENT_META_PROJECTION)
+          .sort({ createdAt: -1 })
+          .toArray(),
       ]);
 
       const userIds = new Set<number>();
@@ -218,7 +270,14 @@ export const taskRouter = createRouter({
         ...task,
         assignee: task.assigneeId ? userMap.get(task.assigneeId) ?? null : null,
         creator: task.createdBy ? userMap.get(task.createdBy) ?? null : null,
-        project,
+        project: project
+          ? {
+              ...project,
+              customPipelineStages: project.customPipelineStages ?? [],
+              pipelineStageLabelOverrides: project.pipelineStageLabelOverrides ?? {},
+            }
+          : null,
+        pipelineStages: resolveProjectPipelineStages(project),
         subtasks: subtasksList,
         attachments: attachmentsList.map(attachmentMeta),
         participants: participantUsers,
@@ -246,22 +305,27 @@ export const taskRouter = createRouter({
       const userMap = await findUsersByIds(userIds);
 
       const totalSeconds = entries.reduce((sum, e) => {
-        if (e.clockIn && e.clockOut) {
-          return sum + Math.max(0, Math.floor((e.clockOut.getTime() - e.clockIn.getTime()) / 1000));
+        // Only completed sessions count toward the task total.
+        if (!e.clockIn || !e.clockOut) return sum;
+        if (typeof e.durationSeconds === "number" && e.durationSeconds >= 0) {
+          return sum + e.durationSeconds;
         }
-        return sum + (e.duration ?? 0) * 60;
+        return sum + Math.max(0, Math.floor((e.clockOut.getTime() - e.clockIn.getTime()) / 1000));
       }, 0);
 
       return {
         totalMinutes: Math.round(totalSeconds / 60),
         totalSeconds,
-        entries: entries.map((e) => ({
-          ...e,
-          user: userMap.get(e.userId) ?? null,
-          durationSeconds: e.clockIn && e.clockOut
-            ? Math.max(0, Math.floor((e.clockOut.getTime() - e.clockIn.getTime()) / 1000))
-            : (e.duration ?? 0) * 60,
-        })),
+        entries: entries
+          .filter((e) => e.clockIn && e.clockOut)
+          .map((e) => ({
+            ...e,
+            user: userMap.get(e.userId) ?? null,
+            durationSeconds:
+              typeof e.durationSeconds === "number" && e.durationSeconds >= 0
+                ? e.durationSeconds
+                : Math.max(0, Math.floor((e.clockOut!.getTime() - e.clockIn!.getTime()) / 1000)),
+          })),
       };
     }),
 
@@ -271,9 +335,11 @@ export const taskRouter = createRouter({
       description: z.string().optional(),
       priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
       assigneeId: z.number().optional(),
+      /** Initial task owner. Defaults to the creating user. */
+      createdBy: z.number().optional(),
       projectId: z.number().nullable().optional(),
       dueDate: z.string().optional(),
-      estimatedHours: z.number().optional(),
+      estimatedHours: z.number().nullable().optional(),
       tags: z.array(z.string()).optional(),
       stage: projectStageSchema.optional(),
     }))
@@ -285,8 +351,17 @@ export const taskRouter = createRouter({
       }
 
       await ensureSchema();
-      const { tags, ...taskData } = input;
+      const { tags, createdBy: ownerId, ...taskData } = input;
       const now = new Date();
+      const createdBy = ownerId != null ? Number(ownerId) : ctx.user.id;
+      const organizationId = requireOrganizationId(ctx.user);
+
+      if (taskData.projectId != null) {
+        const project = await findById<ProjectDoc>(Collections.projects, taskData.projectId);
+        if (!project || !belongsToUserOrg(ctx.user, project.organizationId)) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+        }
+      }
 
       const newTask = await insertDoc<TaskDoc>(Collections.tasks, {
         title: taskData.title,
@@ -296,8 +371,11 @@ export const taskRouter = createRouter({
         priority: taskData.priority ?? "medium",
         assigneeId: taskData.assigneeId ?? null,
         projectId: taskData.projectId ?? null,
-        createdBy: ctx.user.id,
-        dueDate: taskData.dueDate ? new Date(taskData.dueDate) : null,
+        organizationId,
+        createdBy,
+        dueDate: taskData.dueDate
+          ? new Date(taskData.dueDate)
+          : new Date(defaultTaskDeadlineIso()),
         estimatedHours: taskData.estimatedHours != null ? String(taskData.estimatedHours) : null,
         actualHours: null,
         position: 0,
@@ -341,6 +419,7 @@ export const taskRouter = createRouter({
   update: authedQuery
     .input(z.object({
       id: z.number(),
+      title: z.string().trim().min(1).optional(),
       description: z.string().optional(),
       status: z.enum(["todo", "in_progress", "review", "done"]).optional(),
       stage: projectStageSchema.optional(),
@@ -349,13 +428,39 @@ export const taskRouter = createRouter({
       createdBy: z.number().nullable().optional(),
       projectId: z.number().nullable().optional(),
       dueDate: z.string().nullable().optional(),
-      estimatedHours: z.number().optional(),
+      estimatedHours: z.number().nullable().optional(),
       actualHours: z.number().optional(),
       position: z.number().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       if (useTaskMock()) {
         const { id, ...data } = input;
+        const existing = mock.mockTaskById(id);
+        if (!existing) throw new Error("Task not found");
+        if (data.assigneeId !== undefined) {
+          assertCanChangeTaskAssignee(
+            ctx.user,
+            existing.assigneeId,
+            data.assigneeId,
+          );
+        }
+        if (data.createdBy !== undefined) {
+          const nextOwnerId = data.createdBy == null ? null : Number(data.createdBy);
+          const ownerChanged =
+            nextOwnerId !== (existing.createdBy == null ? null : Number(existing.createdBy));
+          if (ownerChanged) {
+            const canChangeOwner =
+              ctx.user.role === "admin" ||
+              ctx.user.role === "manager" ||
+              hasPermission(ctx.user, "tasks.edit_all");
+            if (!canChangeOwner) {
+              throw new TRPCError({
+                code: "FORBIDDEN",
+                message: "You do not have permission to change the task owner",
+              });
+            }
+          }
+        }
         const updated = mock.mockUpdateTask(id, data, ctx.user);
         if (!updated) throw new Error("Task not found");
         return updated;
@@ -367,9 +472,21 @@ export const taskRouter = createRouter({
       const oldTask = await findById<TaskDoc>(Collections.tasks, id);
       if (!oldTask) throw new Error("Task not found");
 
+      if (data.assigneeId !== undefined) {
+        assertCanChangeTaskAssignee(ctx.user, oldTask.assigneeId, data.assigneeId);
+      }
+
       const patch: Partial<TaskDoc> = { updatedAt: new Date() };
+      if (data.title !== undefined) patch.title = data.title;
       if (data.description !== undefined) patch.description = data.description;
-      if (data.status !== undefined) patch.status = data.status;
+      if (data.status !== undefined) {
+        patch.status = data.status;
+        // Keep pipeline stage aligned with status when stage isn't sent separately
+        // (bulk / list status changes), so Task Detail doesn't keep an old stage label.
+        if (data.stage === undefined) {
+          patch.stage = legacyStatusToStage(data.status);
+        }
+      }
       if (data.priority !== undefined) patch.priority = data.priority;
       if (data.assigneeId !== undefined) patch.assigneeId = data.assigneeId;
       if (data.projectId !== undefined) patch.projectId = data.projectId;
@@ -378,16 +495,27 @@ export const taskRouter = createRouter({
         patch.dueDate = data.dueDate ? new Date(data.dueDate) : null;
       }
       if (data.estimatedHours !== undefined) {
-        patch.estimatedHours = String(data.estimatedHours);
+        patch.estimatedHours = data.estimatedHours != null ? String(data.estimatedHours) : null;
       }
       if (data.actualHours !== undefined) {
         patch.actualHours = String(data.actualHours);
       }
-      if (
-        data.createdBy !== undefined &&
-        (ctx.user.role === "admin" || ctx.user.role === "manager")
-      ) {
-        patch.createdBy = data.createdBy;
+      if (data.createdBy !== undefined) {
+        const nextOwnerId = data.createdBy == null ? null : Number(data.createdBy);
+        const ownerChanged = nextOwnerId !== (oldTask.createdBy == null ? null : Number(oldTask.createdBy));
+        if (ownerChanged) {
+          const canChangeOwner =
+            ctx.user.role === "admin" ||
+            ctx.user.role === "manager" ||
+            hasPermission(ctx.user, "tasks.edit_all");
+          if (!canChangeOwner) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "You do not have permission to change the task owner",
+            });
+          }
+          patch.createdBy = nextOwnerId;
+        }
       }
 
       if (data.stage) {
@@ -399,12 +527,39 @@ export const taskRouter = createRouter({
         }
       }
 
+      // Completing a task (Done / Finished) always clears the assignee.
+      const clearingAssigneeOnComplete =
+        isMarkingTaskComplete(data) && oldTask.assigneeId != null;
+      if (isMarkingTaskComplete(data)) {
+        patch.assigneeId = null;
+      }
+
       const updated = await updateById<TaskDoc>(Collections.tasks, id, patch);
       if (!updated) throw new Error("Task not found");
 
       const now = new Date();
       const label = actorLabel(ctx.user);
-      const taskTitle = oldTask.title;
+      const taskTitle = patch.title ?? oldTask.title;
+
+      if (data.title !== undefined && data.title !== oldTask.title) {
+        await insertDoc<TaskActivityDoc>(Collections.taskActivity, {
+          taskId: id,
+          userId: ctx.user.id,
+          action: "title_changed",
+          oldValue: oldTask.title,
+          newValue: data.title,
+          metadata: null,
+          createdAt: now,
+        });
+
+        await notifyTaskMembers({
+          taskId: id,
+          actor: ctx.user,
+          type: "task_updated",
+          title: "Task renamed",
+          message: `${label} renamed "${oldTask.title}" to "${data.title}"`,
+        });
+      }
 
       if (data.status && data.status !== oldTask.status) {
         await insertDoc<TaskActivityDoc>(Collections.taskActivity, {
@@ -444,27 +599,87 @@ export const taskRouter = createRouter({
         });
       }
 
-      if (data.assigneeId !== undefined && data.assigneeId !== oldTask.assigneeId) {
+      if (data.priority !== undefined && data.priority !== oldTask.priority) {
+        const formatPriority = (value: string) =>
+          value.charAt(0).toUpperCase() + value.slice(1);
+        const priorityTitle =
+          data.priority === "urgent" ? "Task marked urgent" : "Task priority changed";
+        const priorityMessage =
+          data.priority === "urgent"
+            ? `${label} marked "${taskTitle}" as urgent`
+            : `${label} changed priority on "${taskTitle}" from ${formatPriority(oldTask.priority)} to ${formatPriority(data.priority)}`;
+
+        await insertDoc<TaskActivityDoc>(Collections.taskActivity, {
+          taskId: id,
+          userId: ctx.user.id,
+          action: "priority_changed",
+          oldValue: oldTask.priority,
+          newValue: data.priority,
+          metadata: null,
+          createdAt: now,
+        });
+        await notifyTaskMembers({
+          taskId: id,
+          actor: ctx.user,
+          type: "task_updated",
+          title: priorityTitle,
+          message: priorityMessage,
+        });
+        await notifyLeads({
+          actor: ctx.user,
+          type: "task_updated",
+          title: priorityTitle,
+          message: priorityMessage,
+          taskId: id,
+          excludeUserIds: oldTask.assigneeId ? [oldTask.assigneeId] : [],
+        });
+      }
+
+      if (
+        (data.assigneeId !== undefined && data.assigneeId !== oldTask.assigneeId) ||
+        clearingAssigneeOnComplete
+      ) {
+        const nextAssigneeId = clearingAssigneeOnComplete
+          ? null
+          : data.assigneeId !== undefined
+            ? data.assigneeId
+            : oldTask.assigneeId;
+        const [oldAssignee, newAssignee] = await Promise.all([
+          oldTask.assigneeId != null
+            ? findById<UserDoc>(Collections.users, oldTask.assigneeId)
+            : Promise.resolve(null),
+          nextAssigneeId != null
+            ? findById<UserDoc>(Collections.users, nextAssigneeId)
+            : Promise.resolve(null),
+        ]);
+        const oldAssigneeLabel =
+          oldAssignee?.name?.trim() || oldAssignee?.email || (oldTask.assigneeId != null ? `User #${oldTask.assigneeId}` : null);
+        const newAssigneeLabel =
+          newAssignee?.name?.trim() || newAssignee?.email || (nextAssigneeId != null ? `User #${nextAssigneeId}` : null);
+
         await insertDoc<TaskActivityDoc>(Collections.taskActivity, {
           taskId: id,
           userId: ctx.user.id,
           action: "assigned",
-          oldValue: oldTask.assigneeId != null ? String(oldTask.assigneeId) : null,
-          newValue: data.assigneeId != null ? String(data.assigneeId) : null,
-          metadata: null,
+          oldValue: oldAssigneeLabel,
+          newValue: newAssigneeLabel,
+          metadata: {
+            oldAssigneeId: oldTask.assigneeId ?? null,
+            newAssigneeId: nextAssigneeId ?? null,
+            ...(clearingAssigneeOnComplete ? { reason: "task_completed" } : {}),
+          },
           createdAt: now,
         });
 
-        if (data.assigneeId) {
-          const assignee = await findById<UserDoc>(Collections.users, data.assigneeId);
+        if (nextAssigneeId) {
           await notifyTaskMembers({
             taskId: id,
             actor: ctx.user,
             type: "task_assigned",
             title: "Task reassigned",
-            message: `${label} assigned "${taskTitle}" to ${assignee?.name ?? assignee?.email ?? "someone"}`,
+            message: `${label} assigned "${taskTitle}" to ${newAssigneeLabel ?? "someone"}`,
           });
-        } else {
+        } else if (!clearingAssigneeOnComplete) {
           await notifyTaskMembers({
             taskId: id,
             actor: ctx.user,
@@ -473,11 +688,85 @@ export const taskRouter = createRouter({
             message: `${label} removed the assignee from "${taskTitle}"`,
           });
         }
+
+        if (oldTask.assigneeId != null && oldTask.assigneeId !== nextAssigneeId) {
+          if (!clearingAssigneeOnComplete) {
+            await notifyTaskMembers({
+              taskId: id,
+              actor: ctx.user,
+              type: "task_updated",
+              title: "Task reassigned",
+              message: `${label} reassigned "${taskTitle}" to another team member`,
+              extraRecipientIds: [oldTask.assigneeId],
+              includeAssignee: false,
+            });
+          }
+        }
+
+        if (!clearingAssigneeOnComplete) {
+          await notifyLeads({
+            actor: ctx.user,
+            type: "task_updated",
+            title: "Task assignee changed",
+            message: `${label} updated assignee on "${taskTitle}"`,
+            taskId: id,
+            excludeUserIds: [
+              ...(nextAssigneeId ? [nextAssigneeId] : []),
+              ...(oldTask.assigneeId ? [oldTask.assigneeId] : []),
+            ],
+          });
+        }
+      }
+
+      if (
+        patch.createdBy !== undefined &&
+        Number(patch.createdBy) !== Number(oldTask.createdBy)
+      ) {
+        const [oldOwner, newOwner] = await Promise.all([
+          oldTask.createdBy != null
+            ? findById<UserDoc>(Collections.users, oldTask.createdBy)
+            : Promise.resolve(null),
+          patch.createdBy != null
+            ? findById<UserDoc>(Collections.users, patch.createdBy)
+            : Promise.resolve(null),
+        ]);
+        const oldOwnerLabel =
+          oldOwner?.name?.trim() ||
+          oldOwner?.email ||
+          (oldTask.createdBy != null ? `User #${oldTask.createdBy}` : null);
+        const newOwnerLabel =
+          newOwner?.name?.trim() ||
+          newOwner?.email ||
+          (patch.createdBy != null ? `User #${patch.createdBy}` : null);
+
+        await insertDoc<TaskActivityDoc>(Collections.taskActivity, {
+          taskId: id,
+          userId: ctx.user.id,
+          action: "owner_changed",
+          oldValue: oldOwnerLabel,
+          newValue: newOwnerLabel,
+          metadata: {
+            oldOwnerId: oldTask.createdBy ?? null,
+            newOwnerId: patch.createdBy ?? null,
+          },
+          createdAt: now,
+        });
+
+        await notifyTaskMembers({
+          taskId: id,
+          actor: ctx.user,
+          type: "task_updated",
+          title: "Task owner changed",
+          message: `${label} changed the owner of "${taskTitle}" to ${newOwnerLabel ?? "someone"}`,
+          extraRecipientIds: [
+            ...(patch.createdBy ? [patch.createdBy] : []),
+            ...(oldTask.createdBy ? [oldTask.createdBy] : []),
+          ],
+        });
       }
 
       const otherFieldsChanged =
         (data.description !== undefined && data.description !== oldTask.description)
-        || (data.priority !== undefined && data.priority !== oldTask.priority)
         || (data.dueDate !== undefined)
         || (data.projectId !== undefined && data.projectId !== oldTask.projectId);
 
@@ -486,6 +775,7 @@ export const taskRouter = createRouter({
         && !data.status
         && !data.stage
         && data.assigneeId === undefined
+        && data.title === undefined
       ) {
         await notifyTaskMembers({
           taskId: id,
@@ -530,10 +820,16 @@ export const taskRouter = createRouter({
       const oldTask = await findById<TaskDoc>(Collections.tasks, input.id);
       if (!oldTask) throw new Error("Task not found");
 
-      const updated = await updateById<TaskDoc>(Collections.tasks, input.id, {
+      const patch: Partial<TaskDoc> = {
         status: input.status,
+        stage: legacyStatusToStage(input.status),
         updatedAt: new Date(),
-      });
+      };
+      if (input.status === "done") {
+        patch.assigneeId = null;
+      }
+
+      const updated = await updateById<TaskDoc>(Collections.tasks, input.id, patch);
       if (!updated) throw new Error("Task not found");
 
       if (input.status !== oldTask.status) {
@@ -555,6 +851,27 @@ export const taskRouter = createRouter({
         });
       }
 
+      if (input.status === "done" && oldTask.assigneeId != null) {
+        const oldAssignee = await findById<UserDoc>(Collections.users, oldTask.assigneeId);
+        const oldAssigneeLabel =
+          oldAssignee?.name?.trim() ||
+          oldAssignee?.email ||
+          `User #${oldTask.assigneeId}`;
+        await insertDoc<TaskActivityDoc>(Collections.taskActivity, {
+          taskId: input.id,
+          userId: ctx.user.id,
+          action: "assigned",
+          oldValue: oldAssigneeLabel,
+          newValue: null,
+          metadata: {
+            oldAssigneeId: oldTask.assigneeId,
+            newAssigneeId: null,
+            reason: "task_completed",
+          },
+          createdAt: new Date(),
+        });
+      }
+
       return updated;
     }),
 
@@ -564,6 +881,10 @@ export const taskRouter = createRouter({
       if (useTaskMock()) return mock.mockAddParticipant(input.taskId, input.userId, ctx.user);
 
       await ensureSchema();
+      const participantUser = await findById<UserDoc>(Collections.users, input.userId);
+      const participantLabel =
+        participantUser?.name?.trim() || participantUser?.email || `User #${input.userId}`;
+
       const participantCol = await getCollection<TaskParticipantDoc>(Collections.taskParticipants);
       const existing = await participantCol.findOne({
         taskId: input.taskId,
@@ -584,20 +905,20 @@ export const taskRouter = createRouter({
         userId: ctx.user.id,
         action: "participant_added",
         oldValue: null,
-        newValue: String(input.userId),
-        metadata: null,
+        newValue: participantLabel,
+        metadata: { participantId: input.userId },
         createdAt: new Date(),
       });
 
       const task = await findById<TaskDoc>(Collections.tasks, input.taskId);
-      const addedUser = await findById<UserDoc>(Collections.users, input.userId);
       await notifyTaskMembers({
         taskId: input.taskId,
         actor: ctx.user,
         type: "task_updated",
         title: "Added as participant",
-        message: `${actorLabel(ctx.user)} added ${addedUser?.name ?? addedUser?.email ?? "someone"} as a participant on "${task?.title ?? "a task"}"`,
+        message: `${actorLabel(ctx.user)} added you as a participant on "${task?.title ?? "a task"}"`,
         extraRecipientIds: [input.userId],
+        includeAssignee: false,
       });
 
       return { success: true };
@@ -635,6 +956,10 @@ export const taskRouter = createRouter({
         role: "observer",
       });
       if (!existing) {
+        const observerUser = await findById<UserDoc>(Collections.users, input.userId);
+        const observerLabel =
+          observerUser?.name?.trim() || observerUser?.email || `User #${input.userId}`;
+
         await insertDoc<TaskParticipantDoc>(Collections.taskParticipants, {
           taskId: input.taskId,
           userId: input.userId,
@@ -647,19 +972,19 @@ export const taskRouter = createRouter({
           userId: ctx.user.id,
           action: "observer_added",
           oldValue: null,
-          newValue: String(input.userId),
-          metadata: null,
+          newValue: observerLabel,
+          metadata: { observerId: input.userId },
           createdAt: new Date(),
         });
 
-        const addedUser = await findById<UserDoc>(Collections.users, input.userId);
         await notifyTaskMembers({
           taskId: input.taskId,
           actor: ctx.user,
           type: "task_updated",
           title: "Added as observer",
-          message: `${actorLabel(ctx.user)} added ${addedUser?.name ?? addedUser?.email ?? "someone"} as an observer on "${task.title}"`,
+          message: `${actorLabel(ctx.user)} added you as an observer on "${task.title}"`,
           extraRecipientIds: [input.userId],
+          includeAssignee: false,
         });
       }
 
@@ -703,18 +1028,80 @@ export const taskRouter = createRouter({
         : null;
     }),
 
+  getMyActiveTimer: authedQuery.query(async ({ ctx }) => {
+    if (useTaskMock()) return mock.mockGetMyActiveTaskTimer(ctx.user.id);
+
+    await ensureSchema();
+    const timeCol = await getCollection<TimeEntryDoc>(Collections.timeEntries);
+    // Only running *task* timers — ignore attendance clock-ins (taskId: null).
+    const entry = await timeCol
+      .find({
+        userId: ctx.user.id,
+        taskId: { $ne: null, $type: "number" },
+        clockOut: null,
+      })
+      .sort({ clockIn: -1 })
+      .limit(1)
+      .next();
+
+    if (!entry || entry.taskId == null) return null;
+
+    const task = await findById<TaskDoc>(Collections.tasks, entry.taskId);
+    // Orphaned open entries (deleted task) should not block starting a new timer.
+    if (!task) return null;
+
+    return {
+      taskId: entry.taskId,
+      taskTitle: task.title,
+      startedAt: entry.clockIn,
+      paused: false,
+      accumulatedSeconds: 0,
+    };
+  }),
+
   startTimer: authedQuery
     .input(z.object({ taskId: z.number() }))
     .mutation(async ({ ctx, input }) => {
       if (useTaskMock()) return mock.mockStartTaskTimer(ctx.user.id, input.taskId, ctx.user);
 
       await ensureSchema();
-      const now = new Date();
       const task = await findById<TaskDoc>(Collections.tasks, input.taskId);
+      if (!task) throw new Error("Task not found");
+      if (!(await canManageTaskTime(ctx.user, task))) {
+        throw new Error("Only the assignee or participants can start the timer on this task");
+      }
+
+      await pauseOtherRunningTaskTimers(ctx.user, input.taskId);
+
+      const now = new Date();
+      const timeCol = await getCollection<TimeEntryDoc>(Collections.timeEntries);
+      // Close any leftover open session so each Start begins a fresh 00:00:00 run.
+      const openEntries = await timeCol
+        .find({
+          userId: ctx.user.id,
+          taskId: input.taskId,
+          clockOut: null,
+        })
+        .toArray();
+      for (const open of openEntries) {
+        const durationSeconds = Math.max(
+          0,
+          Math.floor((now.getTime() - open.clockIn.getTime()) / 1000),
+        );
+        await updateById<TimeEntryDoc>(Collections.timeEntries, open.id, {
+          clockOut: now,
+          duration: Math.floor(durationSeconds / 60),
+          durationSeconds,
+          note: open.note?.includes("paused") ? open.note : "Task timer (auto-closed)",
+          updatedAt: now,
+        });
+      }
+
       await insertDoc<TimeEntryDoc>(Collections.timeEntries, {
         userId: ctx.user.id,
+        organizationId: requireOrganizationId(ctx.user),
         taskId: input.taskId,
-        projectId: null,
+        projectId: task.projectId ?? null,
         clockIn: now,
         clockOut: null,
         duration: null,
@@ -725,12 +1112,23 @@ export const taskRouter = createRouter({
         updatedAt: now,
       });
 
+      // Add an activity entry so the task activity feed shows who started time tracking.
+      await insertDoc<TaskActivityDoc>(Collections.taskActivity, {
+        taskId: input.taskId,
+        userId: ctx.user.id,
+        action: "time_logged",
+        oldValue: null,
+        newValue: "started timer",
+        metadata: null,
+        createdAt: now,
+      });
+
       await notifyTaskMembers({
         taskId: input.taskId,
         actor: ctx.user,
         type: "task_updated",
         title: "Timer started",
-        message: `${actorLabel(ctx.user)} started the timer on "${task?.title ?? "a task"}"`,
+        message: `${actorLabel(ctx.user)} started the timer on "${task.title}"`,
       });
 
       return { taskId: input.taskId, startedAt: now };
@@ -742,6 +1140,12 @@ export const taskRouter = createRouter({
       if (useTaskMock()) return mock.mockPauseTaskTimer(ctx.user.id, input.taskId, ctx.user);
 
       await ensureSchema();
+      const task = await findById<TaskDoc>(Collections.tasks, input.taskId);
+      if (!task) throw new Error("Task not found");
+      if (!(await canManageTaskTime(ctx.user, task))) {
+        throw new Error("Only the assignee or participants can pause the timer on this task");
+      }
+
       const now = new Date();
       const timeCol = await getCollection<TimeEntryDoc>(Collections.timeEntries);
       const entry = await timeCol
@@ -756,10 +1160,15 @@ export const taskRouter = createRouter({
 
       if (!entry) throw new Error("No running timer for this task");
 
-      const duration = Math.floor((now.getTime() - entry.clockIn.getTime()) / 60000);
+      const durationSeconds = Math.max(
+        0,
+        Math.floor((now.getTime() - entry.clockIn.getTime()) / 1000),
+      );
+      const duration = Math.floor(durationSeconds / 60);
       await updateById<TimeEntryDoc>(Collections.timeEntries, entry.id, {
         clockOut: now,
         duration,
+        durationSeconds,
         note: "Task timer (paused)",
         updatedAt: now,
       });
@@ -769,21 +1178,20 @@ export const taskRouter = createRouter({
         userId: ctx.user.id,
         action: "time_logged",
         oldValue: null,
-        newValue: "paused timer",
+        newValue: duration > 0 ? `paused timer ${duration} minutes` : "paused timer",
         metadata: null,
         createdAt: now,
       });
 
-      const task = await findById<TaskDoc>(Collections.tasks, input.taskId);
       await notifyTaskMembers({
         taskId: input.taskId,
         actor: ctx.user,
         type: "task_updated",
         title: "Timer paused",
-        message: `${actorLabel(ctx.user)} paused the timer on "${task?.title ?? "a task"}"`,
+        message: `${actorLabel(ctx.user)} paused the timer on "${task.title}"`,
       });
 
-      return { accumulatedSeconds: duration * 60 };
+      return { accumulatedSeconds: durationSeconds };
     }),
 
   stopTimer: authedQuery
@@ -792,6 +1200,12 @@ export const taskRouter = createRouter({
       if (useTaskMock()) return mock.mockStopTaskTimer(ctx.user.id, input.taskId, ctx.user);
 
       await ensureSchema();
+      const task = await findById<TaskDoc>(Collections.tasks, input.taskId);
+      if (!task) throw new Error("Task not found");
+      if (!(await canManageTaskTime(ctx.user, task))) {
+        throw new Error("Only the assignee or participants can stop the timer on this task");
+      }
+
       const now = new Date();
       const timeCol = await getCollection<TimeEntryDoc>(Collections.timeEntries);
       const entry = await timeCol
@@ -806,10 +1220,15 @@ export const taskRouter = createRouter({
 
       if (!entry) throw new Error("No active timer for this task");
 
-      const duration = Math.floor((now.getTime() - entry.clockIn.getTime()) / 60000);
+      const durationSeconds = Math.max(
+        0,
+        Math.floor((now.getTime() - entry.clockIn.getTime()) / 1000),
+      );
+      const duration = Math.floor(durationSeconds / 60);
       await updateById<TimeEntryDoc>(Collections.timeEntries, entry.id, {
         clockOut: now,
         duration,
+        durationSeconds,
         updatedAt: now,
       });
 
@@ -823,13 +1242,12 @@ export const taskRouter = createRouter({
         createdAt: now,
       });
 
-      const task = await findById<TaskDoc>(Collections.tasks, input.taskId);
       await notifyTaskMembers({
         taskId: input.taskId,
         actor: ctx.user,
         type: "task_updated",
         title: "Timer stopped",
-        message: `${actorLabel(ctx.user)} stopped the timer on "${task?.title ?? "a task"}" (${duration} min)`,
+        message: `${actorLabel(ctx.user)} stopped the timer on "${task.title}" (${duration} min)`,
       });
 
       return { durationMinutes: duration };
@@ -856,7 +1274,7 @@ export const taskRouter = createRouter({
       const entry = await timeCol.findOne({ id: input.entryId, taskId: input.taskId });
       if (!entry) throw new Error("Time entry not found");
       if (!entry.clockOut) throw new Error("Cannot edit an active timer session");
-      if (!canEditTaskTimeEntry(ctx.user, task, entry)) {
+      if (!(await canEditTaskTimeEntry(ctx.user, task, entry))) {
         throw new Error("Not allowed to edit this time entry");
       }
 
@@ -864,17 +1282,33 @@ export const taskRouter = createRouter({
       const clockOut = new Date(input.clockOut);
       if (clockOut <= clockIn) throw new Error("End time must be after start time");
 
+      const previousDurationSeconds =
+        typeof entry.durationSeconds === "number" && entry.durationSeconds >= 0
+          ? entry.durationSeconds
+          : (entry.duration ?? 0) * 60;
+      const durationSeconds = Math.max(
+        0,
+        Math.floor((clockOut.getTime() - clockIn.getTime()) / 1000),
+      );
       const duration = Math.floor((clockOut.getTime() - clockIn.getTime()) / 60000);
       const now = new Date();
       const noteSuffix = `(edited: ${input.reason.trim()})`;
       const note = entry.note ? `${entry.note} ${noteSuffix}` : noteSuffix;
+      const currentActualHours = parseFloat(task.actualHours ?? "0") || 0;
+      const adjustedActualHours =
+        currentActualHours + (durationSeconds - previousDurationSeconds) / 3600;
 
       const updated = await updateById<TimeEntryDoc>(Collections.timeEntries, input.entryId, {
         clockIn,
         clockOut,
         duration,
+        durationSeconds,
         note,
         source: entry.source === "manual" ? "manual" : entry.source,
+        updatedAt: now,
+      });
+      await updateById<TaskDoc>(Collections.tasks, input.taskId, {
+        actualHours: Math.max(0, adjustedActualHours).toFixed(2),
         updatedAt: now,
       });
 
@@ -918,10 +1352,11 @@ export const taskRouter = createRouter({
 
       const targetUserId = input.userId ?? ctx.user.id;
       const isManager = ctx.user.role === "admin" || ctx.user.role === "manager";
-      if (targetUserId !== ctx.user.id && !isManager && !canManageTaskTime(ctx.user, task)) {
+      const canManageTime = await canManageTaskTime(ctx.user, task);
+      if (targetUserId !== ctx.user.id && !isManager && !canManageTime) {
         throw new Error("Not allowed to add time for this user");
       }
-      if (!canManageTaskTime(ctx.user, task) && targetUserId !== ctx.user.id) {
+      if (!canManageTime && targetUserId !== ctx.user.id) {
         throw new Error("Not allowed to add time for this user");
       }
 
@@ -938,6 +1373,7 @@ export const taskRouter = createRouter({
 
       const entry = await insertDoc<TimeEntryDoc>(Collections.timeEntries, {
         userId: targetUserId,
+        organizationId: requireOrganizationId(ctx.user),
         taskId: input.taskId,
         projectId: task.projectId ?? null,
         clockIn,
@@ -972,15 +1408,17 @@ export const taskRouter = createRouter({
     }),
 
   addComment: authedQuery
-    .input(z.object({ taskId: z.number(), message: z.string().min(1).max(2000) }))
+    .input(z.object({ taskId: z.number(), message: z.string().min(1).max(50000) }))
     .mutation(async ({ ctx, input }) => {
       if (useTaskMock()) return mock.mockAddTaskComment(input.taskId, input.message, ctx.user);
 
       await ensureSchema();
-      const preview =
-        input.message.length > 120 ? `${input.message.slice(0, 120)}…` : input.message;
+      const task = await findById<TaskDoc>(Collections.tasks, input.taskId);
+      const previewSource = richCommentPlainText(input.message) || formatCommentPreview(input.message);
+      const preview = previewSource.length > 120 ? `${previewSource.slice(0, 120)}…` : previewSource;
+      const mentionedUserIds = extractMentionedUserIdsFromComment(input.message);
 
-      await insertDoc<TaskActivityDoc>(Collections.taskActivity, {
+      const activity = await insertDoc<TaskActivityDoc>(Collections.taskActivity, {
         taskId: input.taskId,
         userId: ctx.user.id,
         action: "commented",
@@ -990,15 +1428,160 @@ export const taskRouter = createRouter({
         createdAt: new Date(),
       });
 
-      await notifyTaskMembers({
-        taskId: input.taskId,
-        actor: ctx.user,
-        type: "mention",
-        title: "New comment on task",
-        message: `${actorLabel(ctx.user)}: ${preview}`,
-      });
+      if (mentionedUserIds.length > 0) {
+        await notifyTaskMembers({
+          taskId: input.taskId,
+          actor: ctx.user,
+          type: "mention",
+          title: "You were mentioned in a comment",
+          message: `${actorLabel(ctx.user)} mentioned you on "${task?.title ?? "a task"}": ${preview}`,
+          activityId: activity.id,
+          extraRecipientIds: mentionedUserIds,
+          includeAssignee: false,
+        });
+      } else {
+        await notifyTaskMembers({
+          taskId: input.taskId,
+          actor: ctx.user,
+          type: "mention",
+          title: "New comment on task",
+          message: `${actorLabel(ctx.user)}: ${preview}`,
+          activityId: activity.id,
+        });
+      }
 
       return { success: true };
+    }),
+
+  editComment: authedQuery
+    .input(z.object({
+      taskId: z.number(),
+      activityId: z.number(),
+      message: z.string().min(1).max(50000),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      if (useTaskMock()) {
+        return mock.mockEditTaskComment(
+          input.taskId,
+          input.activityId,
+          input.message,
+          ctx.user,
+        );
+      }
+
+      await ensureSchema();
+      const activityCol = await getCollection<TaskActivityDoc>(Collections.taskActivity);
+      const activity = await findById<TaskActivityDoc>(Collections.taskActivity, input.activityId);
+      if (!activity || activity.taskId !== input.taskId) throw new Error("Comment not found");
+      if (activity.action !== "commented") throw new Error("Only comments can be edited");
+      if (activity.userId !== ctx.user.id) throw new Error("You can only edit your own comments");
+      if (activity.metadata && typeof activity.metadata === "object" && "subtaskId" in activity.metadata) {
+        throw new Error("This message cannot be edited");
+      }
+
+      const editedAt = new Date();
+      await activityCol.updateOne(
+        { id: input.activityId },
+        {
+          $set: {
+            oldValue: activity.newValue,
+            newValue: input.message,
+            metadata: {
+              ...(activity.metadata && typeof activity.metadata === "object" ? activity.metadata : {}),
+              editedAt: editedAt.toISOString(),
+            },
+          },
+        },
+      );
+
+      return { success: true, editedAt };
+    }),
+
+  deleteComment: authedQuery
+    .input(z.object({
+      taskId: z.number(),
+      activityId: z.number(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      if (useTaskMock()) {
+        return mock.mockDeleteTaskComment(input.taskId, input.activityId, ctx.user);
+      }
+
+      await ensureSchema();
+      const activityCol = await getCollection<TaskActivityDoc>(Collections.taskActivity);
+      const activity = await findById<TaskActivityDoc>(Collections.taskActivity, input.activityId);
+      if (!activity || activity.taskId !== input.taskId) throw new Error("Comment not found");
+      if (activity.action !== "commented") throw new Error("Only comments can be deleted");
+      if (activity.userId !== ctx.user.id) throw new Error("You can only delete your own comments");
+      if (activity.metadata && typeof activity.metadata === "object" && "subtaskId" in activity.metadata) {
+        throw new Error("This message cannot be deleted");
+      }
+
+      await activityCol.deleteOne({ id: input.activityId });
+      return { success: true };
+    }),
+
+  toggleCommentReaction: authedQuery
+    .input(z.object({
+      taskId: z.number(),
+      activityId: z.number(),
+      emoji: z.string().trim().min(1).max(32),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      if (useTaskMock()) {
+        return mock.mockToggleCommentReaction(
+          input.taskId,
+          input.activityId,
+          input.emoji,
+          ctx.user,
+        );
+      }
+
+      await ensureSchema();
+      const activity = await findById<TaskActivityDoc>(Collections.taskActivity, input.activityId);
+      if (!activity || activity.taskId !== input.taskId) throw new Error("Comment not found");
+      if (activity.action !== "commented") throw new Error("Only comments can be reacted to");
+      if (activity.metadata && typeof activity.metadata === "object" && "subtaskId" in activity.metadata) {
+        throw new Error("This message cannot be reacted to");
+      }
+
+      const emoji = input.emoji.trim();
+      const baseMeta =
+        activity.metadata && typeof activity.metadata === "object"
+          ? { ...(activity.metadata as Record<string, unknown>) }
+          : {};
+      const previousReactions = readCommentReactions(baseMeta);
+      const reactions = toggleUserReaction(previousReactions, emoji, ctx.user.id);
+      const added =
+        Boolean(reactions[emoji]?.includes(ctx.user.id)) &&
+        !Boolean(previousReactions[emoji]?.includes(ctx.user.id));
+
+      const nextMetadata = {
+        ...baseMeta,
+        reactions,
+      };
+
+      const updated = await updateById<TaskActivityDoc>(
+        Collections.taskActivity,
+        input.activityId,
+        { metadata: nextMetadata },
+      );
+      if (!updated) throw new Error("Comment not found");
+
+      if (added) {
+        const task = await findById<TaskDoc>(Collections.tasks, input.taskId);
+        await notifyTaskMembers({
+          taskId: input.taskId,
+          actor: ctx.user,
+          type: "task_updated",
+          title: "New reaction on comment",
+          message: `${actorLabel(ctx.user)} reacted ${emoji} on a comment in "${task?.title ?? "a task"}"`,
+          activityId: activity.id,
+          includeAssignee: true,
+        });
+      }
+
+      return { success: true, reactions };
     }),
 
   listAttachments: authedQuery
@@ -1009,7 +1592,8 @@ export const taskRouter = createRouter({
       await ensureSchema();
       const attachmentCol = await getCollection<TaskAttachmentDoc>(Collections.taskAttachments);
       const attachments = await attachmentCol
-        .find({ taskId: input.taskId })
+        .find({ taskId: input.taskId, ...LISTED_IN_FILES_FILTER })
+        .project({ dataBase64: 0, gridFsId: 0 })
         .sort({ createdAt: -1 })
         .toArray();
       return attachments.map(attachmentMeta);
@@ -1021,7 +1605,21 @@ export const taskRouter = createRouter({
       if (useTaskMock()) return mock.mockGetTaskAttachment(input.id);
 
       await ensureSchema();
-      return findById<TaskAttachmentDoc>(Collections.taskAttachments, input.id);
+      const doc = await findById<TaskAttachmentDoc>(Collections.taskAttachments, input.id);
+      if (!doc) return null;
+
+      if (doc.gridFsId) {
+        const buffer = await downloadAttachmentFromGridFs(doc.gridFsId);
+        return {
+          ...attachmentMeta(doc),
+          dataBase64: buffer.toString("base64"),
+        };
+      }
+
+      return {
+        ...attachmentMeta(doc),
+        dataBase64: doc.dataBase64 ?? "",
+      };
     }),
 
   addAttachment: authedQuery
@@ -1030,7 +1628,9 @@ export const taskRouter = createRouter({
       fileName: z.string().min(1).max(500),
       mimeType: z.string().max(255).default("application/octet-stream"),
       fileSize: z.number().int().nonnegative(),
-      dataBase64: z.string().min(1).max(50_000_000),
+      dataBase64: z.string().min(1).max(70_000_000),
+      /** false = comment/chat/description media only (hidden from Files). */
+      listedInFiles: z.boolean().optional().default(true),
     }))
     .mutation(async ({ ctx, input }) => {
       if (useTaskMock()) {
@@ -1040,12 +1640,21 @@ export const taskRouter = createRouter({
 
       await ensureSchema();
       const now = new Date();
+
+      // Store binary in GridFS so many / large files never hit Mongo's 16MB BSON limit.
+      const stored = await uploadAttachmentToGridFs({
+        fileName: input.fileName,
+        mimeType: input.mimeType,
+        dataBase64: input.dataBase64,
+      });
+
       const attachment = await insertDoc<TaskAttachmentDoc>(Collections.taskAttachments, {
         taskId: input.taskId,
         fileName: input.fileName,
         mimeType: input.mimeType,
-        fileSize: input.fileSize,
-        dataBase64: input.dataBase64,
+        fileSize: input.fileSize || stored.byteLength,
+        gridFsId: stored.gridFsId,
+        listedInFiles: input.listedInFiles,
         uploadedBy: ctx.user.id,
         createdAt: now,
       });
@@ -1059,6 +1668,10 @@ export const taskRouter = createRouter({
 
       await ensureSchema();
       const attachmentCol = await getCollection<TaskAttachmentDoc>(Collections.taskAttachments);
+      const existing = await findById<TaskAttachmentDoc>(Collections.taskAttachments, input.id);
+      if (existing?.gridFsId) {
+        await deleteAttachmentFromGridFs(existing.gridFsId);
+      }
       await attachmentCol.deleteOne({ id: input.id });
       return { success: true };
     }),
@@ -1137,9 +1750,17 @@ export const taskRouter = createRouter({
 
       if (input.action === "status") {
         if (!input.status) throw new Error("Status is required");
+        const setFields: Record<string, unknown> = {
+          status: input.status,
+          stage: legacyStatusToStage(input.status),
+          updatedAt: now,
+        };
+        if (input.status === "done") {
+          setFields.assigneeId = null;
+        }
         await taskCol.updateMany(
           { id: { $in: input.taskIds } },
-          { $set: { status: input.status, updatedAt: now } },
+          { $set: setFields },
         );
         return { success: true, affected: input.taskIds.length };
       }

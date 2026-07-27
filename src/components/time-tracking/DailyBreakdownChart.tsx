@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import type { DailyHoursRow } from "@/lib/work-hours-policy";
 import { formatBreakdownAxisLabel, REQUIRED_DAILY_HOURS, type BreakdownPeriod } from "@/lib/work-hours-policy";
+import { formatWorkZoneDateKey } from "@/lib/timezone";
 
 const MONTH_BAR_WIDTH = 52;
 const CHART_HEIGHT = 248;
@@ -88,7 +89,7 @@ export function DailyBreakdownChart({ data, period }: DailyBreakdownChartProps) 
                 return [`${value}h`, label];
               }}
               labelFormatter={(label: string) =>
-                new Date(`${label}T12:00:00`).toLocaleDateString("en-US", {
+                formatWorkZoneDateKey(label, {
                   weekday: "short",
                   month: "short",
                   day: "numeric",
@@ -161,7 +162,7 @@ export function DailyBreakdownChart({ data, period }: DailyBreakdownChartProps) 
               return [`${value}h`, label];
             }}
             labelFormatter={(label: string) =>
-              new Date(`${label}T12:00:00`).toLocaleDateString("en-US", {
+              formatWorkZoneDateKey(label, {
                 weekday: "short",
                 month: "short",
                 day: "numeric",

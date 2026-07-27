@@ -2,8 +2,9 @@ import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { createContext } from "./context";
 import { getLatestNotificationId, listNotificationsSince } from "./lib/notifications-feed";
+import { isHrDepartmentUser, isTaskRelatedNotification } from "@/lib/leave-policy";
 
-const POLL_MS = 1_000;
+const POLL_MS = 5_000;
 
 export async function notificationStreamHandler(c: Context) {
   const ctx = await createContext({
@@ -16,6 +17,7 @@ export async function notificationStreamHandler(c: Context) {
   }
 
   const userId = ctx.user.id;
+  const hideTaskNotifications = isHrDepartmentUser(ctx.user);
 
   return streamSSE(c, async (stream) => {
     let lastId = await getLatestNotificationId(userId);
@@ -38,12 +40,19 @@ export async function notificationStreamHandler(c: Context) {
         const incoming = await listNotificationsSince(userId, lastId);
         if (incoming.length > 0) {
           lastId = Math.max(lastId, ...incoming.map((n) => n.id));
-          await stream.writeSSE({
-            data: JSON.stringify({
-              type: "notifications",
-              notifications: incoming,
-            }),
-          });
+          const notifications = hideTaskNotifications
+            ? incoming.filter((n) => !isTaskRelatedNotification(n))
+            : incoming;
+          if (notifications.length > 0) {
+            await stream.writeSSE({
+              data: JSON.stringify({
+                type: "notifications",
+                notifications,
+              }),
+            });
+          } else {
+            await stream.writeSSE({ data: JSON.stringify({ type: "ping" }) });
+          }
         } else {
           await stream.writeSSE({ data: JSON.stringify({ type: "ping" }) });
         }

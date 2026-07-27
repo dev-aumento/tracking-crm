@@ -35,7 +35,7 @@ export function TaskRoleFilterDropdown({
   const triggerCount = counts[value];
 
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"

@@ -1,7 +1,7 @@
 import { hasPermission } from "@/lib/permissions";
 
 type BulkUser = {
-  role: "admin" | "manager" | "employee";
+  role: "admin" | "manager" | "employee" | "hr" | "client";
   permissions?: string[];
 } | null | undefined;
 

@@ -7,6 +7,9 @@ import { DailyBreakdownChart } from "@/components/time-tracking/DailyBreakdownCh
 import { DayHoursSection } from "@/components/time-tracking/DayHoursSection";
 import { BreaksPanel } from "@/components/time-tracking/BreaksPanel";
 import { ManualClockInRequestForm } from "@/components/time-tracking/ManualClockInRequestForm";
+import { CrossDayClockOutDialog } from "@/components/time-tracking/CrossDayClockOutDialog";
+import { useClockOutAction } from "@/hooks/useClockOutAction";
+import { invalidateActiveTaskTimers } from "@/lib/invalidate-task-timers";
 import { TimeApprovalPanel } from "@/components/time-tracking/TimeApprovalPanel";
 import {
   fillBreakdownForPeriod,
@@ -16,6 +19,7 @@ import {
   periodBreakdownSubtitle,
   REQUIRED_DAILY_HOURS,
   REQUIRED_WEEKLY_HOURS,
+  WORKING_DAYS_PER_WEEK,
   formatPreciseWorkedClock,
   formatPreciseWorkedTime,
   formatHoursMinutesFloored,
@@ -26,6 +30,7 @@ import {
   splitRegularAndOvertime,
   workedSecondsFromStats,
 } from "@/lib/work-hours-policy";
+import { formatWorkZoneDateKey, formatWorkZoneTime } from "@/lib/timezone";
 import {
   Play, Square, Timer, Clock, TrendingUp,
   Loader2, Pause, AlertCircle,
@@ -86,6 +91,7 @@ export default function TimeTracking() {
   const [period, setPeriod] = useState<"week" | "month">("week");
   const [note, setNote] = useState("");
   const isAdmin = user?.role === "admin";
+  const isHR = user?.role === "hr";
 
   const { data: currentSession } = trpc.timeEntry.getCurrentSession.useQuery();
   const { data: weekStats } = trpc.timeEntry.getStats.useQuery({ period: "week" });
@@ -98,6 +104,10 @@ export default function TimeTracking() {
   const periodSummaryLabel = formatPeriodRangeLabel(period);
   const breakdownSubtitle = periodBreakdownSubtitle(period);
   const monthOtHours = stats?.dailyOvertimeHours ?? stats?.overtimeHours ?? 0;
+
+  const clockOutAction = useClockOutAction(() => {
+    setNote("");
+  });
 
   const clockInMutation = trpc.timeEntry.clockIn.useMutation({
     onSuccess: () => {
@@ -112,17 +122,6 @@ export default function TimeTracking() {
     },
   });
 
-  const clockOutMutation = trpc.timeEntry.clockOut.useMutation({
-    onSuccess: () => {
-      utils.timeEntry.getCurrentSession.invalidate();
-      utils.timeEntry.getStats.invalidate();
-      utils.timeEntry.getDayHours.invalidate();
-      utils.timeEntry.getTeamHours.invalidate();
-      utils.timeEntry.getBreaks.invalidate();
-      utils.dashboard.getStats.invalidate();
-    },
-  });
-
   const pauseMutation = trpc.timeEntry.pauseSession.useMutation({
     onSuccess: () => {
       utils.timeEntry.getCurrentSession.invalidate();
@@ -130,6 +129,7 @@ export default function TimeTracking() {
       utils.timeEntry.getDayHours.invalidate();
       utils.timeEntry.getTeamHours.invalidate();
       utils.timeEntry.getBreaks.invalidate();
+      invalidateActiveTaskTimers(utils);
     },
   });
 
@@ -157,6 +157,11 @@ export default function TimeTracking() {
   const todayIncludeLive =
     !!todayStats?.activeSession && todayStats.activeSession.date === todayKey;
 
+  const todayRequiredHours = todayStats?.requiredDailyHours ?? REQUIRED_DAILY_HOURS;
+  const weekRequiredHours = weekStats?.requiredWeeklyHours ?? REQUIRED_WEEKLY_HOURS;
+  const periodWeekRequired =
+    stats?.requiredWeeklyHours ?? REQUIRED_WEEKLY_HOURS;
+
   const todayWorked = useMemo(() => {
     const workedSeconds = workedSecondsFromStats(
       todayStats,
@@ -166,14 +171,14 @@ export default function TimeTracking() {
     const workedHours = workedSeconds / 3600;
     const { regularHours, overtimeHours } = splitRegularAndOvertime(
       workedHours,
-      REQUIRED_DAILY_HOURS,
+      todayRequiredHours,
     );
     return {
       workedSeconds,
       regularSeconds: Math.round(regularHours * 3600),
       overtimeSeconds: Math.round(overtimeHours * 3600),
     };
-  }, [todayStats, workSeconds, todayIncludeLive]);
+  }, [todayStats, workSeconds, todayIncludeLive, todayRequiredHours]);
 
   const weekIncludeLive =
     !!weekStats?.activeSession &&
@@ -188,14 +193,14 @@ export default function TimeTracking() {
     const workedHours = workedSeconds / 3600;
     const { regularHours, overtimeHours } = splitRegularAndOvertime(
       workedHours,
-      REQUIRED_WEEKLY_HOURS,
+      weekRequiredHours,
     );
     return {
       workedSeconds,
       regularSeconds: Math.round(regularHours * 3600),
       overtimeSeconds: Math.round(overtimeHours * 3600),
     };
-  }, [weekStats, workSeconds, weekIncludeLive]);
+  }, [weekStats, workSeconds, weekIncludeLive, weekRequiredHours]);
 
   const periodIncludeLive =
     !!stats?.activeSession &&
@@ -210,10 +215,10 @@ export default function TimeTracking() {
   const periodOvertime = useMemo(() => {
     if (period === "week") {
       const workedHours = periodWorkedSeconds / 3600;
-      return Math.max(0, workedHours - REQUIRED_WEEKLY_HOURS);
+      return Math.max(0, workedHours - periodWeekRequired);
     }
     return stats?.dailyOvertimeHours ?? stats?.overtimeHours ?? 0;
-  }, [period, periodWorkedSeconds, stats]);
+  }, [period, periodWorkedSeconds, stats, periodWeekRequired]);
 
   const periodData = useMemo(() => {
     const filled = fillBreakdownForPeriod(stats?.dailyBreakdown ?? [], period);
@@ -235,9 +240,10 @@ export default function TimeTracking() {
       if (day.date !== stats.activeSession!.date) return day;
       const nextSeconds = Math.max(0, Math.round(day.hours * 3600) + deltaSeconds);
       const hours = roundHours(nextSeconds / 3600);
+      const dayRequired = day.requiredHours ?? REQUIRED_DAILY_HOURS;
       const { regularHours, overtimeHours } = splitRegularAndOvertime(
         hours,
-        REQUIRED_DAILY_HOURS,
+        dayRequired,
       );
       return {
         ...day,
@@ -245,6 +251,7 @@ export default function TimeTracking() {
         minutes: Math.floor(nextSeconds / 60),
         regularHours: roundHours(regularHours),
         overtimeHours: roundHours(overtimeHours),
+        requiredHours: dayRequired,
       };
     });
   }, [stats?.dailyBreakdown, stats?.activeSession, period, workSeconds]);
@@ -272,7 +279,8 @@ export default function TimeTracking() {
       <motion.div variants={itemVariants}>
         <h1 className="text-2xl font-bold text-[#1F2937]">Time Tracking</h1>
         <p className="text-sm text-gray-500 mt-0.5">
-          Required: {REQUIRED_DAILY_HOURS}h per day · {REQUIRED_WEEKLY_HOURS}h per week · extra time counts as OT
+          Required: {REQUIRED_DAILY_HOURS}h/day · {WORKING_DAYS_PER_WEEK} weekdays ·{" "}
+          {REQUIRED_WEEKLY_HOURS}h/week · half leave requires 5h that day · leave adjusts weekly target
         </p>
       </motion.div>
 
@@ -281,8 +289,8 @@ export default function TimeTracking() {
         variants={itemVariants}
         className="bg-gradient-to-r from-[#2563EB] to-[#3B82F6] rounded-2xl p-6 text-white shadow-lg shadow-blue-200"
       >
-        <div className="flex items-center justify-between">
-          <div>
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div className="min-w-0">
             <div className="text-blue-100 text-sm font-medium mb-1">
               {isClockedIn
                 ? isPaused
@@ -293,12 +301,12 @@ export default function TimeTracking() {
                   : "Ready to Start?"}
             </div>
             {isClockedIn && (
-              <div className="text-4xl font-bold font-mono tracking-wider">
+              <div className="text-3xl sm:text-4xl font-bold font-mono tracking-wider">
                 {formatElapsedHMS(displaySeconds)}
               </div>
             )}
             {!isClockedIn && (
-              <div className="text-2xl font-bold">
+              <div className="text-xl sm:text-2xl font-bold">
                 {hasWorkedToday ? "Clock in again" : "Clock in to start tracking"}
               </div>
             )}
@@ -306,7 +314,7 @@ export default function TimeTracking() {
               {isClockedIn
                 ? isPaused
                   ? `Work paused at ${formatElapsedHMS(cumulativeWorkSeconds)} · break running`
-                  : `Today's total ${formatElapsedHMS(cumulativeWorkSeconds)} · started ${new Date(currentSession!.startTime).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}`
+                  : `Today's total ${formatElapsedHMS(cumulativeWorkSeconds)} · started ${formatWorkZoneTime(currentSession!.startTime, { hour: "2-digit", minute: "2-digit" })}`
                 : hasWorkedToday
                   ? `You've logged ${formatPreciseWorkedClock(todayStats?.totalSeconds ?? 0)} today — pick up where you left off`
                   : "Your last session ended recently"
@@ -314,24 +322,24 @@ export default function TimeTracking() {
             </div>
           </div>
 
-          <div className="flex flex-col items-end gap-3">
+          <div className="flex flex-col w-full md:w-auto md:items-end gap-3">
             {isClockedIn && (
               <input
                 type="text"
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
                 placeholder="Add a note (optional)..."
-                className="w-56 h-8 px-3 bg-white/20 border border-white/30 rounded-lg text-sm text-white placeholder-white/60 focus:outline-none focus:bg-white/30"
+                className="w-full md:w-56 h-8 px-3 bg-white/20 border border-white/30 rounded-lg text-sm text-white placeholder-white/60 focus:outline-none focus:bg-white/30"
               />
             )}
             {isClockedIn && (
-              <div className="flex items-center gap-2">
+              <div className="flex w-full md:w-auto items-center gap-2">
                 {isPaused ? (
                   <button
                     type="button"
                     onClick={() => resumeMutation.mutate()}
-                    disabled={resumeMutation.isPending || clockOutMutation.isPending}
-                    className="h-12 px-5 rounded-xl font-semibold text-sm flex items-center gap-2 bg-white/20 text-white hover:bg-white/30 border border-white/40 transition-all disabled:opacity-50"
+                    disabled={resumeMutation.isPending || clockOutAction.isPending}
+                    className="flex-1 md:flex-none h-11 sm:h-12 px-4 sm:px-5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 bg-white/20 text-white hover:bg-white/30 border border-white/40 transition-all disabled:opacity-50"
                   >
                     {resumeMutation.isPending ? <Loader2 size={18} className="animate-spin" /> : <Play size={18} />}
                     Resume
@@ -340,19 +348,21 @@ export default function TimeTracking() {
                   <button
                     type="button"
                     onClick={() => pauseMutation.mutate()}
-                    disabled={pauseMutation.isPending || clockOutMutation.isPending}
-                    className="h-12 px-5 rounded-xl font-semibold text-sm flex items-center gap-2 bg-white/20 text-white hover:bg-white/30 border border-white/40 transition-all disabled:opacity-50"
+                    disabled={pauseMutation.isPending || clockOutAction.isPending}
+                    className="flex-1 md:flex-none h-11 sm:h-12 px-4 sm:px-5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 bg-white/20 text-white hover:bg-white/30 border border-white/40 transition-all disabled:opacity-50"
                   >
                     {pauseMutation.isPending ? <Loader2 size={18} className="animate-spin" /> : <Pause size={18} />}
                     Pause
                   </button>
                 )}
                 <button
-                  onClick={() => clockOutMutation.mutate({ note: note || undefined })}
-                  disabled={clockInMutation.isPending || clockOutMutation.isPending}
-                  className="h-12 px-6 rounded-xl font-semibold text-sm flex items-center gap-2 transition-all bg-white text-[#2563EB] hover:bg-blue-50 shadow-md disabled:opacity-50"
+                  onClick={() =>
+                    clockOutAction.requestClockOut(currentSession!.startTime, note || undefined)
+                  }
+                  disabled={clockInMutation.isPending || clockOutAction.isPending}
+                  className="flex-1 md:flex-none h-11 sm:h-12 px-4 sm:px-6 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all bg-white text-[#2563EB] hover:bg-blue-50 shadow-md disabled:opacity-50"
                 >
-                  {clockOutMutation.isPending ? (
+                  {clockOutAction.isPending ? (
                     <Loader2 size={18} className="animate-spin" />
                   ) : (
                     <><Square size={18} /> Clock Out</>
@@ -363,8 +373,8 @@ export default function TimeTracking() {
             {!isClockedIn && (
               <button
                 onClick={() => clockInMutation.mutate()}
-                disabled={clockInMutation.isPending || clockOutMutation.isPending}
-                className="h-12 px-6 rounded-xl font-semibold text-sm flex items-center gap-2 transition-all bg-white/20 text-white hover:bg-white/30 border border-white/40 disabled:opacity-50"
+                disabled={clockInMutation.isPending || clockOutAction.isPending}
+                className="w-full md:w-auto h-11 sm:h-12 px-6 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all bg-white/20 text-white hover:bg-white/30 border border-white/40 disabled:opacity-50"
               >
                 {clockInMutation.isPending ? (
                   <Loader2 size={18} className="animate-spin" />
@@ -398,18 +408,18 @@ export default function TimeTracking() {
         <ProgressCard
           label="This Week"
           workedSeconds={weekWorked.workedSeconds}
-          required={REQUIRED_WEEKLY_HOURS}
+          required={weekRequiredHours}
           overtimeSeconds={weekWorked.overtimeSeconds}
           icon={Timer}
-          sub={`${formatPreciseWorkedTime(weekWorked.regularSeconds)} regular of ${REQUIRED_WEEKLY_HOURS}h`}
+          sub={`${formatPreciseWorkedTime(weekWorked.regularSeconds)} regular of ${weekRequiredHours}h`}
         />
         <ProgressCard
           label="Today"
           workedSeconds={todayWorked.workedSeconds}
-          required={REQUIRED_DAILY_HOURS}
+          required={todayRequiredHours}
           overtimeSeconds={todayWorked.overtimeSeconds}
           icon={TrendingUp}
-          sub={`${formatPreciseWorkedTime(todayWorked.regularSeconds)} regular of ${REQUIRED_DAILY_HOURS}h`}
+          sub={`${formatPreciseWorkedTime(todayWorked.regularSeconds)} regular of ${todayRequiredHours}h`}
         />
         <div className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-md transition-shadow">
           <div className="flex items-center gap-2 mb-3">
@@ -497,7 +507,7 @@ export default function TimeTracking() {
               {formatHoursMinutesFloored(periodWorkedSeconds)}
             </span>
             {period === "week" && (
-              <span className="text-gray-400"> / {REQUIRED_WEEKLY_HOURS}h</span>
+              <span className="text-gray-400"> / {periodWeekRequired}h</span>
             )}
             {period === "month" && monthOtHours > 0 && (
               <span className="ml-2 text-amber-600 font-semibold">
@@ -520,7 +530,7 @@ export default function TimeTracking() {
                 className="flex items-center justify-between text-xs px-2 py-1.5 rounded-lg hover:bg-gray-50"
               >
                 <span className="text-gray-600">
-                  {new Date(`${day.date}T12:00:00`).toLocaleDateString("en-US", {
+                  {formatWorkZoneDateKey(day.date, {
                     weekday: "short",
                     month: "short",
                     day: "numeric",
@@ -553,10 +563,21 @@ export default function TimeTracking() {
         <DayHoursSection />
       </motion.div>
 
-      {isAdmin ? (
+      {isAdmin || isHR ? (
         <motion.div variants={itemVariants}>
           <TimeApprovalPanel />
         </motion.div>
+      ) : null}
+
+      {currentSession?.active ? (
+        <CrossDayClockOutDialog
+          open={clockOutAction.dialogOpen}
+          onOpenChange={clockOutAction.setDialogOpen}
+          sessionStartTime={currentSession.startTime}
+          isPending={clockOutAction.isPending}
+          onConfirmNow={clockOutAction.confirmClockOutNow}
+          onUpdateTime={clockOutAction.updateClockOutTime}
+        />
       ) : null}
     </motion.div>
   );

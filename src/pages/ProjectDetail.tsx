@@ -1,15 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import { trpc } from "@/providers/trpc";
 import { useAuth } from "@/hooks/useAuth";
 import { ProjectHeaderCard } from "@/components/projects/ProjectHeaderCard";
+import { ProjectFormFields } from "@/components/projects/ProjectFormFields";
 import { TaskKanbanBoard } from "@/components/tasks/TaskKanbanBoard";
 import { TaskListView } from "@/components/tasks/TaskListView";
 import { TaskDetailPanel } from "@/components/tasks/TaskDetailPanel";
 import { TaskSearchFilterPanel } from "@/components/tasks/TaskSearchFilterPanel";
 import {
   CreateTaskModal,
-  EMPTY_CREATE_TASK_FORM,
+  createEmptyTaskForm,
   type CreateTaskFormData,
 } from "@/components/tasks/CreateTaskModal";
 import {
@@ -18,54 +19,59 @@ import {
   type TaskSearchFilters,
 } from "@/lib/task-search-filter";
 import {
-  computeProjectHoursTracked,
   computeProjectStatsFromTasks,
   invalidateProjectStats,
 } from "@/lib/project-stats";
+import { invalidateTaskQueries } from "@/lib/invalidate-on-notifications";
 import { hasPermission } from "@/lib/permissions";
 import { canCreateTask, tryOpenCreateTask } from "@/lib/create-task-permission";
+import { submitCreateTask } from "@/lib/submit-create-task";
+import { resetStagingMediaIds } from "@/lib/staged-task-media";
 import type { ProjectPipelineStageKey } from "@/lib/task-kanban";
-import { AnimatePresence, motion } from "framer-motion";
-import { ArrowLeft, LayoutGrid, List, Loader2, UserPlus, X, Trash2 } from "lucide-react";
-import { useNavigate } from "react-router";
+import { extractCustomPipelineStages, resolveProjectPipelineStages } from "@/lib/task-kanban";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+  parseActivityIdParam,
+} from "@/lib/task-notification-link";
+import {
+  collectClientNameSuggestions,
+  EMPTY_PROJECT_FORM,
+  projectToFormValues,
+  type ProjectFormValues,
+} from "@/lib/project-appearance";
+import { useLocateTaskInView } from "@/hooks/useLocateTaskInView";
+import { ModalBackdrop } from "@/components/shared/ModalBackdrop";
+import { TaskBulkActionBar } from "@/components/tasks/TaskBulkActionBar";
+import { AnimatePresence, motion } from "framer-motion";
+import { LayoutGrid, List, Loader2, UserPlus, X } from "lucide-react";
 
 type ProjectTaskView = "list" | "kanban";
 
 function parseProjectView(raw: string | null): ProjectTaskView {
-  return raw === "kanban" ? "kanban" : "list";
+  if (raw === "list") return "list";
+  return "kanban";
 }
 
 export default function ProjectDetail() {
   const { id } = useParams();
   const projectId = Number(id);
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
 
   const taskView = parseProjectView(searchParams.get("view"));
   const selectedTask = searchParams.get("task") ? Number(searchParams.get("task")) : null;
+  const highlightActivityId = useMemo(
+    () => parseActivityIdParam(searchParams.get("activity")),
+    [searchParams],
+  );
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [editForm, setEditForm] = useState({ name: "", description: "" });
-  const [formData, setFormData] = useState<CreateTaskFormData>(EMPTY_CREATE_TASK_FORM);
+  const [editForm, setEditForm] = useState<ProjectFormValues>(EMPTY_PROJECT_FORM);
+  const [formData, setFormData] = useState<CreateTaskFormData>(() => createEmptyTaskForm());
   const [isCreating, setIsCreating] = useState(false);
   const [search, setSearch] = useState("");
   const [taskFilters, setTaskFilters] = useState<TaskSearchFilters>(DEFAULT_TASK_SEARCH_FILTERS);
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [bulkStatus, setBulkStatus] = useState<"todo" | "in_progress" | "review" | "done">("todo");
-  const [bulkMoveProjectId, setBulkMoveProjectId] = useState<number | null>(null);
 
   const utils = trpc.useUtils();
 
@@ -82,7 +88,7 @@ export default function ProjectDetail() {
         const next = new URLSearchParams(prev);
         next.delete("task");
         return next;
-      });
+      }, { replace: true });
     }
   }, [projectLoading, project, canViewTasks, selectedTask, setSearchParams]);
 
@@ -90,13 +96,14 @@ export default function ProjectDetail() {
     { projectId, limit: 200 },
     {
       enabled:
-        Number.isFinite(projectId) && projectId > 0 && !projectLoading && canViewTasks,
-      staleTime: 0,
+        Number.isFinite(projectId) &&
+        projectId > 0 &&
+        (canViewTasks || projectLoading),
     },
   );
 
   const { data: usersData } = trpc.user.listForPicker.useQuery({ limit: 500 });
-  const { data: projectsData } = trpc.project.list.useQuery();
+  const { data: projectsData } = trpc.project.listForPicker.useQuery();
 
   const addParticipantMutation = trpc.task.addParticipant.useMutation();
   const addObserverMutation = trpc.task.addObserver.useMutation();
@@ -107,18 +114,93 @@ export default function ProjectDetail() {
   const addAttachmentMutation = trpc.task.addAttachment.useMutation();
 
   const updateProjectMutation = trpc.project.update.useMutation({
-    onSuccess: () => {
+    onSuccess: async () => {
+      await utils.project.getById.invalidate({ id: projectId });
+      await utils.project.list.invalidate();
       invalidateProjectStats(utils, projectId);
       setShowEditModal(false);
     },
   });
 
-  const deleteProjectMutation = trpc.project.delete.useMutation({
-    onSuccess: async () => {
-      setShowDeleteConfirm(false);
-      await utils.project.list.invalidate();
-      await utils.task.list.invalidate();
-      navigate("/projects", { replace: true });
+  const addPipelineStageMutation = trpc.project.addPipelineStage.useMutation({
+    onSuccess: async (result) => {
+      utils.project.getById.setData({ id: projectId }, (prev) =>
+        prev
+          ? {
+              ...prev,
+              customPipelineStages:
+                result.customPipelineStages ??
+                extractCustomPipelineStages(result.stages),
+              pipelineStageOrder: result.pipelineStageOrder,
+              pipelineStages: result.stages,
+            }
+          : prev,
+      );
+      await Promise.all([
+        utils.project.getById.invalidate({ id: projectId }),
+        utils.task.getById.invalidate(),
+        utils.task.list.invalidate(),
+      ]);
+    },
+  });
+
+  const renamePipelineStageMutation = trpc.project.renamePipelineStage.useMutation({
+    onSuccess: async (result) => {
+      utils.project.getById.setData({ id: projectId }, (prev) =>
+        prev
+          ? {
+              ...prev,
+              pipelineStageLabelOverrides: result.pipelineStageLabelOverrides,
+              pipelineStages: result.stages,
+            }
+          : prev,
+      );
+      await Promise.all([
+        utils.project.getById.invalidate({ id: projectId }),
+        utils.task.getById.invalidate(),
+        utils.task.list.invalidate(),
+      ]);
+    },
+  });
+
+  const deletePipelineStageMutation = trpc.project.deletePipelineStage.useMutation({
+    onSuccess: async (result) => {
+      utils.project.getById.setData({ id: projectId }, (prev) =>
+        prev
+          ? {
+              ...prev,
+              customPipelineStages: result.customPipelineStages,
+              pipelineStageLabelOverrides: result.pipelineStageLabelOverrides,
+              hiddenPipelineStageKeys: result.hiddenPipelineStageKeys,
+              pipelineStageOrder: result.pipelineStageOrder,
+              pipelineStages: result.stages,
+            }
+          : prev,
+      );
+      await Promise.all([
+        utils.project.getById.invalidate({ id: projectId }),
+        utils.task.getById.invalidate(),
+        utils.task.list.invalidate({ projectId, limit: 200 }),
+      ]);
+    },
+  });
+
+  const reorderPipelineStageMutation = trpc.project.reorderPipelineStage.useMutation({
+    onSuccess: async (result) => {
+      utils.project.getById.setData({ id: projectId }, (prev) =>
+        prev
+          ? {
+              ...prev,
+              pipelineStageOrder: result.pipelineStageOrder,
+              pipelineStages: result.stages,
+            }
+          : prev,
+      );
+      await Promise.all([
+        utils.project.getById.invalidate({ id: projectId }),
+        utils.task.getById.invalidate(),
+        utils.task.list.invalidate({ projectId, limit: 200 }),
+      ]);
     },
   });
 
@@ -132,13 +214,40 @@ export default function ProjectDetail() {
   const bulkActionMutation = trpc.task.bulkAction.useMutation({
     onSuccess: async () => {
       setSelectedIds(new Set());
-      await utils.task.list.invalidate();
+      await invalidateTaskQueries(utils);
       invalidateProjectStats(utils, projectId);
     },
   });
 
+  const clientNameSuggestions = useMemo(
+    () => collectClientNameSuggestions(projectsData ?? []),
+    [projectsData],
+  );
+
   const canManage = hasPermission(user, "projects.manage");
   const canCreate = canCreateTask(user);
+  const canAddSection =
+    canViewTasks &&
+    (canManage ||
+      canCreate ||
+      user?.role === "manager" ||
+      user?.role === "admin" ||
+      hasPermission(user, "tasks.edit_all"));
+
+  const pipelineStages = useMemo(() => {
+    const p = project as {
+      customPipelineStages?: Array<{ key: string; label: string; color: string }> | null;
+      pipelineStageLabelOverrides?: Record<string, string> | null;
+      hiddenPipelineStageKeys?: string[] | null;
+      pipelineStageOrder?: string[] | null;
+      pipelineStages?: Array<{ key: string; label: string; color: string }>;
+    } | null | undefined;
+    if (p?.pipelineStages?.length) {
+      // Prefer server-resolved stages (includes order + hidden).
+      return p.pipelineStages;
+    }
+    return resolveProjectPipelineStages(p);
+  }, [project]);
   const canBulkEdit =
     user?.role === "admin" ||
     user?.role === "manager" ||
@@ -170,6 +279,24 @@ export default function ProjectDetail() {
     [allTasks, taskFilters, search, searchContext],
   );
 
+  const { highlightedTaskId, locateTask } = useLocateTaskInView([
+    taskView,
+    filteredTasks.length,
+    search,
+    taskFilters,
+  ]);
+
+  const handleTaskSearchSelect = useCallback(
+    (taskId: number) => {
+      const task = allTasks.find((t) => t.id === taskId);
+      if (task) {
+        setSearch(task.title);
+      }
+      locateTask(taskId);
+    },
+    [allTasks, locateTask],
+  );
+
   const resetSearch = () => {
     setSearch("");
     setTaskFilters(DEFAULT_TASK_SEARCH_FILTERS);
@@ -181,13 +308,6 @@ export default function ProjectDetail() {
     }
     return computeProjectStatsFromTasks(allTasks);
   }, [allTasks, canViewTasks, project?.stats]);
-
-  const hoursTracked = useMemo(() => {
-    if (!canViewTasks && project?.hoursTracked != null) {
-      return project.hoursTracked;
-    }
-    return computeProjectHoursTracked(allTasks);
-  }, [allTasks, canViewTasks, project?.hoursTracked]);
 
   const toggleSelect = (id: number) => {
     setSelectedIds((prev) => {
@@ -230,6 +350,7 @@ export default function ProjectDetail() {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       next.set("task", String(taskId));
+      next.delete("activity");
       return next;
     });
   };
@@ -238,41 +359,52 @@ export default function ProjectDetail() {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       next.delete("task");
+      next.delete("activity");
       return next;
     });
+  };
+
+  const clearActivityHighlight = () => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("activity");
+      return next;
+    }, { replace: true });
   };
 
   const setTaskView = (view: ProjectTaskView) => {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
-      if (view === "kanban") next.set("view", "kanban");
-      else next.delete("view");
+      if (view === "list") next.set("view", "list");
+      else next.delete("view"); // Kanban is the default project task view
       return next;
     });
   };
 
   const openEdit = () => {
     if (!project) return;
-    setEditForm({ name: project.name, description: project.description ?? "" });
+    setEditForm(projectToFormValues(project));
     setShowEditModal(true);
   };
 
   const openCreateModal = (stage?: ProjectPipelineStageKey) => {
     tryOpenCreateTask(user, () => {
-      setFormData({
-        ...EMPTY_CREATE_TASK_FORM,
-        assigneeId: user?.id,
-        ownerId: user?.id,
-        projectId,
-        stage,
-      });
+      setFormData(
+        createEmptyTaskForm({
+          assigneeId: user?.id,
+          ownerId: user?.id,
+          projectId,
+          stage,
+        }),
+      );
       setShowCreateModal(true);
     });
   };
 
   const closeCreateModal = () => {
     setShowCreateModal(false);
-    setFormData(EMPTY_CREATE_TASK_FORM);
+    setFormData(createEmptyTaskForm());
+    resetStagingMediaIds();
   };
 
   const handleCreate = async () => {
@@ -299,6 +431,7 @@ export default function ProjectDetail() {
       closeCreateModal();
     } catch (error) {
       console.error("Failed to create task:", error);
+      window.alert(error instanceof Error ? error.message : "Failed to create task. Please try again.");
     } finally {
       setIsCreating(false);
     }
@@ -331,29 +464,17 @@ export default function ProjectDetail() {
   }
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-5">
-      <Link
-        to="/projects"
-        className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-[#2563EB] transition-colors"
-      >
-        <ArrowLeft size={16} />
-        Back to projects
-      </Link>
-
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
       <ProjectHeaderCard
         name={project.name}
         description={project.description}
-        status={project.status}
-        dueDate={project.dueDate}
+        clientName={project.clientName}
         stats={stats}
-        hoursTracked={hoursTracked}
         memberCount={project.memberCount ?? 1}
         creatorName={project.creator?.name ?? null}
         canEdit={canManage}
-        canDelete={canManage}
         canViewTasks={canViewTasks}
         onEdit={openEdit}
-        onDelete={() => setShowDeleteConfirm(true)}
         onAddTask={canCreate && canViewTasks ? () => openCreateModal() : undefined}
         onJoinProject={
           !canViewTasks
@@ -389,7 +510,7 @@ export default function ProjectDetail() {
         </div>
       ) : (
         <>
-      <div className="max-w-md">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <TaskSearchFilterPanel
           open={filterPanelOpen}
           onOpenChange={setFilterPanelOpen}
@@ -401,122 +522,62 @@ export default function ProjectDetail() {
           tasks={allTasks}
           searchInput={search}
           onSearchInputChange={setSearch}
+          className="max-w-none w-full"
+          onTaskSelect={handleTaskSearchSelect}
         />
-      </div>
 
-      <div className="flex items-center gap-1 p-1 bg-gray-100 rounded-lg w-fit">
-        <button
-          type="button"
-          onClick={() => setTaskView("list")}
-          className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-sm font-medium transition-colors ${
-            taskView === "list"
-              ? "bg-white text-[#1F2937] shadow-sm"
-              : "text-gray-500 hover:text-gray-700"
-          }`}
-        >
-          <List size={15} />
-          List
-        </button>
-        <button
-          type="button"
-          onClick={() => setTaskView("kanban")}
-          className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-sm font-medium transition-colors ${
-            taskView === "kanban"
-              ? "bg-white text-[#1F2937] shadow-sm"
-              : "text-gray-500 hover:text-gray-700"
-          }`}
-        >
-          <LayoutGrid size={15} />
-          Kanban
-        </button>
-      </div>
-
-      {selectedIds.size > 0 && taskSelectionEnabled ? (
-        <div className="flex flex-wrap items-center gap-3 p-3 bg-blue-50 border border-blue-100 rounded-xl">
-          <span className="text-sm font-medium text-[#1F2937]">
-            {selectedIds.size} selected
-          </span>
-
-          {canBulkEdit ? (
-            <>
-              <select
-                value={bulkStatus}
-                onChange={(e) =>
-                  setBulkStatus(e.target.value as "todo" | "in_progress" | "review" | "done")
-                }
-                className="h-9 px-2 border border-gray-200 rounded-lg text-sm bg-white"
-              >
-                <option value="todo">To do</option>
-                <option value="in_progress">In progress</option>
-                <option value="review">Review</option>
-                <option value="done">Done</option>
-              </select>
-              <button
-                type="button"
-                disabled={bulkActionMutation.isPending}
-                onClick={() => runBulkAction("status", { status: bulkStatus })}
-                className="h-9 px-3 bg-white border border-gray-200 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
-              >
-                Change status
-              </button>
-
-              <select
-                value={bulkMoveProjectId ?? ""}
-                onChange={(e) =>
-                  setBulkMoveProjectId(e.target.value === "" ? null : Number(e.target.value))
-                }
-                className="h-9 px-2 border border-gray-200 rounded-lg text-sm bg-white max-w-[200px]"
-              >
-                <option value="">Move to project…</option>
-                {(projectsData ?? [])
-                  .filter((p) => p.id !== projectId)
-                  .map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                <option value="-1">No project</option>
-              </select>
-              <button
-                type="button"
-                disabled={bulkActionMutation.isPending || bulkMoveProjectId === null}
-                onClick={() =>
-                  runBulkAction("move_project", {
-                    projectId: bulkMoveProjectId === -1 ? null : bulkMoveProjectId,
-                  })
-                }
-                className="h-9 px-3 bg-white border border-gray-200 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
-              >
-                Move
-              </button>
-            </>
-          ) : null}
-
-          {canBulkDelete ? (
-            <button
-              type="button"
-              disabled={bulkActionMutation.isPending}
-              onClick={() => {
-                if (!window.confirm(`Delete ${selectedIds.size} task(s)? This cannot be undone.`)) {
-                  return;
-                }
-                runBulkAction("delete");
-              }}
-              className="h-9 px-3 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50 inline-flex items-center gap-1.5"
-            >
-              <Trash2 size={14} />
-              Delete
-            </button>
-          ) : null}
-
+        <div className="flex items-center gap-1 p-1 bg-gray-100 rounded-lg shrink-0 self-end sm:self-auto">
           <button
             type="button"
-            onClick={() => setSelectedIds(new Set())}
-            className="h-9 px-3 text-sm text-gray-600 hover:text-gray-800"
+            onClick={() => setTaskView("list")}
+            className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-sm font-medium transition-colors ${
+              taskView === "list"
+                ? "bg-white text-[#1F2937] shadow-sm"
+                : "text-gray-500 hover:text-gray-700"
+            }`}
           >
-            Clear
+            <List size={15} />
+            List
+          </button>
+          <button
+            type="button"
+            onClick={() => setTaskView("kanban")}
+            className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-sm font-medium transition-colors ${
+              taskView === "kanban"
+                ? "bg-white text-[#1F2937] shadow-sm"
+                : "text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            <LayoutGrid size={15} />
+            Kanban
           </button>
         </div>
+      </div>
+
+      {taskView === "list" && taskSelectionEnabled ? (
+        <TaskBulkActionBar
+          selectedCount={selectedIds.size}
+          canBulkEdit={canBulkEdit}
+          canBulkDelete={canBulkDelete}
+          projects={(projectsData ?? []).map((p) => ({
+            id: p.id,
+            name: p.name,
+            color: p.color ?? null,
+          }))}
+          excludeProjectId={projectId}
+          isPending={bulkActionMutation.isPending}
+          onChangeStatus={(status) => runBulkAction("status", { status })}
+          onMoveProject={(nextProjectId) =>
+            runBulkAction("move_project", { projectId: nextProjectId })
+          }
+          onDelete={() => {
+            if (!window.confirm(`Delete ${selectedIds.size} task(s)? This cannot be undone.`)) {
+              return;
+            }
+            runBulkAction("delete");
+          }}
+          onClear={() => setSelectedIds(new Set())}
+        />
       ) : null}
 
       {taskView === "list" ? (
@@ -529,6 +590,10 @@ export default function ProjectDetail() {
           selectedIds={selectedIds}
           onToggleSelect={toggleSelect}
           onToggleSelectAll={toggleSelectAll}
+          highlightedTaskId={highlightedTaskId}
+          projectId={projectId}
+          stages={pipelineStages}
+          groupByStage
         />
       ) : (
         <TaskKanbanBoard
@@ -538,6 +603,48 @@ export default function ProjectDetail() {
           canCreate={canCreate && canViewTasks}
           projectId={projectId}
           onCreateClick={canCreate && canViewTasks ? openCreateModal : undefined}
+          highlightedTaskId={highlightedTaskId}
+          stages={pipelineStages}
+          canAddSection={canAddSection}
+          addingSection={addPipelineStageMutation.isPending}
+          onAddSection={
+            canAddSection
+              ? async (label) => {
+                  await addPipelineStageMutation.mutateAsync({ projectId, label });
+                }
+              : undefined
+          }
+          canRenameSection={canAddSection}
+          renamingSection={renamePipelineStageMutation.isPending}
+          onRenameSection={
+            canAddSection
+              ? async (key, label) => {
+                  await renamePipelineStageMutation.mutateAsync({ projectId, key, label });
+                }
+              : undefined
+          }
+          canDeleteSection={canAddSection}
+          deletingSection={deletePipelineStageMutation.isPending}
+          onDeleteSection={
+            canAddSection
+              ? async (key) => {
+                  await deletePipelineStageMutation.mutateAsync({ projectId, key });
+                }
+              : undefined
+          }
+          canReorderSection={canAddSection}
+          reorderingSection={reorderPipelineStageMutation.isPending}
+          onReorderSection={
+            canAddSection
+              ? async (key, direction) => {
+                  await reorderPipelineStageMutation.mutateAsync({
+                    projectId,
+                    key,
+                    direction,
+                  });
+                }
+              : undefined
+          }
         />
       )}
         </>
@@ -545,7 +652,14 @@ export default function ProjectDetail() {
 
       <AnimatePresence>
         {selectedTask && (
-          <TaskDetailPanel taskId={selectedTask} onClose={closeTask} onTaskOpen={openTask} />
+          <TaskDetailPanel
+            taskId={selectedTask}
+            highlightActivityId={highlightActivityId}
+            onHighlightDone={clearActivityHighlight}
+            onClose={closeTask}
+            onTaskOpen={openTask}
+            pipelineStages={pipelineStages}
+          />
         )}
       </AnimatePresence>
 
@@ -564,109 +678,64 @@ export default function ProjectDetail() {
             ? { id: user.id, name: user.name, avatar: user.avatar }
             : null
         }
+        pipelineStages={pipelineStages}
       />
 
-      <AnimatePresence>
-        {showEditModal && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center p-4"
-            onClick={() => setShowEditModal(false)}
+      <ModalBackdrop open={showEditModal} onClose={() => setShowEditModal(false)}>
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.95 }}
+          onClick={(e) => e.stopPropagation()}
+          className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden"
+        >
+          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+            <h2 className="font-semibold text-[#1F2937]">Edit Project</h2>
+            <button type="button" onClick={() => setShowEditModal(false)} className="text-gray-400 hover:text-gray-600">
+              <X size={20} />
+            </button>
+          </div>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!editForm.name.trim()) return;
+              updateProjectMutation.mutate({
+                id: projectId,
+                name: editForm.name,
+                description: editForm.description || undefined,
+                clientName: editForm.clientName.trim() || null,
+                color: editForm.color,
+                icon: editForm.icon,
+              });
+            }}
+            className="p-5 space-y-4"
           >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              onClick={(e) => e.stopPropagation()}
-              className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden"
-            >
-              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
-                <h2 className="font-semibold text-[#1F2937]">Edit Project</h2>
-                <button type="button" onClick={() => setShowEditModal(false)} className="text-gray-400 hover:text-gray-600">
-                  <X size={20} />
-                </button>
-              </div>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  if (!editForm.name.trim()) return;
-                  updateProjectMutation.mutate({
-                    id: projectId,
-                    name: editForm.name,
-                    description: editForm.description || undefined,
-                  });
-                }}
-                className="p-5 space-y-4"
+            <ProjectFormFields
+              value={editForm}
+              onChange={setEditForm}
+              clientNameSuggestions={clientNameSuggestions}
+              idPrefix="edit-project"
+            />
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowEditModal(false)}
+                className="h-10 px-4 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50"
               >
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Name *</label>
-                  <input
-                    type="text"
-                    required
-                    value={editForm.name}
-                    onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                    className="w-full h-10 px-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
-                  <textarea
-                    value={editForm.description}
-                    onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
-                    className="w-full h-20 px-3 py-2 border border-gray-200 rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20"
-                  />
-                </div>
-                <div className="flex justify-end gap-3 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowEditModal(false)}
-                    className="h-10 px-4 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={updateProjectMutation.isPending}
-                    className="h-10 px-4 bg-[#2563EB] text-white rounded-lg text-sm font-semibold disabled:opacity-50 flex items-center gap-2"
-                  >
-                    {updateProjectMutation.isPending && <Loader2 size={14} className="animate-spin" />}
-                    Save
-                  </button>
-                </div>
-              </form>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete project?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete &quot;{project.name}&quot; and all of its tasks.
-              This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleteProjectMutation.isPending}>
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-red-600 hover:bg-red-700 focus:ring-red-600"
-              disabled={deleteProjectMutation.isPending}
-              onClick={(event) => {
-                event.preventDefault();
-                deleteProjectMutation.mutate({ id: projectId });
-              }}
-            >
-              {deleteProjectMutation.isPending ? "Deleting…" : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={updateProjectMutation.isPending}
+                className="h-10 px-4 bg-[#2563EB] text-white rounded-lg text-sm font-semibold disabled:opacity-50 flex items-center gap-2"
+              >
+                {updateProjectMutation.isPending && <Loader2 size={14} className="animate-spin" />}
+                Save
+              </button>
+            </div>
+          </form>
+        </motion.div>
+      </ModalBackdrop>
     </motion.div>
   );
 }
