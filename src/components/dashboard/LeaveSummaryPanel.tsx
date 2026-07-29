@@ -133,7 +133,7 @@ export function LeaveSummaryPanel({
         <button
           type="button"
           onClick={() => navigate(calendarPath)}
-          className="text-[11px] font-medium text-[#2563EB] hover:underline"
+          className="text-[11px] font-medium text-[#2563EB] hover:underline dark:text-white dark:font-semibold"
         >
           Leave Calendar
         </button>
@@ -164,7 +164,7 @@ export function LeaveSummaryPanel({
       <button
         type="button"
         onClick={() => navigate(calendarPath)}
-        className="mt-4 text-sm font-medium text-[#2563EB] hover:underline text-left"
+        className="mt-4 text-sm font-medium text-[#2563EB] hover:underline text-left dark:text-white dark:font-semibold"
       >
         View Full Calendar →
       </button>

@@ -422,6 +422,93 @@ export type TimeApprovalRequestDoc = {
   updatedAt: Date;
 };
 
+export type CustomerContactPerson = {
+  salutation: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  workPhone: string;
+  mobile: string;
+};
+
+export type CustomerDoc = {
+  id: number;
+  organizationId: number;
+  customerType: "business" | "individual";
+  salutation: string;
+  firstName: string;
+  lastName: string;
+  companyName: string;
+  displayName: string;
+  currency: string;
+  email: string;
+  workPhone: string;
+  mobile: string;
+  gstTreatment?: string;
+  gstNumber: string;
+  businessLegalName?: string;
+  businessTradeName?: string;
+  placeOfSupply: string;
+  pan: string;
+  taxPreference: "taxable" | "tax_exempt";
+  paymentTerms: string;
+  billingCountry: string;
+  billingAddress1: string;
+  billingAddress2: string;
+  billingCity: string;
+  billingState: string;
+  billingZip: string;
+  billingPhone: string;
+  shippingCountry: string;
+  shippingAddress1: string;
+  shippingAddress2: string;
+  shippingCity: string;
+  shippingState: string;
+  shippingZip: string;
+  shippingPhone: string;
+  contactPersons: CustomerContactPerson[];
+  customFieldLabel: string;
+  customFieldValue: string;
+  remarks: string;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type InvoiceLineItemDoc = {
+  id: string;
+  itemDetails: string;
+  quantity: number;
+  rate: number;
+  discountPercent: number;
+  taxPercent: number;
+};
+
+export type InvoiceDoc = {
+  id: number;
+  organizationId: number;
+  invoiceNumber: string;
+  orderNumber: string;
+  customerId: number;
+  customerName: string;
+  invoiceDate: string;
+  terms: string;
+  dueDate: string;
+  salesperson: string;
+  items: InvoiceLineItemDoc[];
+  customerNotes: string;
+  shippingCharges: number;
+  taxMode: "tds" | "tcs" | "none";
+  taxPercent: number;
+  adjustment: number;
+  roundOff: boolean;
+  currency?: string;
+  status: "draft" | "sent" | "paid";
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 export type WorkSessionDoc = {
   id: number;
   userId: number;
@@ -463,6 +550,8 @@ export const DEFAULT_PERMISSIONS_BY_ROLE: Record<UserRole, string[]> = {
     "time.edit_own",
     "employees.manage",
     "permissions.manage",
+    "invoices.manage",
+    "customers.manage",
     "analytics.view",
     "profile.head_of_department",
   ],

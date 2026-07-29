@@ -21,6 +21,7 @@ export async function refreshDashboardPage(utils: TrpcUtils) {
     utils.dashboard.getHrDashboard.invalidate(undefined, { refetchType: "all" }),
     utils.dashboard.getLeaveSummary.invalidate(undefined, { refetchType: "all" }),
     utils.timeEntry.getStats.invalidate({ period: "today" }, { refetchType: "all" }),
+    utils.timeEntry.getMonthAttendance.invalidate(undefined, { refetchType: "all" }),
     utils.timeEntry.getCurrentSession.invalidate(undefined, { refetchType: "all" }),
   ]);
 }

@@ -5,6 +5,7 @@ import { UserAvatar } from "@/components/shared/UserAvatar";
 import { RoleBadge } from "@/components/shared/StatusBadge";
 import { AvatarPickerModal } from "@/components/settings/AvatarPickerModal";
 import { PersonalInformationPanel } from "@/components/settings/PersonalInformationPanel";
+import { OrganizationProfilePanel } from "@/components/settings/OrganizationProfilePanel";
 import { writeProfilePrefs } from "@/lib/profile-prefs";
 import {
   DEFAULT_NOTIFICATION_PREFS,
@@ -19,11 +20,12 @@ import {
 } from "@/lib/timezone";
 import { departmentSelectOptions, departmentSelectScopeForRole } from "@/lib/department-options";
 import { motion } from "framer-motion";
-import { User, Building2, BellRing, Camera, Check, Loader2, IdCard } from "lucide-react";
+import { User, Building2, BellRing, Camera, Check, Loader2, IdCard, Landmark } from "lucide-react";
 
 const TABS = [
   { key: "profile", label: "Profile", icon: User },
   { key: "personal", label: "Personal Information", icon: IdCard },
+  { key: "organization", label: "Organization Profile", icon: Landmark, adminOnly: true },
   { key: "workspace", label: "Workspace", icon: Building2 },
   { key: "notifications", label: "Notifications", icon: BellRing },
 ];
@@ -92,6 +94,9 @@ export default function Settings() {
 
   useEffect(() => {
     if (user?.role === "client" && activeTab === "workspace") {
+      setActiveTab("profile");
+    }
+    if (user?.role !== "admin" && activeTab === "organization") {
       setActiveTab("profile");
     }
   }, [user?.role, activeTab]);
@@ -210,9 +215,11 @@ export default function Settings() {
     else handleSaveNotifications();
   };
 
-  const visibleTabs = TABS.filter(
-    (tab) => !(user?.role === "client" && tab.key === "workspace"),
-  );
+  const visibleTabs = TABS.filter((tab) => {
+    if (user?.role === "client" && tab.key === "workspace") return false;
+    if (tab.adminOnly && user?.role !== "admin") return false;
+    return true;
+  });
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-5xl mx-auto space-y-6">
@@ -386,6 +393,17 @@ export default function Settings() {
             />
           )}
 
+          {activeTab === "organization" && user?.role === "admin" && (
+            <OrganizationProfilePanel
+              onSaved={() => {
+                setSaveError(null);
+                setSaved(true);
+                setTimeout(() => setSaved(false), 2000);
+              }}
+              onError={setSaveError}
+            />
+          )}
+
           {activeTab === "workspace" && (
             <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} className="space-y-6">
               <h2 className="text-lg font-semibold text-[#1F2937]">Workspace Settings</h2>
@@ -449,7 +467,7 @@ export default function Settings() {
 
           {saveError && <p className="text-sm text-red-500">{saveError}</p>}
 
-          {activeTab !== "personal" && (
+          {activeTab !== "personal" && activeTab !== "organization" && (
           <div className="pt-4">
             <button
               type="button"

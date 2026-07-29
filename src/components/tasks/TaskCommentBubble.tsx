@@ -301,12 +301,12 @@ export function TaskCommentBubble({
         className={cn(
           "min-w-0 flex-1 rounded-xl border px-4 py-3 text-sm shadow-sm",
           isOwn
-            ? "bg-[#DCFCE7] border-[#BBF7D0] text-gray-800"
-            : "bg-white border-gray-200 text-gray-800",
+            ? "bg-[#DCFCE7] border-[#BBF7D0] text-gray-800 dark:text-gray-100 dark:shadow-none"
+            : "bg-white border-gray-200 text-gray-800 dark:bg-[#151c2c] dark:border-white/10 dark:text-gray-100 dark:shadow-none",
         )}
       >
         <div className="flex items-start justify-between gap-3 mb-1">
-          <p className="font-semibold text-xs text-[#2563EB]">
+          <p className="font-semibold text-xs text-[#2563EB] dark:text-[#38BDF8]">
             {activity.user?.name ?? "Unknown"}
           </p>
           {canManage && !isEditing ? (
@@ -315,7 +315,7 @@ export function TaskCommentBubble({
                 <button
                   type="button"
                   disabled={isBusy}
-                  className="shrink-0 w-7 h-7 flex items-center justify-center rounded-md text-gray-400 hover:text-gray-700 hover:bg-white/60 disabled:opacity-50"
+                  className="shrink-0 w-7 h-7 flex items-center justify-center rounded-md text-gray-400 hover:text-gray-700 hover:bg-white/60 dark:hover:text-gray-200 dark:hover:bg-white/10 disabled:opacity-50"
                   aria-label="Comment options"
                   title="Comment options"
                 >
@@ -445,8 +445,8 @@ export function TaskCommentBubble({
                 className={cn(
                   "inline-flex items-center gap-1 h-7 px-2 rounded-full border text-xs transition-colors disabled:opacity-50",
                   item.reactedByMe
-                    ? "bg-blue-50 border-blue-200 text-[#2563EB]"
-                    : "bg-white/80 border-gray-200 text-gray-600 hover:bg-white",
+                    ? "bg-blue-50 border-blue-200 text-[#2563EB] dark:bg-[#2563EB]/20 dark:border-[#2563EB]/40 dark:text-[#38BDF8]"
+                    : "bg-white/80 border-gray-200 text-gray-600 hover:bg-white dark:bg-white/5 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/10",
                 )}
               >
                 <span className="text-sm leading-none">{item.emoji}</span>
@@ -502,7 +502,7 @@ export function TaskCommentBubble({
                     ref={reactTriggerRef}
                     type="button"
                     disabled={reactMutation.isPending}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-dashed border-gray-300 text-gray-400 hover:text-[#2563EB] hover:border-[#2563EB]/40 hover:bg-white disabled:opacity-50"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-dashed border-gray-300 text-gray-400 hover:text-[#2563EB] hover:border-[#2563EB]/40 hover:bg-white dark:border-white/20 dark:text-gray-400 dark:hover:text-[#38BDF8] dark:hover:border-[#38BDF8]/40 dark:hover:bg-white/10 disabled:opacity-50"
                     aria-label="Add reaction"
                     title="Add reaction"
                   >

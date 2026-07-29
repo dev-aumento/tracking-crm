@@ -7,7 +7,7 @@ import {
   localDateKey,
   workedSecondsFromStats,
 } from "@/lib/work-hours-policy";
-import { formatWorkZoneDate } from "@/lib/timezone";
+import { formatWorkZoneDate, istTimeOfDayGreeting } from "@/lib/timezone";
 import {
   Clock, CheckCircle2, Timer,
   Play, Square, Loader2,
@@ -25,11 +25,12 @@ import {
   DASHBOARD_REFRESH_EVENT,
   refreshDashboardPage,
 } from "@/lib/dashboard-refresh";
-import { isHrRoleOnly } from "@/lib/leave-policy";
+import { isHrRoleOnly, isAdminOrManagement } from "@/lib/leave-policy";
 import { HrDashboard } from "@/components/dashboard/HrDashboard";
 import { WorkforceOverviewPanels } from "@/components/dashboard/WorkforceOverviewPanels";
 import { WorkforceKpiCards } from "@/components/dashboard/WorkforceKpiCards";
 import { LeaveSummaryPanel } from "@/components/dashboard/LeaveSummaryPanel";
+import { MonthAttendanceCard } from "@/components/dashboard/MonthAttendanceCard";
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -44,27 +45,45 @@ export default function Dashboard() {
 function EmployeeDashboard() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const hidePersonalTimeAndTaskStats = isAdminOrManagement(user);
 
-  const { data: stats } = trpc.dashboard.getStats.useQuery(undefined, dashboardQueryOptions);
+  const { data: stats } = trpc.dashboard.getStats.useQuery(undefined, {
+    ...dashboardQueryOptions,
+    enabled: !hidePersonalTimeAndTaskStats,
+  });
   const { data: todayStats } = trpc.timeEntry.getStats.useQuery(
     { period: "today" },
-    dashboardQueryOptions,
+    {
+      ...dashboardQueryOptions,
+      enabled: !hidePersonalTimeAndTaskStats,
+    },
   );
   const { data: weeklyActivity } = trpc.dashboard.getWeeklyActivity.useQuery(
     undefined,
-    dashboardQueryOptions,
+    {
+      ...dashboardQueryOptions,
+      enabled: !hidePersonalTimeAndTaskStats,
+    },
   );
   const { data: workforceOverview } = trpc.dashboard.getHrDashboard.useQuery(undefined, {
     ...dashboardQueryOptions,
-    enabled: isAdmin,
+    enabled: isAdmin || hidePersonalTimeAndTaskStats,
   });
   const { data: leaveSummary } = trpc.dashboard.getLeaveSummary.useQuery(undefined, {
     ...dashboardQueryOptions,
-    enabled: !isAdmin,
+    enabled: !isAdmin && !hidePersonalTimeAndTaskStats,
   });
+  const { data: monthAttendance, isLoading: monthAttendanceLoading } =
+    trpc.timeEntry.getMonthAttendance.useQuery(undefined, {
+      ...dashboardQueryOptions,
+      enabled: !hidePersonalTimeAndTaskStats,
+    });
   const { data: currentSession } = trpc.timeEntry.getCurrentSession.useQuery(
     undefined,
-    dashboardQueryOptions,
+    {
+      ...dashboardQueryOptions,
+      enabled: !hidePersonalTimeAndTaskStats,
+    },
   );
   const utils = trpc.useUtils();
 
@@ -145,6 +164,9 @@ function EmployeeDashboard() {
     visible: { opacity: 1, y: 0, transition: { duration: 0.35, ease: "easeOut" as const } },
   };
 
+  const greeting = useMemo(() => istTimeOfDayGreeting(new Date()), []);
+  const firstName = user?.name?.split(" ")[0] || "there";
+
   return (
     <motion.div
       variants={containerVariants}
@@ -159,7 +181,7 @@ function EmployeeDashboard() {
       >
         <div className="min-w-0">
           <h1 className="text-lg sm:text-2xl font-bold text-[#1F2937] whitespace-nowrap overflow-hidden text-ellipsis">
-            Welcome back, {user?.name?.split(" ")[0] || "there"}!
+            {greeting}, {firstName}!
           </h1>
           <p className="text-sm text-gray-500 mt-1 w-full">
             {formatWorkZoneDate(new Date(), {
@@ -171,7 +193,8 @@ function EmployeeDashboard() {
           </p>
         </div>
 
-        {/* Clock In/Out Card — same resume logic as Time Tracking */}
+        {/* Clock In/Out Card — hidden for admin / management */}
+        {!hidePersonalTimeAndTaskStats ? (
         <div className="bg-white border border-gray-200 rounded-xl px-5 py-3 flex flex-col sm:flex-row items-start sm:items-center gap-3 shadow-sm w-full sm:w-auto">
           <div className="text-left sm:text-right w-full sm:w-auto">
             <div className="text-xs text-gray-500">
@@ -219,9 +242,11 @@ function EmployeeDashboard() {
             )}
           </button>
         </div>
+        ) : null}
       </motion.div>
 
-      {/* KPI Cards */}
+      {/* KPI Cards — hidden for admin / management */}
+      {!hidePersonalTimeAndTaskStats ? (
       <motion.div variants={itemVariants} className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
         {kpiCards.map((card) => (
           <div
@@ -251,14 +276,26 @@ function EmployeeDashboard() {
           </div>
         ))}
       </motion.div>
+      ) : null}
 
-      {/* Weekly Activity Chart */}
+      {/* Month attendance — employees only (hidden for admin / management) */}
+      {!hidePersonalTimeAndTaskStats ? (
+        <motion.div variants={itemVariants}>
+          <MonthAttendanceCard
+            data={monthAttendance}
+            isLoading={monthAttendanceLoading}
+          />
+        </motion.div>
+      ) : null}
+
+      {/* Weekly Activity Chart — hidden for admin / management */}
+      {!hidePersonalTimeAndTaskStats ? (
       <motion.div variants={itemVariants} className="bg-white border border-gray-200 rounded-xl p-5">
         <h2 className="font-semibold text-[#1F2937] mb-4">Weekly Activity</h2>
         <div className="h-72">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={weeklyActivity || []}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#F3F4F6" />
+              <CartesianGrid strokeDasharray="3 3" stroke="#c2c2c2" strokeOpacity={1}  />
               <XAxis dataKey="day" tick={{ fontSize: 12, fill: "#9CA3AF" }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fontSize: 12, fill: "#9CA3AF" }} axisLine={false} tickLine={false} />
               <Tooltip
@@ -296,9 +333,10 @@ function EmployeeDashboard() {
           </div>
         </div>
       </motion.div>
+      ) : null}
 
       {/* Same Leave Summary as HR/Admin — for employees only (admin gets it in workforce panels) */}
-      {!isAdmin ? (
+      {!isAdmin && !hidePersonalTimeAndTaskStats ? (
         <motion.div variants={itemVariants}>
           <LeaveSummaryPanel
             leaveMonthLabel={leaveSummary?.leaveMonthLabel}
@@ -309,7 +347,7 @@ function EmployeeDashboard() {
         </motion.div>
       ) : null}
 
-      {isAdmin ? (
+      {isAdmin || hidePersonalTimeAndTaskStats ? (
         <>
           <motion.div variants={itemVariants}>
             <WorkforceKpiCards data={workforceOverview} />
@@ -320,7 +358,7 @@ function EmployeeDashboard() {
         </>
       ) : null}
 
-      {currentSession?.active ? (
+      {!hidePersonalTimeAndTaskStats && currentSession?.active ? (
         <CrossDayClockOutDialog
           open={clockOutAction.dialogOpen}
           onOpenChange={clockOutAction.setDialogOpen}

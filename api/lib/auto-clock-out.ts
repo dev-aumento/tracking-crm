@@ -12,7 +12,7 @@ import { computeStoredAttendanceDurationSeconds } from "./attendance-breaks";
 import { pauseAllRunningTaskTimersForUser } from "./task-timers";
 import * as mock from "./mock-store";
 
-export const AUTO_CLOCK_OUT_NOTE = "Auto clock-out at 10:00 PM";
+export const AUTO_CLOCK_OUT_NOTE = "Auto clock-out at 12:00 AM";
 
 async function findActiveSession(userId: number) {
   const sessionCol = await getCollection<WorkSessionDoc>(Collections.workSessions);

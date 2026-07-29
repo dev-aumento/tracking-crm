@@ -6,6 +6,7 @@ import {
   Link2,
   Image as ImageIcon,
   Film,
+  Paperclip,
   Loader2,
 } from "lucide-react";
 import {
@@ -155,6 +156,7 @@ export const RichTextCommentEditor = forwardRef<
   const editorRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const previewUrlsRef = useRef<Record<number, string>>({});
   const [uploadingCount, setUploadingCount] = useState(0);
   const uploadingCountRef = useRef(0);
@@ -358,7 +360,11 @@ export const RichTextCommentEditor = forwardRef<
     isUploading: () => uploadingCountRef.current > 0,
     attachFiles: async (files) => {
       for (const file of Array.from(files)) {
-        await uploadAndAttach(file);
+        try {
+          await uploadAndAttach(file);
+        } catch {
+          // uploadAndAttach already surfaces errors; keep uploading remaining files.
+        }
       }
     },
   }));
@@ -368,16 +374,14 @@ export const RichTextCommentEditor = forwardRef<
 
     if (clipboard.files?.length) {
       for (const file of Array.from(clipboard.files)) {
-        if (isImageOrVideoFile(file)) files.push(file);
+        files.push(file);
       }
     }
 
     for (const item of Array.from(clipboard.items ?? [])) {
       if (item.kind !== "file") continue;
-      if (item.type.startsWith("image/") || item.type.startsWith("video/")) {
-        const file = item.getAsFile();
-        if (file && isImageOrVideoFile(file)) files.push(file);
-      }
+      const file = item.getAsFile();
+      if (file) files.push(file);
     }
 
     const unique = new Map<string, File>();
@@ -735,6 +739,9 @@ export const RichTextCommentEditor = forwardRef<
         <ToolbarButton label="Insert video" onClick={() => videoInputRef.current?.click()}>
           <Film size={16} />
         </ToolbarButton>
+        <ToolbarButton label="Attach any file" onClick={() => fileInputRef.current?.click()}>
+          <Paperclip size={16} />
+        </ToolbarButton>
         {uploadingCount > 0 ? (
           <span className="inline-flex items-center gap-1 px-2 text-xs text-gray-500">
             <Loader2 size={12} className="animate-spin" />
@@ -788,7 +795,7 @@ export const RichTextCommentEditor = forwardRef<
       <input
         ref={imageInputRef}
         type="file"
-        accept="image/*"
+        accept="*/*"
         multiple
         className="hidden"
         onChange={handleImagePick}
@@ -796,7 +803,15 @@ export const RichTextCommentEditor = forwardRef<
       <input
         ref={videoInputRef}
         type="file"
-        accept="video/*"
+        accept="*/*"
+        multiple
+        className="hidden"
+        onChange={handleImagePick}
+      />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="*/*"
         multiple
         className="hidden"
         onChange={handleImagePick}
@@ -804,13 +819,6 @@ export const RichTextCommentEditor = forwardRef<
     </div>
   );
 });
-
-function isImageOrVideoFile(file: File) {
-  const mime = resolveFileMimeType(file);
-  if (mime.startsWith("image/") || mime.startsWith("video/")) return true;
-  // Some OS / browser drag payloads omit MIME type but keep the filename.
-  return /\.(avif|bmp|gif|jpe?g|png|svg|webp|mp4|mov|webm|m4v)$/i.test(file.name);
-}
 
 export function isSelectionInsideList() {
   const selection = window.getSelection();

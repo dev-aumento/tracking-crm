@@ -149,14 +149,11 @@ export function formatFileSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export const MAX_TASK_ATTACHMENT_BYTES = 50 * 1024 * 1024; // per-file; stored in GridFS (not BSON docs)
+export const MAX_TASK_ATTACHMENT_BYTES = Number.POSITIVE_INFINITY;
 
-export function assertAttachmentFileSize(file: File | { name: string; size: number }) {
-  if (file.size <= MAX_TASK_ATTACHMENT_BYTES) return;
-  const maxMb = Math.round(MAX_TASK_ATTACHMENT_BYTES / (1024 * 1024));
-  throw new Error(
-    `"${file.name}" is too large (${formatFileSize(file.size)}). Max upload size is ${maxMb} MB.`,
-  );
+/** Size checks disabled — task/comment attachments accept any file size. */
+export function assertAttachmentFileSize(_file: File | { name: string; size: number }) {
+  // Intentionally no-op: large files are stored in GridFS.
 }
 
 export async function readFileAsBase64(file: File): Promise<string> {

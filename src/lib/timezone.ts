@@ -127,3 +127,11 @@ export function formatWorkZoneDateKey(
   if (!y || !m || !d) return dateKey;
   return formatInWorkZone(workZoneWallTimeToUtc(y, m, d, 12, 0, 0), options, locale);
 }
+
+/** Greeting based on Asia/Kolkata wall-clock hour. */
+export function istTimeOfDayGreeting(date: Date | string = new Date()): string {
+  const { hour } = workZoneDateParts(date);
+  if (hour < 12) return "Good morning";
+  if (hour < 17) return "Good afternoon";
+  return "Good evening";
+}

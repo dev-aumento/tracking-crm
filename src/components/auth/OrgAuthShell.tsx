@@ -29,8 +29,7 @@ export function OrgAuthShell({ children, organizationLabel }: OrgAuthShellProps)
             backgroundImage:
               "linear-gradient(rgba(255,255,255,0.8) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.8) 1px, transparent 1px)",
             backgroundSize: "48px 48px",
-          }}
-        />
+          }}/>
         <div className="absolute bottom-0 left-0 right-0 h-1/3 bg-gradient-to-t from-[#060f1a] to-transparent" />
 
         <div className="relative z-10 flex items-center gap-3">

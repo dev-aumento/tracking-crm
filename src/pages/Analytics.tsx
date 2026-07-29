@@ -110,7 +110,7 @@ export default function Analytics() {
                     <span className="text-xs text-gray-500">{stat.label}</span>
                   </div>
                   <div className="text-xl font-bold text-[#1F2937]">{stat.value}</div>
-                  <div className="text-[11px] text-[#2563EB] mt-1">View employees</div>
+                  <div className="text-[11px] text-[#2563EB] mt-1 dark:text-white">View employees</div>
                 </button>
               );
             }
@@ -153,7 +153,7 @@ export default function Analytics() {
                     margin={{ top: 4, right: 12, left: 4, bottom: 4 }}
                     barCategoryGap="20%"
                   >
-                    <CartesianGrid strokeDasharray="3 3" stroke="#F3F4F6" />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#c2c2c2" strokeOpacity={1} />
                     <XAxis type="number" tick={{ fontSize: 11, fill: "#9CA3AF" }} axisLine={false} tickLine={false} />
                     <YAxis
                       dataKey="name"
@@ -227,7 +227,7 @@ export default function Analytics() {
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={weeklyCompletion}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#F3F4F6" />
+                <CartesianGrid strokeDasharray="3 3" stroke="#c2c2c2" strokeOpacity={1} />
                 <XAxis dataKey="day" tick={{ fontSize: 12, fill: "#9CA3AF" }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontSize: 12, fill: "#9CA3AF" }} axisLine={false} tickLine={false} />
                 <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid #E5E7EB", fontSize: 12 }} />

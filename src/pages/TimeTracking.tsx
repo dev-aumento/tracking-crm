@@ -31,6 +31,7 @@ import {
   workedSecondsFromStats,
 } from "@/lib/work-hours-policy";
 import { formatWorkZoneDateKey, formatWorkZoneTime } from "@/lib/timezone";
+import { isAdminOrManagement } from "@/lib/leave-policy";
 import {
   Play, Square, Timer, Clock, TrendingUp,
   Loader2, Pause, AlertCircle,
@@ -92,12 +93,22 @@ export default function TimeTracking() {
   const [note, setNote] = useState("");
   const isAdmin = user?.role === "admin";
   const isHR = user?.role === "hr";
+  const hidePersonalTime = isAdminOrManagement(user);
 
-  const { data: currentSession } = trpc.timeEntry.getCurrentSession.useQuery();
-  const { data: weekStats } = trpc.timeEntry.getStats.useQuery({ period: "week" });
-  const { data: todayStats } = trpc.timeEntry.getStats.useQuery({ period: "today" });
+  const { data: currentSession } = trpc.timeEntry.getCurrentSession.useQuery(undefined, {
+    enabled: !hidePersonalTime,
+  });
+  const { data: weekStats } = trpc.timeEntry.getStats.useQuery(
+    { period: "week" },
+    { enabled: !hidePersonalTime },
+  );
+  const { data: todayStats } = trpc.timeEntry.getStats.useQuery(
+    { period: "today" },
+    { enabled: !hidePersonalTime },
+  );
   const { data: stats, isFetching: statsLoading, isPlaceholderData } = trpc.timeEntry.getStats.useQuery(
     { period },
+    { enabled: !hidePersonalTime },
   );
   const utils = trpc.useUtils();
 
@@ -277,18 +288,20 @@ export default function TimeTracking() {
     <motion.div variants={containerVariants} initial="hidden" animate="visible" className="space-y-6">
       {/* Header */}
       <motion.div variants={itemVariants}>
-        <h1 className="text-2xl font-bold text-[#1F2937]">Time Tracking</h1>
+        <h1 className="text-2xl font-bold text-[#1F2937]">
+          {hidePersonalTime ? "Employee Hours" : "Time Tracking"}
+        </h1>
         <p className="text-sm text-gray-500 mt-0.5">
-          Required: {REQUIRED_DAILY_HOURS}h/day · {WORKING_DAYS_PER_WEEK} weekdays ·{" "}
-          {REQUIRED_WEEKLY_HOURS}h/week · half leave requires 5h that day · leave adjusts weekly target
+          {hidePersonalTime
+            ? "Review employee hours and time approval requests"
+            : `Required: ${REQUIRED_DAILY_HOURS}h/day · ${WORKING_DAYS_PER_WEEK} weekdays · ${REQUIRED_WEEKLY_HOURS}h/week · half leave requires 5h that day · leave adjusts weekly target`}
         </p>
       </motion.div>
 
+      {!hidePersonalTime ? (
+        <>
       {/* Clock In/Out Hero Card */}
-      <motion.div
-        variants={itemVariants}
-        className="bg-gradient-to-r from-[#2563EB] to-[#3B82F6] rounded-2xl p-6 text-white shadow-lg shadow-blue-200"
-      >
+      <motion.div variants={itemVariants} className="bg-gradient-to-r from-[#2563EB] to-[#3B82F6] rounded-2xl p-6 text-white shadow-lg shadow-blue-200">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div className="min-w-0">
             <div className="text-blue-100 text-sm font-medium mb-1">
@@ -562,6 +575,12 @@ export default function TimeTracking() {
 
         <DayHoursSection />
       </motion.div>
+        </>
+      ) : (
+        <motion.div variants={itemVariants} className="bg-white border border-gray-200 rounded-xl p-5">
+          <DayHoursSection embedded={false} />
+        </motion.div>
+      )}
 
       {isAdmin || isHR ? (
         <motion.div variants={itemVariants}>
@@ -569,7 +588,7 @@ export default function TimeTracking() {
         </motion.div>
       ) : null}
 
-      {currentSession?.active ? (
+      {!hidePersonalTime && currentSession?.active ? (
         <CrossDayClockOutDialog
           open={clockOutAction.dialogOpen}
           onOpenChange={clockOutAction.setDialogOpen}

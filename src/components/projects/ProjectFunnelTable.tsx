@@ -78,7 +78,7 @@ export function ProjectFunnelTable({
       <div className="overflow-x-auto">
         <table className="w-full min-w-[720px] border-collapse">
           <thead>
-            <tr className="border-b border-gray-200 bg-gray-50/90 text-left text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+            <tr className="border-b border-gray-200 bg-gray-50/90 text-left text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:bg-[#1a2336] dark:text-gray-300 dark:border-[#2d3a4f]">
               <th className="w-10 px-3 py-3">
                 <input
                   type="checkbox"

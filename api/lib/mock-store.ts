@@ -5,7 +5,7 @@ import {
 } from "./dashboard-task-stats";
 import type { SafeUser } from "../queries/users";
 import { buildTimeStatsSummary, localDateKey, startOfCalendarWeek, periodClockInBounds, dayBounds, roundHours, attendanceEntrySeconds, getAutoClockOutDeadline, isPastAutoClockOutDeadline, computeAttendanceWorkSeconds, resolveAttendanceDisplaySeconds, filterMeaningfulAttendanceEntries } from "@/lib/work-hours-policy";
-import { buildLeaveCoverageMap, eachLeaveDateKey, isWeekdayDateKey } from "@/lib/leave-policy";
+import { buildLeaveCoverageMap, eachLeaveDateKey, isAdminOrManagement, isWeekdayDateKey } from "@/lib/leave-policy";
 import {
   projectPerformancePercent,
 } from "@/lib/project-funnel";
@@ -14,8 +14,13 @@ import { taskMatchesUnifiedSearch } from "@/lib/unified-search";
 import { extractMentionedUserIds, formatCommentPreview } from "@/lib/task-comment-mentions";
 import { extractMentionedUserIdsFromComment, richCommentPlainText } from "@/lib/rich-comment";
 import { readCommentReactions, toggleUserReaction } from "@/lib/comment-reactions";
-import { formatWorkZoneTime, startOfWorkZoneDay } from "@/lib/timezone";
+import { formatWorkZoneTime, startOfWorkZoneDay, workZoneWallTimeToUtc } from "@/lib/timezone";
 import { defaultTaskDeadlineIso } from "@/lib/task-deadline";
+import {
+  buildDaySnapshotsFromEntries,
+  calendarMonthBounds,
+  classifyMonthAttendance,
+} from "@/lib/month-attendance";
 
 function daysAgo(n: number) {
   const d = new Date();
@@ -482,7 +487,9 @@ export function mockWeeklyActivity() {
 
 export function mockWorkload() {
   const weekStart = startOfCalendarWeek();
-  return users.map((user) => {
+  return users
+    .filter((user) => String(user.role ?? "").toLowerCase() !== "admin")
+    .map((user) => {
     const totalMinutes = allUserTimeEntries(user.id)
       .filter((e) => e.clockOut && new Date(e.clockIn) >= weekStart)
       .reduce((sum, e) => sum + (e.duration ?? 0), 0);
@@ -1247,13 +1254,22 @@ function mockCanManageTaskTime(actor: SafeUser, taskId: number) {
   return (taskParticipants[taskId] ?? []).some((p) => p.id === actor.id);
 }
 
-export function mockStartTaskTimer(userId: number, taskId: number, actor: SafeUser) {
+export function mockStartTaskTimer(
+  userId: number,
+  taskId: number,
+  actor: SafeUser,
+  clientStartedAt?: Date,
+) {
   if (!mockCanManageTaskTime(actor, taskId)) {
     throw new Error("Only the assignee or participants can start the timer on this task");
   }
   const task = tasks.find((t) => t.id === taskId);
   const label = mockActorLabel(actor);
   const taskTitle = task?.title ?? "a task";
+  const startedAt =
+    clientStartedAt instanceof Date && Number.isFinite(clientStartedAt.getTime())
+      ? clientStartedAt
+      : new Date();
 
   const existing = activeTaskTimers[userId];
   if (
@@ -1271,7 +1287,7 @@ export function mockStartTaskTimer(userId: number, taskId: number, actor: SafeUs
   if (current?.taskId === taskId && current.paused) {
     // Each Start/Resume begins a fresh session from 00:00:00.
     current.paused = false;
-    current.clockIn = new Date();
+    current.clockIn = startedAt;
     current.accumulatedSeconds = 0;
     const list = taskActivities[taskId] ?? (taskActivities[taskId] = []);
     list.unshift({
@@ -1298,7 +1314,7 @@ export function mockStartTaskTimer(userId: number, taskId: number, actor: SafeUs
   activeTaskTimers[userId] = {
     userId,
     taskId,
-    clockIn: new Date(),
+    clockIn: startedAt,
     paused: false,
     accumulatedSeconds: 0,
   };
@@ -1311,7 +1327,7 @@ export function mockStartTaskTimer(userId: number, taskId: number, actor: SafeUs
     oldValue: null,
     newValue: "started timer",
     metadata: null,
-    createdAt: new Date(),
+    createdAt: startedAt,
     user: actor,
   });
   mockNotifyTaskMembers({
@@ -1321,7 +1337,7 @@ export function mockStartTaskTimer(userId: number, taskId: number, actor: SafeUs
     title: "Timer started",
     message: `${label} started the timer on "${taskTitle}"`,
   });
-  return { taskId, startedAt: activeTaskTimers[userId].clockIn };
+  return { taskId, startedAt };
 }
 
 export function mockPauseTaskTimer(userId: number, taskId: number, actor: SafeUser) {
@@ -3021,6 +3037,97 @@ export function mockTimeStats(userId: number, period: "today" | "week" | "month"
   };
 }
 
+export function mockMonthAttendance(
+  userId: number,
+  year: number,
+  month: number,
+  now = new Date(),
+) {
+  const { end, endKey } = calendarMonthBounds(year, month);
+  const lookbackStart = workZoneWallTimeToUtc(year, month, 1 - 14, 0, 0, 0, 0);
+  const lookbackStartKey = localDateKey(lookbackStart);
+
+  const entries = allUserTimeEntries(userId).filter(
+    (e) =>
+      e.taskId == null &&
+      e.clockIn >= lookbackStart &&
+      e.clockIn <= end,
+  );
+
+  const breaks = mockFindBreaksOverlappingWindow(userId, lookbackStart, end);
+  const leaveByDate = buildLeaveCoverageMap(
+    leaveRequests.filter(
+      (r) =>
+        r.userId === userId &&
+        r.status === "approved" &&
+        r.startDate <= endKey &&
+        r.endDate >= lookbackStartKey,
+    ),
+  );
+
+  const session = workSessionsByUser[userId];
+  let liveSession: { startTime: Date; workSeconds: number } | null = null;
+  if (
+    session?.active &&
+    session.startTime >= lookbackStart &&
+    session.startTime <= end
+  ) {
+    const workSeconds = computeAttendanceWorkSeconds(
+      session.startTime,
+      now,
+      mockFindBreaksOverlappingWindow(userId, session.startTime, now),
+      now,
+    );
+    liveSession = { startTime: session.startTime, workSeconds };
+  }
+
+  const days = buildDaySnapshotsFromEntries({
+    userId,
+    entries,
+    breaks: breaks.map((b) => ({
+      userId,
+      startTime: b.startTime,
+      endTime: b.endTime,
+    })),
+    leaveByDate,
+    now,
+    liveSession,
+  });
+
+  return classifyMonthAttendance(year, month, days, {
+    asOf: now,
+    leaves: leaveRequests.filter(
+      (r) =>
+        r.userId === userId &&
+        r.status === "approved" &&
+        r.startDate <= endKey &&
+        r.endDate >= lookbackStartKey,
+    ),
+    holidayDateKeys: mockListPublicHolidays(year)
+      .holidays.filter((h) => h.date.startsWith(`${year}-${String(month).padStart(2, "0")}-`))
+      .map((h) => h.date),
+  });
+}
+
+export function mockTeamMonthAttendance(
+  year: number,
+  month: number,
+  now = new Date(),
+) {
+  return users
+    .filter((u) => !isAdminOrManagement(u))
+    .map((user) => ({
+      userId: user.id,
+      name: user.name || "Unknown",
+      email: user.email ?? null,
+      avatar: user.avatar ?? null,
+      department: user.department ?? null,
+      role: user.role,
+      attendance: mockMonthAttendance(user.id, year, month, now),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function mockDayEntriesForUser(userId: number, dateStr: string, now = new Date()) {
   const { start, end } = dayBounds(dateStr);
   const dayEntries = userWorkEntries.filter(
@@ -3628,7 +3735,9 @@ export function mockGetDayHours(userId: number, dateStr: string) {
 
 export function mockTeamHours(input?: { date?: string; startDate?: string; endDate?: string }) {
   const dateStr = input?.date ?? localDateKey(new Date());
-  return users.map((user) => {
+  return users
+    .filter((user) => String(user.role ?? "").toLowerCase() !== "admin")
+    .map((user) => {
     const day = mockDayEntriesForUser(user.id, dateStr);
     return {
       userId: user.id,

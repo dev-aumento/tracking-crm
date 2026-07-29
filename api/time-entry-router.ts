@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { createRouter, authedQuery, managerQuery, adminOrHrQuery } from "./middleware";
 import { isAuthDisabled } from "./lib/dev-mode";
 import { assertPermission, hasPermission } from "./lib/permissions";
@@ -12,7 +13,7 @@ import {
   resolveAttendanceDisplaySeconds,
   filterMeaningfulAttendanceEntries,
 } from "@/lib/work-hours-policy";
-import { buildLeaveCoverageMap } from "@/lib/leave-policy";
+import { buildLeaveCoverageMap, canManageLeaves } from "@/lib/leave-policy";
 import {
   getCollection,
   insertDoc,
@@ -48,6 +49,20 @@ import {
   notifyUserOfTimeReview,
   validateManualClockInRequest,
 } from "./lib/time-approvals";
+import {
+  computeTeamMonthAttendance,
+  computeUserMonthAttendance,
+  resolveMonthInput,
+} from "./lib/month-attendance-compute";
+
+function assertLeaveManager(user: { role?: string | null; department?: string | null }) {
+  if (!canManageLeaves(user)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Only HR and admins can view team attendance",
+    });
+  }
+}
 
 type SessionPauseFields = Pick<
   WorkSessionDoc,
@@ -1187,6 +1202,37 @@ export const timeEntryRouter = createRouter({
       };
     }),
 
+  getMonthAttendance: authedQuery
+    .input(
+      z
+        .object({
+          year: z.number().int().min(2000).max(2100).optional(),
+          month: z.number().int().min(1).max(12).optional(),
+        })
+        .optional(),
+    )
+    .query(async ({ ctx, input }) => {
+      const { year, month } = resolveMonthInput(input);
+      await ensureSchema();
+      return computeUserMonthAttendance(ctx.user.id, year, month);
+    }),
+
+  getTeamMonthAttendance: authedQuery
+    .input(
+      z
+        .object({
+          year: z.number().int().min(2000).max(2100).optional(),
+          month: z.number().int().min(1).max(12).optional(),
+        })
+        .optional(),
+    )
+    .query(async ({ ctx, input }) => {
+      assertLeaveManager(ctx.user);
+      const { year, month } = resolveMonthInput(input);
+      await ensureSchema();
+      return computeTeamMonthAttendance(year, month);
+    }),
+
   getTeamHours: authedQuery
     .input(z.object({
       date: z.string().optional(),
@@ -1210,10 +1256,12 @@ export const timeEntryRouter = createRouter({
       }
 
       const userCol = await getCollection<UserDoc>(Collections.users);
-      const allUsers = await userCol
-        .find({ status: "active" })
-        .project({ id: 1, name: 1, avatar: 1, role: 1 })
-        .toArray();
+      const allUsers = (
+        await userCol
+          .find({ status: "active" })
+          .project({ id: 1, name: 1, avatar: 1, role: 1 })
+          .toArray()
+      ).filter((user) => String(user.role ?? "").toLowerCase() !== "admin");
 
       const now = new Date();
       const teamHours = await Promise.all(

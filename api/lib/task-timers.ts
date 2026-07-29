@@ -58,13 +58,13 @@ export async function pauseRunningTaskTimerEntry(
   });
 
   if (task) {
-    await notifyTaskMembers({
+    void notifyTaskMembers({
       taskId,
       actor: user,
       type: "task_updated",
       title: "Timer paused",
       message: `${actorLabel(user)} paused the timer on "${task.title}"`,
-    });
+    }).catch(() => undefined);
   }
 
   return { taskId, durationSeconds };
@@ -110,7 +110,11 @@ export async function pauseAllRunningTaskTimersForUser(
   return results;
 }
 
-export async function pauseOtherRunningTaskTimers(user: SafeUser, exceptTaskId: number) {
+export async function pauseOtherRunningTaskTimers(
+  user: SafeUser,
+  exceptTaskId: number,
+  now = new Date(),
+) {
   if (usesMock()) {
     const active = mock.mockGetMyActiveTaskTimer(user.id);
     if (active && active.taskId !== exceptTaskId && active.startedAt && !active.paused) {
@@ -119,7 +123,6 @@ export async function pauseOtherRunningTaskTimers(user: SafeUser, exceptTaskId: 
     return;
   }
 
-  const now = new Date();
   const timeCol = await getCollection<TimeEntryDoc>(Collections.timeEntries);
   const openEntries = await timeCol
     .find({

@@ -13,7 +13,7 @@ import { startHolidayReminderScheduler } from "./lib/holiday-reminders";
 
 const app = new Hono<{ Bindings: HttpBindings }>();
 
-app.use(bodyLimit({ maxSize: 80 * 1024 * 1024 }));
+app.use(bodyLimit({ maxSize: 1024 * 1024 * 1024 }));
 app.get("/api/notifications/stream", notificationStreamHandler);
 app.use("/api/trpc/*", async (c) => {
   return fetchRequestHandler({

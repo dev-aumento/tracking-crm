@@ -20,7 +20,7 @@ export const META_SELECT_CLASS = cn(
 
 export const META_DATETIME_CLASS = cn(
   "h-9 w-full max-w-[240px] rounded-lg border border-gray-200 bg-white px-3",
-  "text-sm text-gray-800 [color-scheme:light]",
+  "text-sm text-gray-800 [color-scheme:light] dark:[color-scheme:dark]",
   "[&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:cursor-pointer",
   "[&::-webkit-datetime-edit]:leading-9 [&::-webkit-datetime-edit-fields-wrapper]:p-0",
 );

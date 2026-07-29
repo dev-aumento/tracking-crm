@@ -34,6 +34,7 @@ import { ListPaginationControls } from "@/components/shared/ListPaginationContro
 import { FilterSelect } from "@/components/shared/FilterSelect";
 import { LIST_PAGE_SIZE, paginateItems } from "@/lib/list-pagination";
 import type { ProjectPipelineStageKey } from "@/lib/task-kanban";
+import { taskMatchesStatusFilter } from "@/lib/task-kanban";
 import { Check, ChevronDown, Plus } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -189,7 +190,7 @@ export default function AdminAllTasks() {
     );
 
     if (statusFilter) {
-      result = result.filter((t) => t.status === statusFilter);
+      result = result.filter((t) => taskMatchesStatusFilter(t, statusFilter));
     }
     if (priorityFilter) {
       result = result.filter((t) => t.priority === priorityFilter);

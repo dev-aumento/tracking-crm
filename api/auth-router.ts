@@ -412,43 +412,56 @@ export const authRouter = createRouter({
     .mutation(async ({ input, ctx }) => {
       try {
         await ensureSchema();
+
+        const user = await findUserByEmail(input.email.toLowerCase());
+
+        if (!user?.passwordHash) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "Invalid email or password",
+          });
+        }
+
+        if (user.status !== "active") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Account is not active",
+          });
+        }
+
+        const valid = await verifyPassword(input.password, user.passwordHash);
+        if (!valid) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "Invalid email or password",
+          });
+        }
+
+        await updateLastSignIn(user.id);
+        await createSessionForUser(user.id, ctx.req.headers, ctx.resHeaders);
+
+        return { user: omitPasswordHash(user) };
       } catch (error) {
-        console.error("[auth] Database setup failed:", error);
+        if (error instanceof TRPCError) throw error;
+        console.error("[auth] Login failed:", error);
+        const message = error instanceof Error ? error.message : String(error);
+        if (
+          /electionId\/setVersion mismatch|primary marked stale|MongoServerSelectionError|not primary/i.test(
+            message,
+          )
+        ) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message:
+              "Database connection is updating after a cluster change. Please wait a few seconds and try again.",
+          });
+        }
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message:
-            "Database setup failed. Check MONGODB_URI and ensure MongoDB is reachable.",
+            "Unable to sign in right now. Check the database connection and try again.",
         });
       }
-
-      const user = await findUserByEmail(input.email.toLowerCase());
-
-      if (!user?.passwordHash) {
-        throw new TRPCError({
-          code: "UNAUTHORIZED",
-          message: "Invalid email or password",
-        });
-      }
-
-      if (user.status !== "active") {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Account is not active",
-        });
-      }
-
-      const valid = await verifyPassword(input.password, user.passwordHash);
-      if (!valid) {
-        throw new TRPCError({
-          code: "UNAUTHORIZED",
-          message: "Invalid email or password",
-        });
-      }
-
-      await updateLastSignIn(user.id);
-      await createSessionForUser(user.id, ctx.req.headers, ctx.resHeaders);
-
-      return { user: omitPasswordHash(user) };
     }),
 
   logout: publicQuery.mutation(async ({ ctx }) => {

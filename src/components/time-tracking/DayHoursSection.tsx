@@ -6,6 +6,7 @@ import { Timer, Calendar, Loader2, Pencil } from "lucide-react";
 import { localDateKey, REQUIRED_DAILY_HOURS } from "@/lib/work-hours-policy";
 import { formatDuration } from "@/lib/utils";
 import { hasPermission } from "@/lib/permissions";
+import { isAdminOrManagement } from "@/lib/leave-policy";
 import { BreaksPanel } from "@/components/time-tracking/BreaksPanel";
 import {
   EditAttendanceEntryDialog,
@@ -108,9 +109,10 @@ function DayEntriesPanel({
   );
 }
 
-export function DayHoursSection() {
+export function DayHoursSection({ embedded = true }: { embedded?: boolean }) {
   const { user } = useAuth();
-  const canViewTeamHours = hasPermission(user, "time.view_team");
+  const canViewTeamHours =
+    hasPermission(user, "time.view_team") || isAdminOrManagement(user);
   const utils = trpc.useUtils();
 
   const [selectedDate, setSelectedDate] = useState(() => localDateKey(new Date()));
@@ -162,9 +164,11 @@ export function DayHoursSection() {
       : `Your hours for ${formatDisplayDate(selectedDate)}`;
 
   return (
-    <div className="space-y-4 pt-4 border-t border-gray-100">
+    <div className={`space-y-4 ${embedded ? "pt-4 border-t border-gray-100" : ""}`}>
       <div>
-        <h2 className="font-semibold text-[#1F2937]">Daily Hours</h2>
+        <h2 className="font-semibold text-[#1F2937]">
+          {canViewTeamHours && !embedded ? "Employee Hours" : "Daily Hours"}
+        </h2>
         <p className="text-xs text-gray-400 mt-0.5">{sectionSubtitle}</p>
         <p className="text-xs text-gray-400 mt-1">
           Clock-in to clock-out time, excluding breaks
@@ -191,7 +195,9 @@ export function DayHoursSection() {
             className="h-9 px-3 border border-gray-200 rounded-lg text-sm bg-white w-full sm:w-auto sm:min-w-[220px]"
           >
             <option value="">All employees</option>
-            {(usersData?.users ?? []).map((u) => (
+            {(usersData?.users ?? [])
+              .filter((u) => String(u.role ?? "").toLowerCase() !== "admin")
+              .map((u) => (
               <option key={u.id} value={u.id}>
                 {u.name ?? u.email ?? `User #${u.id}`}
               </option>

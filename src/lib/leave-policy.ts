@@ -768,6 +768,23 @@ export function canManageLeaves(
 }
 
 /**
+ * Admins and leadership departments do not use personal clock-in / own-hours tracking.
+ * Matched by system role `admin` or department Management / Administration / Administrator.
+ */
+export function isAdminOrManagement(
+  user: { role?: string | null; department?: string | null } | null | undefined,
+): boolean {
+  if (!user) return false;
+  if (String(user.role ?? "").toLowerCase() === "admin") return true;
+  const department = (user.department ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  return (
+    department === "management" ||
+    department === "administration" ||
+    department === "administrator"
+  );
+}
+
+/**
  * HR users do not use task/project product areas.
  * Matched by system role `hr` or department set to HR.
  */
@@ -800,6 +817,8 @@ export function isHrRestrictedPath(path: string): boolean {
   if (path === "/projects" || path.startsWith("/projects/")) return true;
   if (path === "/task-chats" || path.startsWith("/task-chats/")) return true;
   if (path === "/admin/permissions" || path.startsWith("/admin/permissions/")) return true;
+  if (path === "/admin/invoices" || path.startsWith("/admin/invoices/")) return true;
+  if (path === "/admin/customers" || path.startsWith("/admin/customers/")) return true;
   return false;
 }
 

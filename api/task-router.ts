@@ -1060,9 +1060,31 @@ export const taskRouter = createRouter({
   }),
 
   startTimer: authedQuery
-    .input(z.object({ taskId: z.number() }))
+    .input(
+      z.object({
+        taskId: z.number(),
+        /** Client click time — used so slow server work does not steal tracked seconds. */
+        clientStartedAt: z.coerce.date().optional(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
-      if (useTaskMock()) return mock.mockStartTaskTimer(ctx.user.id, input.taskId, ctx.user);
+      if (useTaskMock()) {
+        return mock.mockStartTaskTimer(ctx.user.id, input.taskId, ctx.user, input.clientStartedAt);
+      }
+
+      // Capture start time before any awaits so tracked time matches the user's click.
+      const requestReceivedAt = new Date();
+      const client = input.clientStartedAt;
+      let now = requestReceivedAt;
+      if (client instanceof Date && Number.isFinite(client.getTime())) {
+        const clientMs = client.getTime();
+        const serverMs = requestReceivedAt.getTime();
+        const notFarFuture = clientMs <= serverMs + 5_000;
+        const withinSkew = Math.abs(serverMs - clientMs) <= 120_000;
+        if (notFarFuture && withinSkew) {
+          now = client;
+        }
+      }
 
       await ensureSchema();
       const task = await findById<TaskDoc>(Collections.tasks, input.taskId);
@@ -1071,9 +1093,8 @@ export const taskRouter = createRouter({
         throw new Error("Only the assignee or participants can start the timer on this task");
       }
 
-      await pauseOtherRunningTaskTimers(ctx.user, input.taskId);
+      await pauseOtherRunningTaskTimers(ctx.user, input.taskId, now);
 
-      const now = new Date();
       const timeCol = await getCollection<TimeEntryDoc>(Collections.timeEntries);
       // Close any leftover open session so each Start begins a fresh 00:00:00 run.
       const openEntries = await timeCol
@@ -1112,8 +1133,8 @@ export const taskRouter = createRouter({
         updatedAt: now,
       });
 
-      // Add an activity entry so the task activity feed shows who started time tracking.
-      await insertDoc<TaskActivityDoc>(Collections.taskActivity, {
+      // Activity + notifications are non-blocking so Start returns immediately.
+      void insertDoc<TaskActivityDoc>(Collections.taskActivity, {
         taskId: input.taskId,
         userId: ctx.user.id,
         action: "time_logged",
@@ -1121,15 +1142,15 @@ export const taskRouter = createRouter({
         newValue: "started timer",
         metadata: null,
         createdAt: now,
-      });
+      }).catch(() => undefined);
 
-      await notifyTaskMembers({
+      void notifyTaskMembers({
         taskId: input.taskId,
         actor: ctx.user,
         type: "task_updated",
         title: "Timer started",
         message: `${actorLabel(ctx.user)} started the timer on "${task.title}"`,
-      });
+      }).catch(() => undefined);
 
       return { taskId: input.taskId, startedAt: now };
     }),
@@ -1628,7 +1649,7 @@ export const taskRouter = createRouter({
       fileName: z.string().min(1).max(500),
       mimeType: z.string().max(255).default("application/octet-stream"),
       fileSize: z.number().int().nonnegative(),
-      dataBase64: z.string().min(1).max(70_000_000),
+      dataBase64: z.string().min(1).max(1_500_000_000),
       /** false = comment/chat/description media only (hidden from Files). */
       listedInFiles: z.boolean().optional().default(true),
     }))

@@ -1,23 +1,26 @@
 import { TRPCError } from "@trpc/server";
 import type { SafeUser } from "../queries/users";
+import { isAdminOrManagement } from "@/lib/leave-policy";
 
 export function hasPermission(
-  user: Pick<SafeUser, "role" | "permissions">,
+  user: Pick<SafeUser, "role" | "permissions" | "department">,
   permission: string,
 ): boolean {
   if (user.role === "admin") return true;
+  // Leadership departments review employee hours without personal time tracking
+  if (permission === "time.view_team" && isAdminOrManagement(user)) return true;
   return user.permissions?.includes(permission) ?? false;
 }
 
 export function hasAnyPermission(
-  user: Pick<SafeUser, "role" | "permissions">,
+  user: Pick<SafeUser, "role" | "permissions" | "department">,
   permissions: string[],
 ): boolean {
   return permissions.some((permission) => hasPermission(user, permission));
 }
 
 export function assertPermission(
-  user: Pick<SafeUser, "role" | "permissions">,
+  user: Pick<SafeUser, "role" | "permissions" | "department">,
   permission: string,
 ) {
   if (!hasPermission(user, permission)) {
@@ -29,7 +32,7 @@ export function assertPermission(
 }
 
 export function assertAnyPermission(
-  user: Pick<SafeUser, "role" | "permissions">,
+  user: Pick<SafeUser, "role" | "permissions" | "department">,
   permissions: string[],
 ) {
   if (!hasAnyPermission(user, permissions)) {

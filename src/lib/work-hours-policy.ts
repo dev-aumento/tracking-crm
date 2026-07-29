@@ -187,11 +187,11 @@ export function localDateKey(date: Date | string): string {
 }
 
 /** Hour (0–23) when employees are auto clocked out if still working (IST). */
-export const AUTO_CLOCK_OUT_HOUR = 22;
+export const AUTO_CLOCK_OUT_HOUR = 24;
 
 /**
- * 10:00 PM Asia/Kolkata on the session's IST calendar day.
- * If clock-in is at/after 10:00 PM IST, deadline is 10:00 PM IST the next day.
+ * 12:00 AM Asia/Kolkata on the session's IST calendar day.
+ * If clock-in is at/after 12:00 AM IST, deadline is 12:00 AM IST the next day.
  */
 export function getAutoClockOutDeadline(sessionStart: Date | string): Date {
   const start = new Date(sessionStart);

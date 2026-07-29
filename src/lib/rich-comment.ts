@@ -153,12 +153,17 @@ export function buildRichCommentMessage(
   mentions: MentionUser[],
   html: string,
   media: CommentMediaRef[] = [],
+  options?: { keepPendingMedia?: boolean },
 ) {
   const mentionPrefix = buildCommentMessage(mentions, "").trim();
-  const sanitizedHtml = stripPendingMediaTokens(sanitizeRichCommentBody(html).trim());
+  const sanitizedBody = sanitizeRichCommentBody(html).trim();
+  const sanitizedHtml = options?.keepPendingMedia
+    ? sanitizedBody
+    : stripPendingMediaTokens(sanitizedBody);
   const inlineIds = extractMediaIdsFromBody(sanitizedHtml);
   const trailingMedia = media.filter(
-    (item) => item.id > 0 && !inlineIds.has(item.id),
+    (item) =>
+      (options?.keepPendingMedia || item.id > 0) && !inlineIds.has(item.id),
   );
   const mediaBlock = trailingMedia.map(buildMediaToken).join("\n").trim();
   const richBody = dedupeMediaInRichBody(

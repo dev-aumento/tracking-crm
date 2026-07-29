@@ -144,6 +144,23 @@ export async function ensureIndexes() {
       ],
     },
     {
+      name: Collections.customers,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, displayName: 1 } },
+        { key: { organizationId: 1, email: 1 } },
+      ],
+    },
+    {
+      name: Collections.invoices,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, invoiceNumber: 1 } },
+        { key: { organizationId: 1, customerId: 1 } },
+        { key: { organizationId: 1, createdAt: -1 } },
+      ],
+    },
+    {
       name: Collections.notifications,
       indexes: [{ key: { id: 1 }, unique: true }, { key: { userId: 1 } }],
     },

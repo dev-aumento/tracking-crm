@@ -26,15 +26,18 @@ import NotFound from './pages/NotFound'
 import AdminEmployees from './pages/admin/Employees'
 import AdminAllTasks from './pages/admin/AllTasks'
 import AdminPermissions from './pages/admin/Permissions'
+import AdminInvoices from './pages/admin/Invoices'
+import AdminCustomers from './pages/admin/Customers'
 import Leaves from './pages/Leaves'
 import LeaveManagement from './pages/LeaveManagement'
+import AttendanceManagement from './pages/AttendanceManagement'
 import RecentEmployees from './pages/RecentEmployees'
 import InviteAccept from './pages/InviteAccept'
 import Login from './pages/Login'
 
 function LoadingScreen() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#F8F9FA]">
+    <div className="min-h-screen flex items-center justify-center bg-[#F8F9FA] dark:bg-[#0b1220]">
       <div className="flex flex-col items-center gap-3">
         <div className="w-10 h-10 border-3 border-[#0EA5E9] border-t-transparent rounded-full animate-spin" />
         <span className="text-sm text-gray-500">Loading...</span>
@@ -200,6 +203,7 @@ export default function App() {
           } />
           <Route path="/leave" element={<Navigate to="/leaves" replace />} />
           <Route path="/leave-management" element={<LeaveManagement />} />
+          <Route path="/attendance-management" element={<AttendanceManagement />} />
           <Route path="/recent-employees" element={<RecentEmployees />} />
 
           {/* Admin Routes */}
@@ -221,6 +225,46 @@ export default function App() {
           <Route path="/admin/permissions" element={
             <PermissionRoute path="/admin/permissions">
               <AdminPermissions />
+            </PermissionRoute>
+          } />
+          <Route path="/admin/invoices" element={
+            <PermissionRoute path="/admin/invoices">
+              <AdminInvoices />
+            </PermissionRoute>
+          } />
+          <Route path="/admin/invoices/new" element={
+            <PermissionRoute path="/admin/invoices">
+              <AdminInvoices />
+            </PermissionRoute>
+          } />
+          <Route path="/admin/invoices/:invoiceId" element={
+            <PermissionRoute path="/admin/invoices">
+              <AdminInvoices />
+            </PermissionRoute>
+          } />
+          <Route path="/admin/invoices/:invoiceId/edit" element={
+            <PermissionRoute path="/admin/invoices">
+              <AdminInvoices />
+            </PermissionRoute>
+          } />
+          <Route path="/admin/customers" element={
+            <PermissionRoute path="/admin/customers">
+              <AdminCustomers />
+            </PermissionRoute>
+          } />
+          <Route path="/admin/customers/new" element={
+            <PermissionRoute path="/admin/customers">
+              <AdminCustomers />
+            </PermissionRoute>
+          } />
+          <Route path="/admin/customers/:customerId" element={
+            <PermissionRoute path="/admin/customers">
+              <AdminCustomers />
+            </PermissionRoute>
+          } />
+          <Route path="/admin/customers/:customerId/edit" element={
+            <PermissionRoute path="/admin/customers">
+              <AdminCustomers />
             </PermissionRoute>
           } />
         </Route>

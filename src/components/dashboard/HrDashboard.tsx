@@ -3,7 +3,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useLiveSessionTimers } from "@/hooks/useLiveSessionTimers";
 import { formatElapsedHMS } from "@/lib/utils";
 import { formatPreciseWorkedClock } from "@/lib/work-hours-policy";
-import { formatWorkZoneDate } from "@/lib/timezone";
+import { formatWorkZoneDate, istTimeOfDayGreeting } from "@/lib/timezone";
 import {
   dashboardQueryOptions,
   DASHBOARD_REFRESH_EVENT,
@@ -14,7 +14,7 @@ import { useClockOutAction } from "@/hooks/useClockOutAction";
 import { WorkforceOverviewPanels } from "@/components/dashboard/WorkforceOverviewPanels";
 import { WorkforceKpiCards } from "@/components/dashboard/WorkforceKpiCards";
 import { motion } from "framer-motion";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import {
   Play,
   Square,
@@ -24,6 +24,8 @@ import {
 export function HrDashboard() {
   const { user } = useAuth();
   const utils = trpc.useUtils();
+  const greeting = useMemo(() => istTimeOfDayGreeting(new Date()), []);
+  const firstName = user?.name?.split(" ")[0] || "there";
 
   const { data, isLoading } = trpc.dashboard.getHrDashboard.useQuery(
     undefined,
@@ -63,8 +65,6 @@ export function HrDashboard() {
   const cumulativeWorkSeconds = priorWorkSeconds + workSeconds;
   const hasWorkedToday = (todayStats?.totalSeconds ?? 0) > 0;
 
-  const firstName = user?.name?.split(" ")[0] || "there";
-
   const containerVariants = {
     hidden: { opacity: 0 },
     visible: { opacity: 1, transition: { staggerChildren: 0.07 } },
@@ -95,7 +95,7 @@ export function HrDashboard() {
       >
         <div className="min-w-0">
           <h1 className="text-lg sm:text-2xl font-bold text-[#1F2937] whitespace-nowrap overflow-hidden text-ellipsis">
-            Welcome back, {firstName}! 👋
+            {greeting}, {firstName}!
           </h1>
           <p className="text-sm text-gray-500 mt-1 w-full">
             {formatWorkZoneDate(new Date(), {

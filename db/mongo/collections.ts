@@ -25,6 +25,8 @@ export const Collections = {
   leaveUsageOverrides: "leave_usage_overrides",
   publicHolidays: "public_holidays",
   appSettings: "app_settings",
+  customers: "customers",
+  invoices: "invoices",
 } as const;
 
 export type CollectionName = (typeof Collections)[keyof typeof Collections];

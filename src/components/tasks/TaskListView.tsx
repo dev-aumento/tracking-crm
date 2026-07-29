@@ -4,7 +4,8 @@ import { UserAvatar } from "@/components/shared/UserAvatar";
 import { PriorityBadge } from "@/components/shared/StatusBadge";
 import { isTaskOverdue } from "@/lib/task-deadline";
 import { taskLocateHighlightClass } from "@/hooks/useLocateTaskInView";
-import { cn } from "@/lib/utils";
+import { useTaskLiveTimer } from "@/hooks/useTaskLiveTimer";
+import { cn, formatElapsedHMS } from "@/lib/utils";
 import {
   PROJECT_PIPELINE_STAGES,
   tasksForPipelineColumn,
@@ -16,7 +17,7 @@ import { applyOptimisticTaskUpdate, patchTaskInListCaches } from "@/lib/task-cac
 import { invalidateProjectStats } from "@/lib/project-stats";
 import { refreshDashboardStats } from "@/lib/dashboard-refresh";
 import { trpc } from "@/providers/trpc";
-import { Check, ChevronDown, ClipboardList, GripVertical, Loader2 } from "lucide-react";
+import { Check, ChevronDown, ClipboardList, Clock, GripVertical, Loader2 } from "lucide-react";
 import { formatWorkZoneDate } from "@/lib/timezone";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -242,6 +243,8 @@ function TaskListRow({
   projects,
   projectUpdatePending,
   onProjectChange,
+  isTimerRunning,
+  timerElapsedSeconds,
 }: {
   task: ListTask;
   rowClass: string;
@@ -259,6 +262,8 @@ function TaskListRow({
   projects: ProjectOption[];
   projectUpdatePending: boolean;
   onProjectChange: (taskId: number, projectId: number | null) => void;
+  isTimerRunning?: boolean;
+  timerElapsedSeconds?: number;
 }) {
   const overdue = isTaskOverdue(task);
   const isSelected = selectable && selectedIds?.has(task.id);
@@ -307,6 +312,16 @@ function TaskListRow({
           <GripVertical size={14} className="text-gray-300 shrink-0 pointer-events-none" />
         ) : null}
         <div className="text-sm font-medium text-[#1F2937] truncate">{task.title}</div>
+        {isTimerRunning ? (
+          <span
+            className="inline-flex items-center gap-1 shrink-0 text-xs font-mono font-semibold tabular-nums text-[#2563EB] bg-blue-50 px-1.5 py-0.5 rounded dark:text-white"
+            title="Time tracking is running on this task"
+            aria-label="Time tracking live"
+          >
+            <Clock size={12} className="animate-pulse" />
+            {formatElapsedHMS(timerElapsedSeconds ?? 0)}
+          </span>
+        ) : null}
       </div>
 
       <div className="min-w-0 pr-2">
@@ -385,6 +400,16 @@ export function TaskListView({
   const utils = trpc.useUtils();
   const listInput =
     listQueryInput ?? (projectId ? { projectId, limit: 200 } : { limit: 200 });
+
+  const { data: myActiveTimer } = trpc.task.getMyActiveTimer.useQuery(undefined, {
+    refetchInterval: (q) =>
+      q.state.data?.startedAt && !q.state.data?.paused ? 5000 : false,
+  });
+  const activeTimer =
+    myActiveTimer?.startedAt && !myActiveTimer?.paused ? myActiveTimer : null;
+  const { elapsedSeconds: activeTimerElapsedSeconds, isRunning: isActiveTimerRunning } =
+    useTaskLiveTimer(activeTimer);
+  const activeTimerTaskId = isActiveTimerRunning ? activeTimer?.taskId ?? null : null;
 
   const { data: fetchedProjects } = trpc.project.list.useQuery(undefined, {
     enabled: allowProjectEdit && !projectsProp,
@@ -588,6 +613,10 @@ export function TaskListView({
             projects={projects}
             projectUpdatePending={isProjectUpdatePending(task.id)}
             onProjectChange={handleProjectChange}
+            isTimerRunning={activeTimerTaskId === task.id}
+            timerElapsedSeconds={
+              activeTimerTaskId === task.id ? activeTimerElapsedSeconds : undefined
+            }
           />
         ))}
           </div>
@@ -669,6 +698,10 @@ export function TaskListView({
                     projects={projects}
                     projectUpdatePending={isProjectUpdatePending(task.id)}
                     onProjectChange={handleProjectChange}
+                    isTimerRunning={activeTimerTaskId === task.id}
+                    timerElapsedSeconds={
+                      activeTimerTaskId === task.id ? activeTimerElapsedSeconds : undefined
+                    }
                   />
                 ))
               )

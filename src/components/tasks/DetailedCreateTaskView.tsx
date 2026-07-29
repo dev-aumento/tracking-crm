@@ -167,7 +167,11 @@ export function DetailedCreateTaskView({
   };
 
   const sendChatDraft = () => {
-    const message = buildRichCommentMessage([], chatHtml, chatMedia);
+    // Keep staged (negative) media tokens so submitCreateTask can remap them
+    // to real attachment IDs after upload.
+    const message = buildRichCommentMessage([], chatHtml, chatMedia, {
+      keepPendingMedia: true,
+    });
     if (!message.trim()) return;
     update({
       chatDrafts: [
@@ -207,26 +211,15 @@ export function DetailedCreateTaskView({
             {/* Title */}
             <section>
               <div className="flex items-start justify-between gap-3 mb-3">
-                <input
-                  ref={titleRef}
-                  type="text"
-                  value={formData.title}
-                  onChange={(e) => update({ title: e.target.value })}
-                  placeholder="Task name"
-                  className="flex-1 text-xl font-semibold text-[#1F2937] placeholder:text-gray-300 border-0 outline-none bg-transparent leading-tight"
-                />
+                <input ref={titleRef} type="text" value={formData.title} onChange={(e) => update({ title: e.target.value })} placeholder="Task name" className="flex-1 text-xl font-semibold text-[#1F2937] placeholder:text-gray-300 border-0 outline-none bg-transparent leading-tight"/>
                 <div className="flex items-center gap-0.5 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => update({ priority: isHot ? "medium" : "urgent" })}
+                  <button type="button" onClick={() => update({ priority: isHot ? "medium" : "urgent" })}
                     className={cn(
                       "w-9 h-9 flex items-center justify-center rounded-lg transition-colors",
                       isHot
                         ? "hover:bg-orange-100"
                         : "text-gray-500 hover:bg-gray-100 hover:text-orange-400",
-                    )}
-                    aria-label="Toggle urgent priority"
-                  >
+                    )} aria-label="Toggle urgent priority">
                     <Flame size={18} />
                   </button>
                 </div>
@@ -562,7 +555,7 @@ export function DetailedCreateTaskView({
             )}
           </div>
 
-          <div className="shrink-0 bg-white/90 border-t border-gray-200/80 p-3">
+          <div className="shrink-0 bg-white/90 border-t border-gray-200/80 p-3 dark:bg-[#0b1220]">
             <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
               <RichTextCommentEditor
                 key={`${chatHtml}-${chatMedia.length}-${formData.chatDrafts.length}`}

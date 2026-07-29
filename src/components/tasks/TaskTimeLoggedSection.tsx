@@ -31,8 +31,12 @@ function TaskTimeEntryEditForm({
   onCancel: () => void;
   onSaved: () => void;
 }) {
-  const [clockIn, setClockIn] = useState(() => toDatetimeLocalValue(entry.clockIn!));
-  const [clockOut, setClockOut] = useState(() => toDatetimeLocalValue(entry.clockOut!));
+  const initialSeconds = getTimeEntrySeconds(entry);
+  const [dateTime, setDateTime] = useState(() => toDatetimeLocalValue(entry.clockIn!));
+  const [hours, setHours] = useState(() => String(Math.floor(initialSeconds / 3600)));
+  const [minutes, setMinutes] = useState(() =>
+    String(Math.floor((initialSeconds % 3600) / 60)),
+  );
   const [reason, setReason] = useState("");
   const utils = trpc.useUtils();
 
@@ -43,76 +47,114 @@ function TaskTimeEntryEditForm({
     },
   });
 
-  const canSave = reason.trim().length > 0 && !updateMutation.isPending;
+  const hoursNum = Math.max(0, Number.parseInt(hours || "0", 10) || 0);
+  const minutesNum = Math.min(59, Math.max(0, Number.parseInt(minutes || "0", 10) || 0));
+  const durationMinutes = hoursNum * 60 + minutesNum;
+  const canSave =
+    reason.trim().length > 0 &&
+    durationMinutes > 0 &&
+    Boolean(dateTime) &&
+    !updateMutation.isPending;
+
+  const handleSave = () => {
+    if (!canSave) return;
+    const start = new Date(dateTime);
+    if (Number.isNaN(start.getTime())) return;
+    const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+    updateMutation.mutate({
+      taskId,
+      entryId: entry.id,
+      clockIn: start.toISOString(),
+      clockOut: end.toISOString(),
+      reason: reason.trim(),
+    });
+  };
 
   return (
-    <div className="rounded-lg border border-amber-100 bg-amber-50/60 p-3 space-y-3">
-      <p className="text-xs text-amber-800 font-medium">
-        Edit time entry — a reason is required to save changes.
-      </p>
-      <div className="grid grid-cols-1 gap-2">
-        <label className="block text-xs text-gray-600">
-          Start
-          <input
-            type="datetime-local"
-            value={clockIn}
-            onChange={(e) => setClockIn(e.target.value)}
-            className="mt-1 w-full h-9 px-3 border border-gray-200 rounded-lg text-sm bg-white"
-          />
-        </label>
-        <label className="block text-xs text-gray-600">
-          End
-          <input
-            type="datetime-local"
-            value={clockOut}
-            onChange={(e) => setClockOut(e.target.value)}
-            className="mt-1 w-full h-9 px-3 border border-gray-200 rounded-lg text-sm bg-white"
-          />
-        </label>
+    <div className="rounded-lg border border-[#D6E4FF] bg-[#F3F8FF] overflow-hidden">
+      <div className="grid grid-cols-[1.4fr_0.7fr_1fr] gap-2 px-3 py-2 border-b border-[#D6E4FF] bg-white/70 text-[11px] font-medium text-gray-400">
+        <span>Date</span>
+        <span>Time</span>
+        <span className="text-right">Created by</span>
       </div>
-      <label className="block text-xs text-gray-600">
-        Reason for edit
-        <textarea
+
+      <div className="p-3 space-y-2.5 dark:bg-[#0b1220]">
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="block text-xs text-gray-500 min-w-[11rem] flex-1">
+            Date
+            <input
+              type="datetime-local"
+              value={dateTime}
+              onChange={(e) => setDateTime(e.target.value)}
+              className="mt-1 w-full h-8 px-2 border border-gray-200 rounded-md text-sm bg-white"
+            />
+          </label>
+
+          <label className="block text-xs text-gray-500 w-[4.5rem]">
+            Hours:
+            <input
+              type="number"
+              min={0}
+              max={999}
+              value={hours}
+              onChange={(e) => setHours(e.target.value.replace(/[^\d]/g, ""))}
+              placeholder="0h"
+              className="mt-1 w-full h-8 px-2 border border-gray-200 rounded-md text-sm bg-white text-center"
+            />
+          </label>
+
+          <label className="block text-xs text-gray-500 w-[4.5rem]">
+            Minutes:
+            <input
+              type="number"
+              min={0}
+              max={59}
+              value={minutes}
+              onChange={(e) => setMinutes(e.target.value.replace(/[^\d]/g, ""))}
+              placeholder="0m"
+              className="mt-1 w-full h-8 px-2 border border-gray-200 rounded-md text-sm bg-white text-center"
+            />
+          </label>
+
+          <div className="flex items-center gap-1.5 pb-0.5">
+            <button
+              type="button"
+              disabled={!canSave}
+              onClick={handleSave}
+              className="h-8 w-8 inline-flex items-center justify-center rounded-md text-white bg-[#2563EB] hover:bg-blue-700 disabled:opacity-50"
+              aria-label="Save entry"
+              title="Save entry"
+            >
+              {updateMutation.isPending ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Check size={14} />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={onCancel}
+              className="h-8 w-8 inline-flex items-center justify-center rounded-md text-gray-400 hover:text-gray-700 hover:bg-white"
+              aria-label="Cancel"
+              title="Cancel"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+
+        <input
+          type="text"
           value={reason}
           onChange={(e) => setReason(e.target.value)}
-          rows={2}
-          placeholder="Why are you changing this time entry?"
-          className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white resize-none"
+          placeholder="Reason for edit..."
+          className="w-full h-9 px-3 border border-[#93C5FD] rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20"
         />
-      </label>
-      <div className="flex items-center justify-end gap-2">
-        <button
-          type="button"
-          onClick={onCancel}
-          className="h-8 px-3 rounded-lg text-xs font-medium text-gray-600 hover:bg-white border border-gray-200"
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          disabled={!canSave}
-          onClick={() =>
-            updateMutation.mutate({
-              taskId,
-              entryId: entry.id,
-              clockIn: new Date(clockIn).toISOString(),
-              clockOut: new Date(clockOut).toISOString(),
-              reason: reason.trim(),
-            })
-          }
-          className="h-8 px-3 rounded-lg text-xs font-medium text-white bg-[#2563EB] hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1.5"
-        >
-          {updateMutation.isPending ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <Check size={14} />
-          )}
-          Save
-        </button>
+
+        {updateMutation.error ? (
+          <p className="text-xs text-red-600">{updateMutation.error.message}</p>
+        ) : null}
       </div>
-      {updateMutation.error ? (
-        <p className="text-xs text-red-600">{updateMutation.error.message}</p>
-      ) : null}
     </div>
   );
 }

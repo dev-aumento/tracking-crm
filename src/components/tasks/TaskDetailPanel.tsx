@@ -138,7 +138,7 @@ const META_SELECT_CLASS = cn(
 
 const META_DATETIME_CLASS = cn(
   "h-9 w-full max-w-[240px] rounded-lg border border-gray-200 bg-white px-3",
-  "text-sm text-gray-800 [color-scheme:light]",
+  "text-sm text-gray-800 [color-scheme:light] dark:[color-scheme:dark]",
   "[&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:cursor-pointer",
   "[&::-webkit-datetime-edit]:leading-9 [&::-webkit-datetime-edit-fields-wrapper]:p-0",
 );
@@ -206,12 +206,49 @@ export function TaskDetailPanel({
   const { data: usersData } = trpc.user.listForPicker.useQuery({ limit: 500 });
   const { data: projectsData } = trpc.project.listForPicker.useQuery();
 
+  /** Instant click-time timer so UI does not wait on the network. */
+  const [optimisticTimer, setOptimisticTimer] = useState<{
+    taskId: number;
+    startedAt: Date;
+    paused: boolean;
+    accumulatedSeconds: number;
+  } | null>(null);
+
+  useEffect(() => {
+    setOptimisticTimer(null);
+  }, [taskId]);
+
+  useEffect(() => {
+    if (!optimisticTimer || optimisticTimer.taskId !== taskId) return;
+    if (activeTimer?.startedAt && !activeTimer.paused) {
+      setOptimisticTimer(null);
+    }
+  }, [activeTimer, optimisticTimer, taskId]);
+
+  const timerSource = useMemo(() => {
+    if (optimisticTimer && optimisticTimer.taskId === taskId) {
+      if (activeTimer?.startedAt && !activeTimer.paused) {
+        const serverMs = new Date(activeTimer.startedAt).getTime();
+        const localMs = optimisticTimer.startedAt.getTime();
+        // Prefer the earlier start so slow API responses do not erase click-time seconds.
+        return {
+          ...activeTimer,
+          startedAt: new Date(Math.min(serverMs, localMs)),
+          paused: false,
+          accumulatedSeconds: 0,
+        };
+      }
+      return optimisticTimer;
+    }
+    return activeTimer ?? null;
+  }, [optimisticTimer, activeTimer, taskId]);
+
   const {
     elapsedSeconds: timerElapsed,
     isRunning: isTimerRunning,
     isPaused: isTimerPaused,
     hasActiveSession,
-  } = useTaskLiveTimer(activeTimer);
+  } = useTaskLiveTimer(timerSource);
 
   useEffect(() => {
     if (!isPresent) return;
@@ -235,9 +272,13 @@ export function TaskDetailPanel({
     ? timerElapsed
     : (activeTimer?.accumulatedSeconds ?? (hasActiveSession ? timerElapsed : 0));
   const completedSeconds = timeData?.totalSeconds ?? 0;
-  /** Live clock shows the current session from 00:00:00; idle shows total from entries. */
-  const displaySeconds = hasActiveSession ? liveSessionSeconds : completedSeconds;
+  /** Total time on the task: logged entries + current session while active. */
   const trackedSeconds = completedSeconds + (hasActiveSession ? liveSessionSeconds : 0);
+  /**
+   * Meta "Time Tracking" clock continues from already-logged time while running
+   * (e.g. 01:12:35 → 01:12:36). Bottom bar still uses liveSessionSeconds from 00:00:00.
+   */
+  const displaySeconds = trackedSeconds;
 
   const panel = (
     <AnimatePresence onExitComplete={onClose}>
@@ -292,6 +333,15 @@ export function TaskDetailPanel({
                 isTimerRunning={isTimerRunning}
                 isTimerPaused={isTimerPaused}
                 hasActiveSession={hasActiveSession}
+                onOptimisticTimerStart={(startedAt) => {
+                  setOptimisticTimer({
+                    taskId,
+                    startedAt,
+                    paused: false,
+                    accumulatedSeconds: 0,
+                  });
+                }}
+                onOptimisticTimerClear={() => setOptimisticTimer(null)}
               />
             )}
           </motion.aside>
@@ -320,6 +370,8 @@ function TaskPanelContent({
   isTimerRunning,
   isTimerPaused,
   hasActiveSession,
+  onOptimisticTimerStart,
+  onOptimisticTimerClear,
 }: {
   task: NonNullable<ReturnType<typeof trpc.task.getById.useQuery>["data"]>;
   taskId: number;
@@ -337,6 +389,8 @@ function TaskPanelContent({
   isTimerRunning: boolean;
   isTimerPaused: boolean;
   hasActiveSession: boolean;
+  onOptimisticTimerStart: (startedAt: Date) => void;
+  onOptimisticTimerClear: () => void;
 }) {
   const { user } = useAuth();
   const utils = trpc.useUtils();
@@ -525,67 +579,86 @@ function TaskPanelContent({
 
   const invalidateTimerQueries = (otherTaskId?: number) => {
     void utils.task.getMyActiveTimer.invalidate();
-    void utils.task.getActiveTimer.invalidate();
-    void utils.task.getTimeTracked.invalidate();
+    void utils.task.getTimeTracked.invalidate({ taskId });
     if (otherTaskId && otherTaskId !== taskId) {
       void utils.task.getActiveTimer.invalidate({ taskId: otherTaskId });
       void utils.task.getTimeTracked.invalidate({ taskId: otherTaskId });
       void utils.task.getById.invalidate({ id: otherTaskId });
     }
     void utils.task.getById.invalidate({ id: taskId });
-    void utils.task.list.invalidate();
-    void utils.timeEntry.getStats.invalidate();
-    void utils.timeEntry.list.invalidate();
-    void utils.dashboard.getStats.invalidate();
   };
 
   const startTimerMutation = trpc.task.startTimer.useMutation({
-    onMutate: async () => {
+    onMutate: async ({ clientStartedAt }) => {
       await utils.task.getActiveTimer.cancel({ taskId });
+      await utils.task.getMyActiveTimer.cancel();
       const previous = utils.task.getActiveTimer.getData({ taskId });
-      // Show the live clock immediately (don't wait for the network round-trip).
-      utils.task.getActiveTimer.setData(
-        { taskId },
-        {
-          taskId,
-          startedAt: new Date(),
-          paused: false,
-          accumulatedSeconds: 0,
-        },
-      );
-      return { previous };
+      const previousMine = utils.task.getMyActiveTimer.getData(undefined);
+      const startedAt = clientStartedAt instanceof Date ? clientStartedAt : new Date();
+      const optimistic = {
+        taskId,
+        startedAt,
+        paused: false,
+        accumulatedSeconds: 0,
+      };
+      onOptimisticTimerStart(startedAt);
+      utils.task.getActiveTimer.setData({ taskId }, optimistic);
+      utils.task.getMyActiveTimer.setData(undefined, {
+        ...optimistic,
+        taskTitle: task.title,
+      });
+      return { previous, previousMine };
     },
     onError: (_error, _variables, context) => {
+      onOptimisticTimerClear();
       utils.task.getActiveTimer.setData({ taskId }, context?.previous ?? null);
+      utils.task.getMyActiveTimer.setData(undefined, context?.previousMine ?? null);
     },
     onSuccess: (data, variables) => {
-      // Align the clock to the server start time so elapsed seconds stay accurate.
+      const startedAt = data.startedAt instanceof Date ? data.startedAt : new Date(data.startedAt);
       utils.task.getActiveTimer.setData(
         { taskId: variables.taskId },
         {
           taskId: variables.taskId,
-          startedAt: data.startedAt,
+          startedAt,
           paused: false,
           accumulatedSeconds: 0,
         },
       );
-      invalidateTimerQueries(myActiveTimer?.taskId);
-      void utils.task.getActiveTimer.invalidate({ taskId: variables.taskId });
+      utils.task.getMyActiveTimer.setData(undefined, {
+        taskId: variables.taskId,
+        taskTitle: task.title,
+        startedAt,
+        paused: false,
+        accumulatedSeconds: 0,
+      });
+      // Light refresh only — avoid refetching getActiveTimer (wipes optimism / resets clock).
       void utils.task.getTimeTracked.invalidate({ taskId: variables.taskId });
+      if (myActiveTimer?.taskId && myActiveTimer.taskId !== variables.taskId) {
+        void utils.task.getActiveTimer.invalidate({ taskId: myActiveTimer.taskId });
+        void utils.task.getTimeTracked.invalidate({ taskId: myActiveTimer.taskId });
+      }
     },
   });
 
   const pauseTimerMutation = trpc.task.pauseTimer.useMutation({
     onMutate: async () => {
       await utils.task.getActiveTimer.cancel({ taskId });
+      await utils.task.getMyActiveTimer.cancel();
       const previous = utils.task.getActiveTimer.getData({ taskId });
+      const previousMine = utils.task.getMyActiveTimer.getData(undefined);
+      onOptimisticTimerClear();
       // Pause closes the open entry server-side — clear the live session immediately.
       utils.task.getActiveTimer.setData({ taskId }, null);
-      return { previous };
+      utils.task.getMyActiveTimer.setData(undefined, null);
+      return { previous, previousMine };
     },
     onError: (_error, _variables, context) => {
       if (context?.previous !== undefined) {
         utils.task.getActiveTimer.setData({ taskId }, context.previous);
+      }
+      if (context?.previousMine !== undefined) {
+        utils.task.getMyActiveTimer.setData(undefined, context.previousMine);
       }
     },
     onSuccess: () => {
@@ -596,13 +669,20 @@ function TaskPanelContent({
   const stopTimerMutation = trpc.task.stopTimer.useMutation({
     onMutate: async () => {
       await utils.task.getActiveTimer.cancel({ taskId });
+      await utils.task.getMyActiveTimer.cancel();
       const previous = utils.task.getActiveTimer.getData({ taskId });
+      const previousMine = utils.task.getMyActiveTimer.getData(undefined);
+      onOptimisticTimerClear();
       utils.task.getActiveTimer.setData({ taskId }, null);
-      return { previous };
+      utils.task.getMyActiveTimer.setData(undefined, null);
+      return { previous, previousMine };
     },
     onError: (_error, _variables, context) => {
       if (context?.previous !== undefined) {
         utils.task.getActiveTimer.setData({ taskId }, context.previous);
+      }
+      if (context?.previousMine !== undefined) {
+        utils.task.getMyActiveTimer.setData(undefined, context.previousMine);
       }
     },
     onSuccess: () => {
@@ -976,22 +1056,24 @@ function TaskPanelContent({
   const handleResumeTask = () => {
     writeTaskPref(taskId, "deferred", false);
     setIsDeferred(false);
-    updateMutation.mutate(
-      { id: taskId, status: "in_progress" },
-      {
-        onSuccess: () => {
-          handleStartTimer();
-          showNotice("Task resumed");
-        },
-      },
-    );
+    // Start timer immediately — do not wait for status update round-trip.
+    doStartTimer();
+    updateMutation.mutate({ id: taskId, status: "in_progress" });
+    showNotice("Task resumed");
   };
 
   const doStartTimer = () => {
+    const startedAt = new Date();
+    onOptimisticTimerStart(startedAt);
+    // Start timer first; status update is separate so it is not batched into Start latency.
+    startTimerMutation.mutate({ taskId, clientStartedAt: startedAt });
     if (workflowState === "not_started" || workflowState === "paused") {
-      handleWorkflowChange("in_progress");
+      writeTaskPref(taskId, "deferred", false);
+      setIsDeferred(false);
+      updateMutation.mutate({ id: taskId, status: "in_progress" });
+      const resuming = workflowState === "paused";
+      showNotice(resuming ? "Task resumed" : "Task in progress");
     }
-    startTimerMutation.mutate({ taskId });
   };
 
   const handleStartTimer = () => {
@@ -2000,10 +2082,10 @@ function TaskPanelContent({
                   <button
                     type="button"
                     onClick={handleResumeTask}
-                    disabled={updateMutation.isPending || startTimerMutation.isPending}
+                    disabled={updateMutation.isPending && startTimerMutation.isPending && !isTimerRunning}
                     className="h-9 px-4 inline-flex items-center justify-center gap-1.5 bg-[#2563EB] text-white rounded-lg text-sm font-medium hover:bg-[#1D4ED8] disabled:opacity-50"
                   >
-                    {(updateMutation.isPending || startTimerMutation.isPending) ? (
+                    {startTimerMutation.isPending && !isTimerRunning ? (
                       <Loader2 size={15} className="animate-spin" />
                     ) : (
                       <Play size={15} />
@@ -2024,10 +2106,14 @@ function TaskPanelContent({
                   <button
                     type="button"
                     onClick={handleStartTimer}
-                    disabled={startTimerMutation.isPending}
+                    disabled={startTimerMutation.isPending && !hasActiveSession}
                     className="h-9 px-4 inline-flex items-center justify-center gap-1.5 bg-[#2563EB] text-white rounded-lg text-sm font-medium hover:bg-[#1D4ED8] disabled:opacity-50"
                   >
-                    {startTimerMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Play size={15} />}
+                    {startTimerMutation.isPending && !hasActiveSession ? (
+                      <Loader2 size={15} className="animate-spin" />
+                    ) : (
+                      <Play size={15} />
+                    )}
                     {isTimerPaused ? "Resume" : "Start"}
                   </button>
                 )}

@@ -11,6 +11,8 @@ import { permissionsRouter } from "./permissions-router";
 import { leaveRouter } from "./leave-router";
 import { personalDocumentRouter } from "./personal-document-router";
 import { formerEmployeeRouter } from "./former-employee-router";
+import { customerRouter } from "./customer-router";
+import { invoiceRouter } from "./invoice-router";
 import { createRouter, publicQuery } from "./middleware";
 
 export const appRouter = createRouter({
@@ -28,6 +30,8 @@ export const appRouter = createRouter({
   leave: leaveRouter,
   personalDocuments: personalDocumentRouter,
   formerEmployees: formerEmployeeRouter,
+  customer: customerRouter,
+  invoice: invoiceRouter,
 });
 
 export type AppRouter = typeof appRouter;

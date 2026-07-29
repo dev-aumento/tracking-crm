@@ -55,6 +55,8 @@ export const PERMISSION_GROUPS = [
     permissions: [
       { key: "employees.manage", label: "Manage employees" },
       { key: "permissions.manage", label: "Manage permissions" },
+      { key: "invoices.manage", label: "Manage invoices" },
+      { key: "customers.manage", label: "Manage customers" },
     ],
   },
 ] as const;
@@ -75,4 +77,6 @@ export const ROUTE_PERMISSIONS: Record<string, AppPermissionKey | AppPermissionK
   "/admin/employees": ["employees.manage", "permissions.manage"],
   "/admin/permissions": "permissions.manage",
   "/admin/tasks": "tasks.view_all",
+  "/admin/invoices": "invoices.manage",
+  "/admin/customers": "customers.manage",
 };

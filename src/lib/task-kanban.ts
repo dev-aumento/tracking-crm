@@ -294,6 +294,57 @@ export function isCompletedTask(task: { stage?: string | null; status?: string }
   return task.status === "done" || taskPipelineStage(task) === "finished";
 }
 
+/** Coarse All Tasks / analytics status filter buckets → pipeline stages. */
+export const STATUS_FILTER_STAGE_KEYS = {
+  todo: ["new"] as const,
+  in_progress: ["in_designing", "in_developing", "in_qa_1st_round"] as const,
+  review: [
+    "backlog",
+    "client_1st_round",
+    "backlog_from_client",
+    "client_2nd_round",
+  ] as const,
+  /** Finished / Done, plus Publish Live (after client rounds). */
+  done: ["finished", "publish_live"] as const,
+} as const;
+
+export type TaskStatusFilterKey = keyof typeof STATUS_FILTER_STAGE_KEYS;
+
+/**
+ * Match a task to an All Statuses filter option.
+ * Uses pipeline stage first (kanban columns), with legacy status as fallback via taskPipelineStage.
+ *
+ * - To Do → new / To Do
+ * - In Progress → In Designing, In Developing, In QA
+ * - Review → Backlog, Client (1st), Backlog from Client, Client (2nd)
+ * - Done → Finished / Done (and Publish Live)
+ */
+export function taskMatchesStatusFilter(
+  task: { stage?: string | null; status?: string },
+  filter: string,
+): boolean {
+  if (!filter) return true;
+  if (!(filter in STATUS_FILTER_STAGE_KEYS)) {
+    return task.status === filter;
+  }
+
+  const key = filter as TaskStatusFilterKey;
+  const stage = taskPipelineStage(task);
+
+  if (key === "done") {
+    return (
+      task.status === "done" ||
+      stage === "finished" ||
+      stage === "publish_live"
+    );
+  }
+
+  // Completed tasks only appear under Done.
+  if (isCompletedTask(task)) return false;
+
+  return (STATUS_FILTER_STAGE_KEYS[key] as readonly string[]).includes(stage);
+}
+
 /** True when an update is marking the task complete (Done status or Finished stage). */
 export function isMarkingTaskComplete(update: {
   status?: string | null;

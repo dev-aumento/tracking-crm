@@ -60606,7 +60606,7 @@ async function computeStoredAttendanceDurationSeconds(userId, clockIn, clockOut,
 }
 
 // api/lib/auto-clock-out.ts
-var AUTO_CLOCK_OUT_NOTE = "Auto clock-out at 10:00 PM";
+var AUTO_CLOCK_OUT_NOTE = "Auto clock-out at 12:00 AM";
 async function findActiveSession(userId) {
   const sessionCol = await getCollection(Collections.workSessions);
   return sessionCol.findOne({ userId, active: true });

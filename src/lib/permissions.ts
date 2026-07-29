@@ -36,11 +36,14 @@ function isClientRestrictedPath(path: string): boolean {
   if (path === "/" || path === "") return true;
   if (path === "/leaves" || path.startsWith("/leaves")) return true;
   if (path === "/leave-management" || path.startsWith("/leave-management")) return true;
+  if (path === "/attendance-management" || path.startsWith("/attendance-management")) return true;
   if (path === "/recent-employees" || path.startsWith("/recent-employees")) return true;
   if (path === "/time-tracking" || path.startsWith("/time-tracking")) return true;
   if (path === "/analytics" || path.startsWith("/analytics")) return true;
   if (path === "/admin/employees" || path.startsWith("/admin/employees")) return true;
   if (path === "/admin/permissions" || path.startsWith("/admin/permissions")) return true;
+  if (path === "/admin/invoices" || path.startsWith("/admin/invoices")) return true;
+  if (path === "/admin/customers" || path.startsWith("/admin/customers")) return true;
   return false;
 }
 

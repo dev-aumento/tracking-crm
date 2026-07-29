@@ -1,7 +1,7 @@
 import type { UserDoc, SafeUser } from "@db/mongo/types";
 import { DEFAULT_PERMISSIONS_BY_ROLE } from "@db/mongo/types";
 import { Collections } from "@db/mongo/collections";
-import { findById, getCollection, insertDoc, updateById } from "./mongo";
+import { findById, getCollection, insertDoc, updateById, withMongoRetry } from "./mongo";
 import { getEmployeeDefaultPermissions } from "../lib/employee-defaults";
 import { createEmployeeFromUser, deactivateEmployeeByUserId, syncEmployeeFromUser } from "./employees";
 
@@ -17,13 +17,17 @@ export async function findUserById(id: number) {
 }
 
 export async function findUserByEmail(email: string) {
-  const col = await getCollection<UserDoc>(Collections.users);
-  return col.findOne({ email });
+  return withMongoRetry(async () => {
+    const col = await getCollection<UserDoc>(Collections.users);
+    return col.findOne({ email });
+  });
 }
 
 export async function findUserByUnionId(unionId: string) {
-  const col = await getCollection<UserDoc>(Collections.users);
-  return col.findOne({ unionId });
+  return withMongoRetry(async () => {
+    const col = await getCollection<UserDoc>(Collections.users);
+    return col.findOne({ unionId });
+  });
 }
 
 export async function updateLastSignIn(userId: number) {

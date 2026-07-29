@@ -56,11 +56,30 @@ type SubmitCreateTaskOptions = {
   };
 };
 
-function buildRichDescriptionBody(formData: CreateTaskFormData) {
-  if (formData.descriptionHtml.trim() || formData.descriptionMedia.length > 0) {
-    return buildRichCommentMessage([], formData.descriptionHtml, formData.descriptionMedia);
+function buildRichDescriptionBody(
+  formData: CreateTaskFormData,
+  mediaIdMap?: Map<number, number>,
+) {
+  const hasRich =
+    formData.descriptionHtml.trim() || formData.descriptionMedia.length > 0;
+  if (!hasRich) {
+    return formData.description.trim();
   }
-  return formData.description.trim();
+
+  let html = formData.descriptionHtml;
+  let media = formData.descriptionMedia;
+
+  // Remap temporary (negative) staging IDs to real attachment IDs before
+  // buildRichCommentMessage strips pending tokens.
+  if (mediaIdMap && mediaIdMap.size > 0) {
+    html = remapStagedMediaIds(html, mediaIdMap);
+    media = media.map((item) => ({
+      ...item,
+      id: mediaIdMap.get(item.id) ?? item.id,
+    }));
+  }
+
+  return buildRichCommentMessage([], html, media);
 }
 
 function buildTaskDescription(
@@ -80,10 +99,7 @@ function buildTaskDescription(
     .filter((field) => field.key.trim() || field.value.trim())
     .map((field) => `${field.key.trim()}: ${field.value.trim()}`);
 
-  let descriptionBody = buildRichDescriptionBody(formData);
-  if (mediaIdMap && descriptionBody) {
-    descriptionBody = remapStagedMediaIds(descriptionBody, mediaIdMap);
-  }
+  const descriptionBody = buildRichDescriptionBody(formData, mediaIdMap);
 
   return [
     descriptionBody,

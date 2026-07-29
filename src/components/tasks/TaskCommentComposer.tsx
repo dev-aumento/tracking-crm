@@ -524,6 +524,7 @@ export function TaskCommentComposer({
             ref={fileInputRef}
             type="file"
             multiple
+            accept="*/*"
             className="hidden"
             onChange={(e) => {
               const files = e.target.files;

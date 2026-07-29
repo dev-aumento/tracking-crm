@@ -110,7 +110,7 @@ export function WorkforceOverviewPanels({
           <button
             type="button"
             onClick={() => navigate("/admin/employees")}
-            className="mt-4 w-full h-9 rounded-lg border border-gray-200 text-sm font-medium text-[#2563EB] hover:bg-blue-50 transition-colors"
+            className="mt-4 w-full h-9 rounded-lg border border-gray-200 text-sm font-medium text-[#2563EB] hover:bg-blue-50 transition-colors dark:border-[#2d3a4f] dark:text-white dark:font-semibold dark:hover:bg-[#1a2336]"
           >
             View Report
           </button>
@@ -130,7 +130,7 @@ export function WorkforceOverviewPanels({
             <button
               type="button"
               onClick={() => navigate("/admin/employees")}
-              className="text-xs font-medium text-[#2563EB] hover:underline"
+              className="text-xs font-medium text-[#2563EB] hover:underline dark:text-white dark:font-semibold"
             >
               View All
             </button>
@@ -161,7 +161,7 @@ export function WorkforceOverviewPanels({
             <button
               type="button"
               onClick={() => navigate("/admin/employees")}
-              className="text-xs font-medium text-[#2563EB] hover:underline"
+              className="text-xs font-medium text-[#2563EB] hover:underline dark:text-white dark:font-semibold"
             >
               View All
             </button>

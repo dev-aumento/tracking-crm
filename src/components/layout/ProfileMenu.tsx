@@ -10,6 +10,7 @@ import { ManualClockInRequestForm } from "@/components/time-tracking/ManualClock
 import { CrossDayClockOutDialog } from "@/components/time-tracking/CrossDayClockOutDialog";
 import { useClockOutAction } from "@/hooks/useClockOutAction";
 import { formatElapsedHMS, roleConfig } from "@/lib/utils";
+import { isAdminOrManagement } from "@/lib/leave-policy";
 import {
   ChevronRight,
   Loader2,
@@ -36,10 +37,11 @@ export function ProfileMenu() {
   const { user, logout } = useAuth();
   const [open, setOpen] = useState(false);
   const utils = trpc.useUtils();
+  const hidePersonalTime = isAdminOrManagement(user);
 
   const { data: todayStats } = trpc.timeEntry.getStats.useQuery(
     { period: "today" },
-    { enabled: open, staleTime: 30_000 },
+    { enabled: open && !hidePersonalTime, staleTime: 30_000 },
   );
   const hasWorkedToday = (todayStats?.totalSeconds ?? 0) > 0;
 
@@ -48,7 +50,8 @@ export function ProfileMenu() {
     {
       staleTime: 30_000,
       // Dot indicator needs session even when closed; poll only while menu is open.
-      refetchInterval: open ? 30_000 : false,
+      enabled: !hidePersonalTime,
+      refetchInterval: hidePersonalTime ? false : open ? 30_000 : false,
     },
   );
 
@@ -123,7 +126,7 @@ export function ProfileMenu() {
           </div>
           <div className="relative">
             <UserAvatar name={user?.name} avatar={user?.avatar} size={36} />
-            {isClockedIn && (
+            {!hidePersonalTime && isClockedIn && (
               <span
                 className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${
                   isPaused ? "bg-amber-400" : "bg-emerald-500"
@@ -149,7 +152,8 @@ export function ProfileMenu() {
           </div>
         </div>
 
-        {/* Time tracking card */}
+        {/* Time tracking card — hidden for admin / management */}
+        {!hidePersonalTime ? (
         <div className="mx-4 mb-4 rounded-xl border border-gray-200 bg-white overflow-hidden">
           {isClockedIn ? (
             <>
@@ -259,6 +263,7 @@ export function ProfileMenu() {
             </div>
           )}
         </div>
+        ) : null}
 
         <button
           type="button"
@@ -270,13 +275,13 @@ export function ProfileMenu() {
         >
           <span className="flex items-center gap-2.5">
             <Timer size={16} className="text-gray-400" />
-            Time Tracking
+            {hidePersonalTime ? "Employee Hours" : "Time Tracking"}
           </span>
           <ChevronRight size={16} className="text-gray-400 shrink-0" />
         </button>
       </PopoverContent>
 
-      {currentSession?.active ? (
+      {!hidePersonalTime && currentSession?.active ? (
         <CrossDayClockOutDialog
           open={clockOutAction.dialogOpen}
           onOpenChange={clockOutAction.setDialogOpen}

@@ -21,7 +21,7 @@ import type {
 import { ensureSchema } from "./lib/migrate";
 import { orgFilter } from "./lib/tenant";
 import { computeSessionWorkSeconds, startOfCalendarWeek } from "@/lib/work-hours-policy";
-import { leaveTypeShort, isHrRoleOnly, eachLeaveDateKey, isWeekdayDateKey, isWorkFromHomeLeave } from "@/lib/leave-policy";
+import { leaveTypeShort, isHrRoleOnly, eachLeaveDateKey, isWeekdayDateKey, isWorkFromHomeLeave, isAdminOrManagement } from "@/lib/leave-policy";
 import {
   HR_OVERVIEW_DEPARTMENT_LABELS,
   normalizeHrOverviewDepartment,
@@ -47,11 +47,11 @@ async function sumDuration(
   return result[0]?.total ?? 0;
 }
 
-function assertHrOrAdmin(user: { role?: string | null }) {
-  if (!(isHrRoleOnly(user) || user.role === "admin")) {
+function assertHrOrAdmin(user: { role?: string | null; department?: string | null }) {
+  if (!(isHrRoleOnly(user) || isAdminOrManagement(user))) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "This dashboard is only available to HR and admin users",
+      message: "This dashboard is only available to HR, admin, and management users",
     });
   }
 }
@@ -306,9 +306,11 @@ export const dashboardRouter = createRouter({
       await ensureSchema();
       const userCol = await getCollection<UserDoc>(Collections.users);
       const taskCol = await getCollection<TaskDoc>(Collections.tasks);
-      const allUsers = await userCol
-        .find({ status: "active", ...orgFilter(ctx.user) })
-        .toArray();
+      const allUsers = (
+        await userCol
+          .find({ status: "active", ...orgFilter(ctx.user) })
+          .toArray()
+      ).filter((user) => String(user.role ?? "").toLowerCase() !== "admin");
       const weekStart = startOfCalendarWeek();
 
       const workload = await Promise.all(

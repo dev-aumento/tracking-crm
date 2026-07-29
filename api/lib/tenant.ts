@@ -83,6 +83,8 @@ export async function ensureDefaultOrganizationMigration() {
     Collections.employeeDocuments,
     Collections.formerEmployees,
     Collections.formerEmployeeDocuments,
+    Collections.customers,
+    Collections.invoices,
   ] as const;
 
   for (const name of tenantCollections) {

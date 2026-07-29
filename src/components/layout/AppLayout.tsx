@@ -21,7 +21,7 @@ export function AppLayout() {
 
   return (
     <SidebarWidthContext.Provider value={sidebarWidth}>
-      <div className="min-h-screen bg-[#F8F9FA]">
+      <div className="min-h-screen bg-[#F8F9FA] dark:bg-[#0b1220]">
         <Sidebar
           collapsed={sidebarCollapsed}
           onToggle={() => setSidebarCollapsed((value) => !value)}

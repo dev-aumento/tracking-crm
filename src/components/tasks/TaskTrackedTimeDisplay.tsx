@@ -2,7 +2,7 @@ import { Clock } from "lucide-react";
 import { formatElapsedHMS, cn } from "@/lib/utils";
 
 type TaskTrackedTimeDisplayProps = {
-  /** Seconds shown on the clock (current session while live, otherwise total logged). */
+  /** Seconds shown on the clock (total logged + live session, or total when idle). */
   trackedSeconds: number;
   isTimerRunning?: boolean;
   isTimerPaused?: boolean;

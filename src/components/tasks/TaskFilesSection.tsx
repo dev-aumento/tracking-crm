@@ -19,6 +19,7 @@ import {
   openFileFromBase64,
   assertAttachmentFileSize,
   readFileAsBase64,
+  resolveFileMimeType,
   type TaskFileBadge,
 } from "@/lib/task-files";
 import { cn } from "@/lib/utils";
@@ -101,35 +102,58 @@ export function TaskFilesSection({
   const handlePickFiles = async (fileList: FileList | null) => {
     if (!fileList?.length || !canManage) return;
 
+    const failures: string[] = [];
+
     try {
       if (taskId) {
         for (const file of Array.from(fileList)) {
-          assertAttachmentFileSize(file);
-          const dataBase64 = await readFileAsBase64(file);
-          await addMutation.mutateAsync({
-            taskId,
-            fileName: file.name,
-            mimeType: file.type || "application/octet-stream",
-            fileSize: file.size,
-            dataBase64,
-          });
+          try {
+            assertAttachmentFileSize(file);
+            const dataBase64 = await readFileAsBase64(file);
+            await addMutation.mutateAsync({
+              taskId,
+              fileName: file.name,
+              mimeType: resolveFileMimeType(file),
+              fileSize: file.size,
+              dataBase64,
+            });
+          } catch (error) {
+            failures.push(
+              error instanceof Error ? error.message : `Could not upload "${file.name}".`,
+            );
+          }
+        }
+        if (failures.length > 0) {
+          window.alert(failures.join("\n"));
         }
         return;
       }
 
       // Create-task flow: keep File handles; preview via blob URLs (no bulk base64).
-      const staged: PendingTaskAttachment[] = Array.from(fileList).map((file) => {
-        assertAttachmentFileSize(file);
-        return {
-          clientId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          fileName: file.name,
-          mimeType: file.type || "application/octet-stream",
-          fileSize: file.size,
-          file,
-          previewUrl: URL.createObjectURL(file),
-        };
-      });
-      onPendingFilesChange?.([...pendingFiles, ...staged]);
+      const staged: PendingTaskAttachment[] = [];
+      for (const file of Array.from(fileList)) {
+        try {
+          assertAttachmentFileSize(file);
+          staged.push({
+            clientId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            fileName: file.name,
+            mimeType: resolveFileMimeType(file),
+            fileSize: file.size,
+            file,
+            previewUrl: URL.createObjectURL(file),
+          });
+        } catch (error) {
+          failures.push(
+            error instanceof Error ? error.message : `Could not stage "${file.name}".`,
+          );
+        }
+      }
+      if (staged.length > 0) {
+        onPendingFilesChange?.([...pendingFiles, ...staged]);
+      }
+      if (failures.length > 0) {
+        window.alert(failures.join("\n"));
+      }
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Could not upload file. Please try again.";
@@ -236,6 +260,7 @@ export function TaskFilesSection({
               ref={fileInputRef}
               type="file"
               multiple
+              accept="*/*"
               className="sr-only"
               onChange={(e) => {
                 void handlePickFiles(e.target.files);
