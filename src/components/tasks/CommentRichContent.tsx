@@ -2,7 +2,6 @@ import type { ClipboardEvent, ReactNode } from "react";
 import { parseCommentMessage, type MentionUser } from "@/lib/task-comment-mentions";
 import {
   dedupeMediaInRichBody,
-  getCommentClipboardPayload,
   htmlToFormattedPlainText,
   parseStoredCommentMessage,
   sanitizeRichCommentHtml,
@@ -60,6 +59,32 @@ function groupSegmentsForDisplay(segments: BodySegment[]): RenderBlock[] {
 
 function renderPlainMentions(message: string, mentionUsers: MentionUser[]) {
   const parts = parseCommentMessage(message, mentionUsers);
+  const mentionParts = parts.filter(
+    (part): part is Extract<typeof part, { type: "mention" }> => part.type === "mention",
+  );
+
+  // Mention-only prefix (one or more @people): always show as a horizontal chip row.
+  const onlyMentionsAndWhitespace = parts.every(
+    (part) =>
+      part.type === "mention"
+      || (part.type === "text" && !part.value.replace(/\s+/g, "").length),
+  );
+
+  if (onlyMentionsAndWhitespace && mentionParts.length > 0) {
+    return (
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        {mentionParts.map((part, index) => (
+          <span
+            key={`mention-${part.userId}-${index}`}
+            className="inline-flex font-medium text-[#2563EB]"
+          >
+            {part.name}
+          </span>
+        ))}
+      </div>
+    );
+  }
+
   const nodes: ReactNode[] = [];
 
   for (const [index, part] of parts.entries()) {
@@ -67,7 +92,7 @@ function renderPlainMentions(message: string, mentionUsers: MentionUser[]) {
       nodes.push(
         <span
           key={`mention-${index}`}
-          className="block font-medium text-[#2563EB]"
+          className="inline font-medium text-[#2563EB]"
         >
           {part.name}
         </span>,
@@ -76,9 +101,17 @@ function renderPlainMentions(message: string, mentionUsers: MentionUser[]) {
     }
 
     if (!part.value) continue;
+    // Don't force line breaks between mention tokens from older comments.
+    const normalized = part.value.replace(/^\n+|\n+$/g, (match) =>
+      match.length > 1 ? "\n" : "",
+    );
+    if (!normalized.replace(/\s+/g, "").length && mentionParts.length > 0) {
+      nodes.push(<span key={`gap-${index}`}>{" "}</span>);
+      continue;
+    }
     nodes.push(
       <span key={`text-${index}`} className="whitespace-pre-wrap break-words">
-        {part.value}
+        {normalized}
       </span>,
     );
   }
@@ -86,30 +119,46 @@ function renderPlainMentions(message: string, mentionUsers: MentionUser[]) {
   return nodes;
 }
 
-function handleCommentCopy(event: ClipboardEvent<HTMLDivElement>, message: string) {
+function handleCommentCopy(event: ClipboardEvent<HTMLDivElement>) {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed) return;
 
-  let html = "";
-  let text = "";
+  const currentTarget = event.currentTarget;
+  if (!selection.anchorNode || !currentTarget.contains(selection.anchorNode)) {
+    return;
+  }
 
+  // Browser selection text is the source of truth — never overwrite clipboard with empty data.
+  const selectedText = selection.toString();
+  if (!selectedText.trim()) return;
+
+  let html = "";
   try {
     const range = selection.getRangeAt(0);
     const container = document.createElement("div");
     container.appendChild(range.cloneContents());
     html = sanitizeRichCommentHtml(container.innerHTML);
-    text = htmlToFormattedPlainText(html);
   } catch {
-    const payload = getCommentClipboardPayload(message);
-    html = payload.html;
-    text = payload.text;
+    html = "";
   }
 
-  if (!html && !text) return;
+  const formatted = html ? htmlToFormattedPlainText(html) : "";
+  const text = formatted.trim() ? formatted : selectedText;
 
   event.preventDefault();
-  event.clipboardData.setData("text/html", html || `<div>${text}</div>`);
   event.clipboardData.setData("text/plain", text);
+  if (html.trim()) {
+    event.clipboardData.setData("text/html", html);
+  } else {
+    event.clipboardData.setData(
+      "text/html",
+      `<div>${text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\n/g, "<br>")}</div>`,
+    );
+  }
 }
 
 type CommentRichContentProps = {
@@ -130,8 +179,8 @@ export function CommentRichContent({
   if (!parsed.isRich) {
     return (
       <div
-        className={cn("break-words", className)}
-        onCopy={(event) => handleCommentCopy(event, message)}
+        className={cn("break-words select-text", className)}
+        onCopy={handleCommentCopy}
       >
         {renderPlainMentions(message, mentionUsers)}
       </div>
@@ -144,11 +193,13 @@ export function CommentRichContent({
 
   return (
     <div
-      className={cn("break-words", className)}
-      onCopy={(event) => handleCommentCopy(event, message)}
+      className={cn("break-words select-text", className)}
+      onCopy={handleCommentCopy}
     >
       {parsed.mentionPrefix ? (
-        <div className="mb-2">{renderPlainMentions(parsed.mentionPrefix, mentionUsers)}</div>
+        <div className="mb-2">
+          {renderPlainMentions(parsed.mentionPrefix, mentionUsers)}
+        </div>
       ) : null}
 
       {blocks.length > 0 ? (

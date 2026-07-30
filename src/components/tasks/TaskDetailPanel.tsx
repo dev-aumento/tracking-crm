@@ -753,7 +753,7 @@ function TaskPanelContent({
 
   const isOwner = sameUserId(task.createdBy, user?.id);
   const isAssignee = sameUserId(task.assigneeId, user?.id);
-  const isParticipant = task.participants.some((p) => sameUserId(p.id, user?.id));
+  const isParticipant = (task.participants ?? []).some((p) => sameUserId(p.id, user?.id));
   /** Full task edits (deadline, priority, estimate, files, etc.). */
   const canManage =
     user?.role === "admin" ||
@@ -766,8 +766,14 @@ function TaskPanelContent({
    * Assignee changes are restricted separately (see canChangeAssignee).
    */
   const canEditTeamAndStatus = Boolean(user);
-  /** Assignee, participants, owner, and leads can run the task timer. */
-  const canTrackTime = canManage || isParticipant;
+  /**
+   * Assignee, participants, owner, and leads can run the task timer.
+   * Prefer the server flag from getById (checks task_participants directly).
+   */
+  const canTrackTime =
+    typeof task.canTrackTime === "boolean"
+      ? task.canTrackTime
+      : canManage || isParticipant;
   const canChangeOwner =
     user?.role === "admin" ||
     user?.role === "manager" ||
@@ -1136,21 +1142,21 @@ function TaskPanelContent({
     }
   };
 
-  const handleSendComment = (text: string) => {
+  const handleSendComment = useCallback((text: string) => {
     const message = text.trim();
     if (!message) return;
     addCommentMutation.mutate({ taskId, message });
-  };
+  }, [addCommentMutation, taskId]);
 
-  const handleEditComment = (activityId: number, message: string) => {
+  const handleEditComment = useCallback((activityId: number, message: string) => {
     editCommentMutation.mutate({ taskId, activityId, message });
-  };
+  }, [editCommentMutation, taskId]);
 
-  const handleDeleteComment = (activityId: number) => {
+  const handleDeleteComment = useCallback((activityId: number) => {
     deleteCommentMutation.mutate({ taskId, activityId });
-  };
+  }, [deleteCommentMutation, taskId]);
 
-  const handleUploadCommentMedia = async (file: File) => {
+  const handleUploadCommentMedia = useCallback(async (file: File) => {
     assertAttachmentFileSize(file);
     const mimeType = resolveFileMimeType(file);
     const dataBase64 = await readFileAsBase64(file);
@@ -1167,7 +1173,7 @@ function TaskPanelContent({
       fileName: attachment.fileName,
       mimeType: attachment.mimeType || mimeType,
     };
-  };
+  }, [addAttachmentMutation, taskId]);
 
   const resolveMediaPreviewUrl = useCallback(
     createAttachmentPreviewResolver((id) => utils.task.getAttachment.fetch({ id })),
@@ -1806,13 +1812,46 @@ function TaskPanelContent({
               )}
 
               <MetaRow label="Time Tracking" icon={Clock}>
-                <div className="inline-flex items-center gap-2">
+                <div className="inline-flex items-center gap-2 flex-wrap">
                   <TaskTrackedTimeDisplay
                     trackedSeconds={displaySeconds}
                     isTimerRunning={isTimerRunning}
                     isTimerPaused={isTimerPaused}
                     hasActiveSession={hasActiveSession}
                   />
+                  {canTrackTime && workflowState !== "complete" ? (
+                    <>
+                      {isTimerRunning ? (
+                        <button
+                          type="button"
+                          onClick={() => pauseTimerMutation.mutate({ taskId })}
+                          disabled={pauseTimerMutation.isPending}
+                          className="h-8 px-3 inline-flex items-center justify-center gap-1.5 bg-[#F59E0B] text-white rounded-lg text-xs font-medium hover:bg-[#D97706] disabled:opacity-50"
+                        >
+                          {pauseTimerMutation.isPending ? (
+                            <Loader2 size={14} className="animate-spin" />
+                          ) : (
+                            <Pause size={14} />
+                          )}
+                          Pause
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={handleStartTimer}
+                          disabled={startTimerMutation.isPending && !hasActiveSession}
+                          className="h-8 px-3 inline-flex items-center justify-center gap-1.5 bg-[#2563EB] text-white rounded-lg text-xs font-medium hover:bg-[#1D4ED8] disabled:opacity-50"
+                        >
+                          {startTimerMutation.isPending && !hasActiveSession ? (
+                            <Loader2 size={14} className="animate-spin" />
+                          ) : (
+                            <Play size={14} />
+                          )}
+                          {isTimerPaused ? "Resume" : "Start"}
+                        </button>
+                      )}
+                    </>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => setTimeDetailsExpanded((open) => !open)}

@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, memo } from "react";
 import { createPortal } from "react-dom";
-import { Loader2, MoreHorizontal, Pencil, Smile, Trash2, X } from "lucide-react";
+import { Copy, Loader2, MoreHorizontal, Pencil, Smile, Trash2, X } from "lucide-react";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { EmojiPickerPanel } from "@/components/shared/EmojiPickerPanel";
@@ -15,6 +15,7 @@ import {
 } from "@/components/tasks/RichTextCommentEditor";
 import {
   buildRichCommentMessage,
+  getCommentClipboardPayload,
   getCommentEditDraft,
   isEditorContentEmpty,
   type CommentMediaRef,
@@ -60,7 +61,7 @@ function isEdited(activity: CommentActivity) {
   return Boolean(activity.metadata?.editedAt);
 }
 
-export function TaskCommentBubble({
+export const TaskCommentBubble = memo(function TaskCommentBubble({
   activity,
   taskId,
   isOwn,
@@ -207,6 +208,22 @@ export function TaskCommentBubble({
     onDelete(activity.id);
   };
 
+  const handleCopyComment = async () => {
+    setMenuOpen(false);
+    const payload = getCommentClipboardPayload(activity.newValue ?? "");
+    const text = payload.text.trim();
+    if (!text) {
+      toast.error("Nothing to copy");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("Comment copied");
+    } catch {
+      toast.error("Could not copy comment");
+    }
+  };
+
   const removeMentionChip = (userId: number) => {
     setMentionChips((current) => current.filter((chip) => chip.id !== userId));
   };
@@ -309,7 +326,7 @@ export function TaskCommentBubble({
           <p className="font-semibold text-xs text-[#2563EB] dark:text-[#38BDF8]">
             {activity.user?.name ?? "Unknown"}
           </p>
-          {canManage && !isEditing ? (
+          {!isEditing ? (
             <Popover open={menuOpen} onOpenChange={setMenuOpen} modal>
               <PopoverTrigger asChild>
                 <button
@@ -338,20 +355,32 @@ export function TaskCommentBubble({
               >
                 <button
                   type="button"
-                  onClick={startEdit}
+                  onClick={() => void handleCopyComment()}
                   className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100"
                 >
-                  <Pencil size={14} />
-                  Edit
+                  <Copy size={14} />
+                  Copy
                 </button>
-                <button
-                  type="button"
-                  onClick={handleDelete}
-                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-red-600 hover:bg-red-50"
-                >
-                  <Trash2 size={14} />
-                  Delete
-                </button>
+                {canManage ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={startEdit}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100"
+                    >
+                      <Pencil size={14} />
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDelete}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-red-600 hover:bg-red-50"
+                    >
+                      <Trash2 size={14} />
+                      Delete
+                    </button>
+                  </>
+                ) : null}
               </PopoverContent>
             </Popover>
           ) : null}
@@ -410,7 +439,7 @@ export function TaskCommentBubble({
                 type="button"
                 onClick={cancelEdit}
                 disabled={isSaving}
-                className="h-8 px-3 rounded-lg text-xs font-medium text-gray-600 hover:bg-white/70 disabled:opacity-50"
+                className="h-8 px-3 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray/70 disabled:opacity-50"
               >
                 Cancel
               </button>
@@ -555,4 +584,4 @@ export function TaskCommentBubble({
       </div>
     </div>
   );
-}
+});

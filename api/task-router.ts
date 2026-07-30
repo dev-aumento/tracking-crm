@@ -37,7 +37,7 @@ import type {
   SafeUser,
 } from "@db/mongo/types";
 import { PIPELINE_STAGE_KEY_REGEX, resolveProjectPipelineStages, legacyStatusToStage, isMarkingTaskComplete } from "@/lib/task-kanban";
-import { extractMentionedUserIds, formatCommentPreview } from "@/lib/task-comment-mentions";
+import { formatCommentPreview } from "@/lib/task-comment-mentions";
 import { extractMentionedUserIdsFromComment, richCommentPlainText } from "@/lib/rich-comment";
 import { readCommentReactions, toggleUserReaction } from "@/lib/comment-reactions";
 import { pauseOtherRunningTaskTimers } from "./lib/task-timers";
@@ -60,24 +60,29 @@ function actorLabel(user: SafeUser) {
 
 async function isTaskParticipant(taskId: number, userId: number): Promise<boolean> {
   const participantCol = await getCollection<TaskParticipantDoc>(Collections.taskParticipants);
+  const tid = Number(taskId);
+  const uid = Number(userId);
+  if (!Number.isFinite(tid) || !Number.isFinite(uid)) return false;
+
   const row = await participantCol.findOne({
-    taskId,
-    userId,
-    role: "participant",
+    taskId: tid,
+    userId: uid,
+    $or: [{ role: "participant" }, { role: { $exists: false } }],
   });
   return !!row;
 }
 
 async function canManageTaskTime(user: SafeUser, task: TaskDoc): Promise<boolean> {
+  const uid = Number(user.id);
   if (
     user.role === "admin"
     || user.role === "manager"
-    || task.createdBy === user.id
-    || task.assigneeId === user.id
+    || Number(task.createdBy) === uid
+    || Number(task.assigneeId) === uid
   ) {
     return true;
   }
-  return isTaskParticipant(task.id, user.id);
+  return isTaskParticipant(task.id, uid);
 }
 
 function escapeRegex(value: string) {
@@ -196,7 +201,7 @@ export const taskRouter = createRouter({
           ? projectMap.get(task.projectId) ?? null
           : null,
         participantIds: allParticipants
-          .filter((p) => p.taskId === task.id && p.role === "participant")
+          .filter((p) => p.taskId === task.id && (p.role === "participant" || p.role == null))
           .map((p) => p.userId),
         observerIds: allParticipants
           .filter((p) => p.taskId === task.id && p.role === "observer")
@@ -257,7 +262,7 @@ export const taskRouter = createRouter({
       ]);
 
       const participantUsers = participants
-        .filter((p) => p.role === "participant")
+        .filter((p) => p.role === "participant" || p.role == null)
         .map((p) => userMap.get(p.userId))
         .filter((u): u is SafeUser => u != null);
 
@@ -265,6 +270,8 @@ export const taskRouter = createRouter({
         .filter((p) => p.role === "observer")
         .map((p) => userMap.get(p.userId))
         .filter((u): u is SafeUser => u != null);
+
+      const canTrackTime = await canManageTaskTime(ctx.user, task);
 
       return {
         ...task,
@@ -282,6 +289,8 @@ export const taskRouter = createRouter({
         attachments: attachmentsList.map(attachmentMeta),
         participants: participantUsers,
         observers: observerUsers,
+        /** Server-authoritative: assignee, participants, owner, admin/manager. */
+        canTrackTime,
         activities: activities.map((a) => ({
           ...a,
           user: a.userId ? userMap.get(a.userId) ?? null : null,
@@ -1459,6 +1468,8 @@ export const taskRouter = createRouter({
           activityId: activity.id,
           extraRecipientIds: mentionedUserIds,
           includeAssignee: false,
+          // Explicit @mentions must reach every mentioned employee (including HR).
+          includeHrRecipients: true,
         });
       } else {
         await notifyTaskMembers({
@@ -1514,6 +1525,30 @@ export const taskRouter = createRouter({
           },
         },
       );
+
+      const previousMentionIds = new Set(
+        extractMentionedUserIdsFromComment(activity.newValue ?? ""),
+      );
+      const nextMentionIds = extractMentionedUserIdsFromComment(input.message);
+      const newlyMentioned = nextMentionIds.filter((id) => !previousMentionIds.has(id));
+      if (newlyMentioned.length > 0) {
+        const task = await findById<TaskDoc>(Collections.tasks, input.taskId);
+        const previewSource =
+          richCommentPlainText(input.message) || formatCommentPreview(input.message);
+        const preview =
+          previewSource.length > 120 ? `${previewSource.slice(0, 120)}…` : previewSource;
+        await notifyTaskMembers({
+          taskId: input.taskId,
+          actor: ctx.user,
+          type: "mention",
+          title: "You were mentioned in a comment",
+          message: `${actorLabel(ctx.user)} mentioned you on "${task?.title ?? "a task"}": ${preview}`,
+          activityId: input.activityId,
+          extraRecipientIds: newlyMentioned,
+          includeAssignee: false,
+          includeHrRecipients: true,
+        });
+      }
 
       return { success: true, editedAt };
     }),

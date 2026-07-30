@@ -288,8 +288,9 @@ export function richCommentPlainText(message: string) {
 }
 
 export function extractMentionedUserIdsFromComment(message: string) {
-  const parsed = parseStoredCommentMessage(message);
-  return extractMentionedUserIds(parsed.mentionPrefix || message);
+  // Scan the full stored message so every «id|name» token is notified,
+  // whether it sits in the mention prefix or elsewhere.
+  return extractMentionedUserIds(message);
 }
 
 export function splitRichBodySegments(body: string) {

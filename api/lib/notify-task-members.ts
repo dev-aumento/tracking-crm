@@ -19,6 +19,11 @@ type NotifyTaskMembersInput = {
   excludeUserIds?: number[];
   /** When false, skip the task assignee (e.g. participant-only alerts). Default true. */
   includeAssignee?: boolean;
+  /**
+   * When true, do not strip HR users from the recipient list.
+   * Use for explicit @mentions so every mentioned employee is notified.
+   */
+  includeHrRecipients?: boolean;
 };
 
 export async function getTaskRecipientIds(taskId: number) {
@@ -61,18 +66,26 @@ export async function notifyTaskMembers({
   extraRecipientIds = [],
   excludeUserIds = [],
   includeAssignee = true,
+  includeHrRecipients = false,
 }: NotifyTaskMembersInput) {
   const { assigneeId } = await getTaskRecipientIds(taskId);
-  const excluded = new Set([actor.id, ...excludeUserIds]);
+  const excluded = new Set(
+    [actor.id, ...excludeUserIds].map((id) => Number(id)).filter((id) => Number.isFinite(id)),
+  );
   const recipientIds = new Set<number>();
 
   if (includeAssignee && assigneeId != null) {
-    recipientIds.add(assigneeId);
+    recipientIds.add(Number(assigneeId));
   }
-  for (const id of extraRecipientIds) recipientIds.add(id);
+  for (const id of extraRecipientIds) {
+    const uid = Number(id);
+    if (Number.isFinite(uid) && uid > 0) recipientIds.add(uid);
+  }
 
   const candidates = [...recipientIds].filter((id) => !excluded.has(id));
-  const recipients = await excludeHrRecipientIds(candidates);
+  const recipients = includeHrRecipients
+    ? candidates
+    : await excludeHrRecipientIds(candidates);
   if (recipients.length === 0) return;
 
   const now = new Date();

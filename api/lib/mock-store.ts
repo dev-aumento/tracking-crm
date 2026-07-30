@@ -753,6 +753,7 @@ function mockNotifyTaskMembers({
   extraRecipientIds = [],
   excludeUserIds = [],
   includeAssignee = true,
+  includeHrRecipients = false,
 }: {
   taskId: number;
   actor: SafeUser;
@@ -763,15 +764,17 @@ function mockNotifyTaskMembers({
   extraRecipientIds?: number[];
   excludeUserIds?: number[];
   includeAssignee?: boolean;
+  includeHrRecipients?: boolean;
 }) {
   const task = tasks.find((t) => t.id === taskId);
-  const excluded = new Set([actor.id, ...excludeUserIds]);
+  const excluded = new Set([actor.id, ...excludeUserIds].map(Number));
   const recipientIds = new Set<number>();
   if (includeAssignee && task?.assigneeId != null) recipientIds.add(task.assigneeId);
-  for (const id of extraRecipientIds) recipientIds.add(id);
+  for (const id of extraRecipientIds) recipientIds.add(Number(id));
 
   const recipients = [...recipientIds].filter((id) => {
     if (excluded.has(id)) return false;
+    if (includeHrRecipients) return true;
     const recipient = users.find((u) => u.id === id);
     if (!recipient) return true;
     // Keep mock aligned with production: HR department users skip task alerts.
@@ -1243,15 +1246,16 @@ export function mockGetMyActiveTaskTimer(userId: number) {
 function mockCanManageTaskTime(actor: SafeUser, taskId: number) {
   const task = tasks.find((t) => t.id === taskId);
   if (!task) return false;
+  const uid = Number(actor.id);
   if (
     actor.role === "admin"
     || actor.role === "manager"
-    || task.createdBy === actor.id
-    || task.assigneeId === actor.id
+    || Number(task.createdBy) === uid
+    || Number(task.assigneeId) === uid
   ) {
     return true;
   }
-  return (taskParticipants[taskId] ?? []).some((p) => p.id === actor.id);
+  return (taskParticipants[taskId] ?? []).some((p) => Number(p.id) === uid);
 }
 
 export function mockStartTaskTimer(
@@ -1459,6 +1463,7 @@ export function mockAddTaskComment(taskId: number, message: string, actor: SafeU
       activityId: activity.id,
       extraRecipientIds: mentionedUserIds,
       includeAssignee: false,
+      includeHrRecipients: true,
     });
   } else {
     mockNotifyTaskMembers({
@@ -1499,6 +1504,27 @@ export function mockEditTaskComment(
     editedAt: new Date().toISOString(),
   };
   task.updatedAt = new Date();
+
+  const previousMentionIds = new Set(
+    extractMentionedUserIdsFromComment(activity.oldValue ?? ""),
+  );
+  const nextMentionIds = extractMentionedUserIdsFromComment(message);
+  const newlyMentioned = nextMentionIds.filter((id) => !previousMentionIds.has(id));
+  if (newlyMentioned.length > 0) {
+    const previewSource = richCommentPlainText(message) || formatCommentPreview(message);
+    const preview = previewSource.length > 120 ? `${previewSource.slice(0, 120)}…` : previewSource;
+    mockNotifyTaskMembers({
+      taskId,
+      actor,
+      type: "mention",
+      title: "You were mentioned in a comment",
+      message: `${mockActorLabel(actor)} mentioned you on "${task.title}": ${preview}`,
+      activityId: activity.id,
+      extraRecipientIds: newlyMentioned,
+      includeAssignee: false,
+      includeHrRecipients: true,
+    });
+  }
 
   return activity;
 }

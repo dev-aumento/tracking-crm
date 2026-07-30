@@ -12,10 +12,12 @@ export function buildMentionToken(user: MentionUser) {
 
 export function buildCommentMessage(mentions: MentionUser[], body: string) {
   const trimmedBody = body.trim();
-  const mentionLines = mentions.map((user) => buildMentionToken(user));
-  if (mentionLines.length === 0) return trimmedBody;
-  if (!trimmedBody) return mentionLines.join("\n");
-  return `${mentionLines.join("\n")}\n${trimmedBody}`;
+  const mentionTokens = mentions.map((user) => buildMentionToken(user));
+  if (mentionTokens.length === 0) return trimmedBody;
+  // Keep multiple mentions on one line so they render side by side.
+  const mentionLine = mentionTokens.join(" ");
+  if (!trimmedBody) return mentionLine;
+  return `${mentionLine}\n${trimmedBody}`;
 }
 
 export function extractMentionedUserIds(message: string): number[] {
