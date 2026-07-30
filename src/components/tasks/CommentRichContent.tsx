@@ -1,4 +1,4 @@
-import type { ClipboardEvent, ReactNode } from "react";
+import { memo, type ClipboardEvent, type ReactNode } from "react";
 import { parseCommentMessage, type MentionUser } from "@/lib/task-comment-mentions";
 import {
   dedupeMediaInRichBody,
@@ -119,6 +119,11 @@ function renderPlainMentions(message: string, mentionUsers: MentionUser[]) {
   return nodes;
 }
 
+/**
+ * Copy only the user's selected range.
+ * Prefer the browser selection string; optionally enrich with formatted plain text
+ * from the selected HTML when that conversion succeeds.
+ */
 function handleCommentCopy(event: ClipboardEvent<HTMLDivElement>) {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed) return;
@@ -128,36 +133,29 @@ function handleCommentCopy(event: ClipboardEvent<HTMLDivElement>) {
     return;
   }
 
-  // Browser selection text is the source of truth — never overwrite clipboard with empty data.
   const selectedText = selection.toString();
-  if (!selectedText.trim()) return;
+  if (!selectedText) return;
 
   let html = "";
+  let formatted = "";
   try {
     const range = selection.getRangeAt(0);
     const container = document.createElement("div");
     container.appendChild(range.cloneContents());
     html = sanitizeRichCommentHtml(container.innerHTML);
+    formatted = html ? htmlToFormattedPlainText(html) : "";
   } catch {
-    html = "";
+    // Fall through to native copy of the selection.
+    return;
   }
 
-  const formatted = html ? htmlToFormattedPlainText(html) : "";
   const text = formatted.trim() ? formatted : selectedText;
+  if (!text) return;
 
   event.preventDefault();
   event.clipboardData.setData("text/plain", text);
   if (html.trim()) {
     event.clipboardData.setData("text/html", html);
-  } else {
-    event.clipboardData.setData(
-      "text/html",
-      `<div>${text
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/\n/g, "<br>")}</div>`,
-    );
   }
 }
 
@@ -169,7 +167,7 @@ type CommentRichContentProps = {
   inlineMedia?: boolean;
 };
 
-export function CommentRichContent({
+function CommentRichContentInner({
   message,
   mentionUsers,
   className,
@@ -236,3 +234,5 @@ export function CommentRichContent({
     </div>
   );
 }
+
+export const CommentRichContent = memo(CommentRichContentInner);

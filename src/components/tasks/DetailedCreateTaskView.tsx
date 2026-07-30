@@ -197,7 +197,8 @@ export function DetailedCreateTaskView({
     (formData.assigneeId && formData.assigneeId !== formData.ownerId ? 1 : 0) +
     formData.participantIds.length;
 
-  const availableParticipants = users.filter((u) => u.id !== formData.assigneeId);
+  // Assignees may also be participants (self-include on create).
+  const availableParticipants = users;
   const availableObservers = users.filter(
     (u) => u.id !== formData.assigneeId && !formData.participantIds.includes(u.id),
   );
@@ -326,7 +327,7 @@ export function DetailedCreateTaskView({
                     onValueChange={(assigneeId) =>
                       update({
                         assigneeId,
-                        participantIds: formData.participantIds.filter((id) => id !== assigneeId),
+                        // Keep participants; only drop observer role for the new assignee.
                         observerIds: formData.observerIds.filter((id) => id !== assigneeId),
                       })
                     }
