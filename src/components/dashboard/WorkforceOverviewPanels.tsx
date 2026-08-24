@@ -1,20 +1,16 @@
 import { useNavigate } from "react-router";
-import { Cake } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import {
   LeaveSummaryPanel,
   type LeaveSummaryItem,
 } from "@/components/dashboard/LeaveSummaryPanel";
+import {
+  UpcomingBirthdaysPanel,
+  type UpcomingBirthdayItem,
+} from "@/components/dashboard/UpcomingBirthdaysPanel";
 
 const DEPT_COLORS = ["#2563EB", "#3B82F6", "#60A5FA", "#93C5FD", "#38BDF8", "#0EA5E9"];
-
-const BIRTHDAY_BADGE = [
-  { bg: "#DBEAFE", color: "#2563EB" },
-  { bg: "#D1FAE5", color: "#059669" },
-  { bg: "#EDE9FE", color: "#7C3AED" },
-  { bg: "#FFEDD5", color: "#EA580C" },
-];
 
 type WorkforceOverviewData = {
   overviewStaffTotal?: number;
@@ -29,14 +25,7 @@ type WorkforceOverviewData = {
     position: string;
     joinedLabel: string;
   }>;
-  upcomingBirthdays: Array<{
-    id: number;
-    name: string;
-    avatar: string | null;
-    position: string;
-    dateLabel: string;
-    daysLeft: number;
-  }>;
+  upcomingBirthdays: UpcomingBirthdayItem[];
 };
 
 export function WorkforceOverviewPanels({
@@ -53,9 +42,9 @@ export function WorkforceOverviewPanels({
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
         <div className="bg-white border border-gray-200 rounded-xl p-5">
           <div className="flex items-center justify-between mb-1">
-            <h2 className="font-semibold text-[#1F2937]">Employee Overview</h2>
+            <h2 className="font-semibold text-[#1F2937]">Work Overview</h2>
           </div>
-          <p className="text-xs text-gray-400 mb-4">Employees by Department</p>
+          <p className="text-xs text-gray-400 mb-4">Team by department / role</p>
           <div className="h-48 relative">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
@@ -109,7 +98,7 @@ export function WorkforceOverviewPanels({
           </div>
           <button
             type="button"
-            onClick={() => navigate("/admin/employees")}
+            onClick={() => navigate("/admin/departments")}
             className="mt-4 w-full h-9 rounded-lg border border-gray-200 text-sm font-medium text-[#2563EB] hover:bg-blue-50 transition-colors dark:border-[#2d3a4f] dark:text-white dark:font-semibold dark:hover:bg-[#1a2336]"
           >
             View Report
@@ -155,53 +144,7 @@ export function WorkforceOverviewPanels({
           </div>
         </div>
 
-        <div className="bg-white border border-gray-200 rounded-xl p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="font-semibold text-[#1F2937]">Upcoming Birthdays</h2>
-            <button
-              type="button"
-              onClick={() => navigate("/admin/employees")}
-              className="text-xs font-medium text-[#2563EB] hover:underline dark:text-white dark:font-semibold"
-            >
-              View All
-            </button>
-          </div>
-          <div className="space-y-3">
-            {(data?.upcomingBirthdays ?? []).length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-8 text-gray-400">
-                <Cake size={28} className="mb-2 opacity-40" />
-                <p className="text-xs">No upcoming birthdays</p>
-              </div>
-            ) : (
-              (data?.upcomingBirthdays ?? []).map((person, i) => {
-                const badge = BIRTHDAY_BADGE[i % BIRTHDAY_BADGE.length];
-                return (
-                  <div key={person.id} className="flex items-center gap-3">
-                    <UserAvatar name={person.name} avatar={person.avatar} size={40} />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium text-[#1F2937] truncate">
-                        {person.name}
-                      </div>
-                      <div className="text-xs text-gray-400 truncate">
-                        {person.position} · {person.dateLabel}
-                      </div>
-                    </div>
-                    <span
-                      className="text-[10px] font-semibold px-2.5 py-1 rounded-full shrink-0"
-                      style={{ backgroundColor: badge.bg, color: badge.color }}
-                    >
-                      {person.daysLeft === 0
-                        ? "Today"
-                        : person.daysLeft === 1
-                          ? "1 Day Left"
-                          : `${person.daysLeft} Days Left`}
-                    </span>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
+        <UpcomingBirthdaysPanel birthdays={data?.upcomingBirthdays ?? []} />
       </div>
     </div>
   );

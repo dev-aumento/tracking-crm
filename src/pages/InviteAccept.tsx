@@ -7,6 +7,8 @@ import { OrgAuthShell } from "@/components/auth/OrgAuthShell";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { writeAuthCache } from "@/lib/auth-cache";
+import { getDefaultHomePath } from "@/lib/permissions";
 
 type Step = "email" | "account";
 
@@ -38,9 +40,11 @@ export default function InviteAccept() {
   const emailLocked = Boolean(validation?.email);
 
   const acceptMutation = trpc.invite.accept.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (result) => {
+      writeAuthCache(result.user);
+      utils.auth.me.setData(undefined, result.user);
       await utils.invalidate();
-      navigate("/", { replace: true });
+      navigate(getDefaultHomePath(result.user), { replace: true });
     },
   });
 
@@ -145,10 +149,17 @@ export default function InviteAccept() {
   return (
     <OrgAuthShell organizationLabel={orgLabel}>
       {validation.invitedByName ? (
-        <p className="text-center text-sm text-gray-500 -mt-4 mb-6">
+        <p className="text-center text-sm text-gray-500 -mt-4 mb-2">
           Invited by <span className="font-medium text-gray-700">{validation.invitedByName}</span>
         </p>
       ) : null}
+      <p className="text-center text-xs text-gray-400 mb-6">
+        {validation.inviteKind === "client"
+          ? "You will join as a client, open the client dashboard, and can assign tasks to the team."
+          : validation.clientWorkspace
+          ? "You will join this client workspace and open the client portal dashboard."
+          : "You will join this workspace as an employee and can be assigned tasks."}
+      </p>
 
       {step === "email" ? (
         <form onSubmit={handleContinueEmail} className="space-y-5">
@@ -198,7 +209,14 @@ export default function InviteAccept() {
 
           <p className="text-center text-sm text-gray-500 pt-1">
             Already have an account?{" "}
-            <Link to="/login" className="text-[#2563EB] hover:underline font-medium">
+            <Link
+              to={
+                validation.inviteKind === "client" || validation.clientWorkspace
+                  ? "/client/login"
+                  : "/login"
+              }
+              className="text-[#2563EB] hover:underline font-medium"
+            >
               Sign in
             </Link>
           </p>
@@ -298,7 +316,11 @@ export default function InviteAccept() {
         <p className="text-center text-xs text-gray-400 mb-3">Other login options</p>
         <div className="flex items-center justify-center">
           <Link
-            to="/login"
+            to={
+              validation.inviteKind === "client" || validation.clientWorkspace
+                ? "/client/login"
+                : "/login"
+            }
             className="text-sm font-medium text-[#2563EB] hover:underline"
           >
             Sign in with existing account

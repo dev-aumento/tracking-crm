@@ -76,21 +76,85 @@ export const DEFAULT_ORGANIZATION_PROFILE: OrganizationProfileForm = {
   additionalFields: [],
 };
 
+export function normalizeOrganizationProfile(
+  value?: Partial<OrganizationProfileForm> | null,
+): OrganizationProfileForm {
+  return {
+    ...DEFAULT_ORGANIZATION_PROFILE,
+    ...(value ?? {}),
+    additionalFields: Array.isArray(value?.additionalFields)
+      ? value!.additionalFields
+      : [],
+  };
+}
+
+/** Local cache only — invoices should prefer the server profile when available. */
 export function loadOrganizationProfile(): OrganizationProfileForm {
   try {
     const raw = localStorage.getItem(ORGANIZATION_PROFILE_STORAGE_KEY);
     if (!raw) return { ...DEFAULT_ORGANIZATION_PROFILE };
     const parsed = JSON.parse(raw) as Partial<OrganizationProfileForm>;
-    return {
-      ...DEFAULT_ORGANIZATION_PROFILE,
-      ...parsed,
-      additionalFields: Array.isArray(parsed.additionalFields)
-        ? parsed.additionalFields
-        : [],
-    };
+    return normalizeOrganizationProfile(parsed);
   } catch {
     return { ...DEFAULT_ORGANIZATION_PROFILE };
   }
+}
+
+export function cacheOrganizationProfile(profile: OrganizationProfileForm) {
+  try {
+    localStorage.setItem(ORGANIZATION_PROFILE_STORAGE_KEY, JSON.stringify(profile));
+  } catch {
+    // Ignore quota / private-mode failures; server profile remains source of truth.
+  }
+}
+
+/** True when the profile has enough company identity for invoice headers. */
+export function hasOrganizationBillingDetails(profile?: OrganizationProfileForm | null) {
+  return Boolean(profile?.name?.trim());
+}
+
+export function hasOrganizationLogo(profile?: OrganizationProfileForm | null) {
+  const logo = profile?.logoDataUrl?.trim() ?? "";
+  return logo.startsWith("data:image/");
+}
+
+/**
+ * Merge server billing profile with the local cache so a missing server logo
+ * (common before the first re-save) still appears on invoices in this browser,
+ * and so admin can migrate the logo up to the shared org profile.
+ */
+export function mergeOrganizationProfiles(
+  primary?: Partial<OrganizationProfileForm> | null,
+  fallback?: Partial<OrganizationProfileForm> | null,
+): OrganizationProfileForm {
+  const a = normalizeOrganizationProfile(primary);
+  const b = normalizeOrganizationProfile(fallback);
+  return normalizeOrganizationProfile({
+    ...b,
+    ...a,
+    name: a.name.trim() || b.name.trim(),
+    logoDataUrl: hasOrganizationLogo(a) ? a.logoDataUrl : b.logoDataUrl,
+    addressLine1: a.addressLine1.trim() || b.addressLine1,
+    addressLine2: a.addressLine2.trim() || b.addressLine2,
+    city: a.city.trim() || b.city,
+    state: a.state.trim() || b.state,
+    zip: a.zip.trim() || b.zip,
+    phone: a.phone.trim() || b.phone,
+    taxIdValue: a.taxIdValue.trim() || b.taxIdValue,
+    taxIdType: a.taxIdType.trim() || b.taxIdType,
+    companyIdValue: a.companyIdValue.trim() || b.companyIdValue,
+    primaryContactName: a.primaryContactName.trim() || b.primaryContactName,
+    primaryContactEmail: a.primaryContactEmail.trim() || b.primaryContactEmail,
+    additionalFields:
+      a.additionalFields.length > 0 ? a.additionalFields : b.additionalFields,
+  });
+}
+
+/** Profile used on invoice preview/PDF — server first, local logo/details as fill-ins. */
+export function resolveOrganizationProfileForInvoice(
+  server?: Partial<OrganizationProfileForm> | null,
+): OrganizationProfileForm {
+  return mergeOrganizationProfiles(server, loadOrganizationProfile());
 }
 
 export function formatOrganizationAddress(org: OrganizationProfileForm): string[] {

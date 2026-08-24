@@ -3,7 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { nanoid } from "nanoid";
 import { Invite } from "@contracts/constants";
 import { Collections } from "@db/mongo/collections";
-import type { EmployeeInviteDoc, NotificationDoc, UserDoc } from "@db/mongo/types";
+import type { EmployeeInviteDoc, InviteKind, NotificationDoc, UserDoc } from "@db/mongo/types";
 import { createRouter, employeesManageQuery, publicQuery } from "./middleware";
 import { ensureSchema } from "./lib/migrate";
 import * as inviteMock from "./lib/invite-mock";
@@ -16,12 +16,24 @@ import {
   insertDoc,
   updateById,
 } from "./queries/connection";
-import { createUser, findUserByEmail, omitPasswordHash } from "./queries/users";
+import { createUser, findUserByEmail } from "./queries/users";
 import {
   getOrganizationNameById,
   orgFilter,
   requireOrganizationId,
+  resolveClientWorkspace,
 } from "./lib/tenant";
+import {
+  CLIENT_WORKSPACE_MEMBER_PERMISSIONS,
+  INVITED_CLIENT_PERMISSIONS,
+  toSessionUser,
+} from "./lib/client-workspace";
+import { getEmployeeDefaultPermissions } from "./lib/employee-defaults";
+import { ensureCustomerFromClientUser } from "./lib/sync-customers-from-clients";
+
+function inviteKindOf(invite: { inviteKind?: InviteKind | null } | null | undefined): InviteKind {
+  return invite?.inviteKind === "client" ? "client" : "employee";
+}
 
 function inviteExpiryDate() {
   const date = new Date();
@@ -48,21 +60,29 @@ async function getValidInvite(token: string) {
   return col.findOne({ token });
 }
 
-async function notifyAdminsOfNewEmployee(
+async function notifyAdminsOfNewJoin(
   organizationId: number,
   newUserId: number,
   newUserName: string,
   newUserEmail: string,
+  kind: InviteKind,
 ) {
   const usersCol = await getCollection<UserDoc>(Collections.users);
   const admins = await usersCol
-    .find({ organizationId, role: "admin", status: "active" })
+    .find({
+      organizationId,
+      role: "admin",
+      status: "active",
+    })
     .toArray();
 
   if (admins.length === 0) return;
 
   const now = new Date();
-  const message = `${newUserName || newUserEmail} accepted an invite. Review and assign their access level in Employees.`;
+  const isClient = kind === "client";
+  const message = isClient
+    ? `${newUserName || newUserEmail} accepted a client invite. Tasks they assign to your team will appear in Client's Tasks.`
+    : `${newUserName || newUserEmail} accepted an invite. Review and assign their access level in Employees.`;
 
   await Promise.all(
     admins.map((admin) =>
@@ -71,7 +91,7 @@ async function notifyAdminsOfNewEmployee(
         organizationId,
         actorId: newUserId,
         type: "employee_joined",
-        title: "New employee joined",
+        title: isClient ? "New client joined" : "New employee joined",
         message,
         taskId: null,
         read: false,
@@ -90,19 +110,32 @@ export const inviteRouter = createRouter({
     .input(
       z.object({
         email: z.string().email().max(320),
+        kind: z.enum(["employee", "client"]).default("employee"),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       const email = input.email.trim().toLowerCase();
       const organizationId = requireOrganizationId(ctx.user);
+      const inviteKind: InviteKind = input.kind === "client" ? "client" : "employee";
+
+      if (inviteKind === "client") {
+        const orgIsClientWorkspace = await resolveClientWorkspace(organizationId);
+        if (orgIsClientWorkspace) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "This workspace is already a client portal. Invite teammates instead.",
+          });
+        }
+      }
 
       if (useInviteMock()) {
-        const invite = inviteMock.mockCreateInvite(ctx.user.id, email);
+        const invite = inviteMock.mockCreateInvite(ctx.user.id, email, inviteKind);
         return {
           token: invite.token,
           url: buildInviteUrl(ctx.req, invite.token),
           expiresAt: invite.expiresAt,
           email: invite.email,
+          inviteKind,
         };
       }
 
@@ -139,6 +172,7 @@ export const inviteRouter = createRouter({
         invitedBy: ctx.user.id,
         email,
         department: null,
+        inviteKind,
         expiresAt,
         status: "pending",
         acceptedUserId: null,
@@ -151,6 +185,7 @@ export const inviteRouter = createRouter({
         url: buildInviteUrl(ctx.req, token),
         expiresAt,
         email,
+        inviteKind,
       };
     }),
 
@@ -162,6 +197,7 @@ export const inviteRouter = createRouter({
           token: invite.token,
           email: invite.email,
           department: invite.department,
+          inviteKind: inviteKindOf(invite),
           status: invite.status,
           expiresAt: invite.expiresAt,
           acceptedAt: null,
@@ -190,6 +226,7 @@ export const inviteRouter = createRouter({
           token: invite.token,
           email: invite.email,
           department: invite.department,
+          inviteKind: inviteKindOf(invite),
           status: invite.status,
           expiresAt: invite.expiresAt,
           acceptedAt: invite.acceptedAt,
@@ -237,8 +274,10 @@ export const inviteRouter = createRouter({
           email: invite?.email ?? null,
           department: invite?.department ?? null,
           invitedByName: null,
-          organizationName: "AumentoX26",
+          organizationName: "FlowTicX",
           expired: false,
+          clientWorkspace: inviteKindOf(invite) === "client",
+          inviteKind: inviteKindOf(invite),
         };
       }
 
@@ -246,7 +285,10 @@ export const inviteRouter = createRouter({
       const invite = await getValidInvite(input.token);
       const organizationName = invite?.organizationId
         ? await getOrganizationNameById(invite.organizationId)
-        : "AumentoX26";
+        : "FlowTicX";
+      const clientWorkspace = invite?.organizationId
+        ? await resolveClientWorkspace(invite.organizationId)
+        : false;
 
       if (!invite || invite.status !== "pending") {
         return {
@@ -256,6 +298,8 @@ export const inviteRouter = createRouter({
           invitedByName: null,
           organizationName,
           expired: invite?.status === "expired",
+          clientWorkspace,
+          inviteKind: inviteKindOf(invite),
         };
       }
 
@@ -267,6 +311,8 @@ export const inviteRouter = createRouter({
           invitedByName: null,
           organizationName,
           expired: true,
+          clientWorkspace,
+          inviteKind: inviteKindOf(invite),
         };
       }
 
@@ -279,6 +325,8 @@ export const inviteRouter = createRouter({
         invitedByName: inviter?.name ?? null,
         organizationName,
         expired: false,
+        clientWorkspace: clientWorkspace || inviteKindOf(invite) === "client",
+        inviteKind: inviteKindOf(invite),
       };
     }),
 
@@ -344,6 +392,19 @@ export const inviteRouter = createRouter({
 
       const passwordHash = await hashPassword(input.password);
       const now = new Date();
+      const inviteKind = inviteKindOf(invite);
+      const clientWorkspace = await resolveClientWorkspace(invite.organizationId);
+      const isInvitedClient = inviteKind === "client";
+      const permissions = isInvitedClient
+        ? [...INVITED_CLIENT_PERMISSIONS]
+        : clientWorkspace
+          ? [
+              ...new Set([
+                ...(await getEmployeeDefaultPermissions()),
+                ...CLIENT_WORKSPACE_MEMBER_PERMISSIONS,
+              ]),
+            ]
+          : undefined;
 
       const user = await createUser({
         unionId: `invite_${nanoid()}`,
@@ -352,12 +413,13 @@ export const inviteRouter = createRouter({
         email,
         passwordHash,
         avatar: null,
-        role: "employee",
+        role: isInvitedClient ? "client" : "employee",
         status: "active" as UserDoc["status"],
         department: invite.department,
-        position: null,
+        position: isInvitedClient ? "Client" : null,
         phone: null,
-      }, { inviteId: invite.id });
+        permissions,
+      }, { inviteId: isInvitedClient ? null : invite.id });
 
       await updateById<EmployeeInviteDoc>(Collections.employeeInvites, invite.id, {
         status: "accepted",
@@ -365,14 +427,26 @@ export const inviteRouter = createRouter({
         acceptedAt: now,
       });
 
-      await notifyAdminsOfNewEmployee(
+      if (isInvitedClient) {
+        await ensureCustomerFromClientUser(invite.organizationId, user, invite.invitedBy);
+      }
+
+      await notifyAdminsOfNewJoin(
         invite.organizationId,
         user.id,
         input.name,
         email,
+        inviteKind,
       );
-      await createSessionForUser(user.id, ctx.req.headers, ctx.resHeaders);
+      const sessionToken = await createSessionForUser(
+        user.id,
+        ctx.req.headers,
+        ctx.resHeaders,
+      );
 
-      return { user: omitPasswordHash(user) };
+      return {
+        user: await toSessionUser(user, isInvitedClient || clientWorkspace),
+        token: sessionToken,
+      };
     }),
 });

@@ -74,6 +74,7 @@ export function TaskDeadlineFunnel({
         id: draggedTask,
         dueDate: patch.dueDate,
         ...(patch.status ? { status: patch.status } : {}),
+        ...(patch.stage ? { stage: patch.stage } : {}),
       });
     }
     setDraggedTask(null);

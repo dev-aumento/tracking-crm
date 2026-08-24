@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ArrowLeft, Pencil, Download, ChevronDown, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,6 +15,7 @@ import {
 } from "@/lib/invoice-download";
 import type { CustomerRecord } from "@/components/customers/NewCustomerForm";
 import { InvoicePdfPreview } from "@/components/invoices/InvoicePdfPreview";
+import { useOrganizationBillingProfile } from "@/hooks/useOrganizationBillingProfile";
 
 const TERMS_LABEL: Record<string, string> = {
   due_on_receipt: "Due on Receipt",
@@ -53,10 +54,14 @@ export function InvoiceDetailView({
   deleting = false,
 }: InvoiceDetailViewProps) {
   const [downloadOpen, setDownloadOpen] = useState(false);
+  const { profile: organization } = useOrganizationBillingProfile();
   const subTotal = invoiceSubTotal(invoice.items);
   const total = invoiceTotal(invoice);
   const currency = invoice.currency || "INR";
-  const exportOptions = { customer, useCurrentDate: true };
+  const exportOptions = useMemo(
+    () => ({ customer, useCurrentDate: true, organization }),
+    [customer, organization],
+  );
 
   return (
     <div className="space-y-4">

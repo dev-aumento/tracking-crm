@@ -1,4 +1,4 @@
-/** Session-scoped auth snapshot so reloads can paint the shell before auth.me returns. */
+/** Auth snapshot for fast shell paint before auth.me returns. */
 
 export type CachedAuthUser = {
   id: number;
@@ -6,8 +6,8 @@ export type CachedAuthUser = {
   name: string | null;
   email: string | null;
   avatar: string | null;
-  role: "admin" | "manager" | "employee" | "hr" | "client";
-  status: "active" | "inactive" | "suspended";
+  role: string;
+  status: string;
   department: string | null;
   position: string | null;
   phone: string | null;
@@ -15,13 +15,29 @@ export type CachedAuthUser = {
   createdAt: Date;
   updatedAt: Date;
   lastSignInAt: Date;
+  clientWorkspace?: boolean;
+  plan?: string | null;
+  planName?: string | null;
+  planStatus?: string | null;
+  planFeatures?: string[] | null;
 };
 
-const AUTH_CACHE_KEY = "tracker.auth.me.v1";
+const AUTH_CACHE_KEY = "tracker.auth.me.v3";
+
+function storage(): Storage | null {
+  try {
+    return sessionStorage;
+  } catch {
+    return null;
+  }
+}
 
 export function readAuthCache(): CachedAuthUser | undefined {
   try {
-    const raw = sessionStorage.getItem(AUTH_CACHE_KEY);
+    const store = storage();
+    if (!store) return undefined;
+
+    const raw = store.getItem(AUTH_CACHE_KEY);
     if (!raw) return undefined;
     const parsed = JSON.parse(raw) as CachedAuthUser;
     if (!parsed?.id || !parsed?.role || !parsed?.status) return undefined;
@@ -38,11 +54,17 @@ export function readAuthCache(): CachedAuthUser | undefined {
 
 export function writeAuthCache(user: CachedAuthUser | null | undefined) {
   try {
+    const store = storage();
+    if (!store) return;
+
     if (!user) {
       sessionStorage.removeItem(AUTH_CACHE_KEY);
+      localStorage.removeItem(AUTH_CACHE_KEY);
       return;
     }
-    sessionStorage.setItem(AUTH_CACHE_KEY, JSON.stringify(user));
+
+    store.setItem(AUTH_CACHE_KEY, JSON.stringify(user));
+    localStorage.removeItem(AUTH_CACHE_KEY);
   } catch {
     // Ignore quota / private-mode failures.
   }

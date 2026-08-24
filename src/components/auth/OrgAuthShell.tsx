@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Workspace } from "@contracts/constants";
+import { BrandLogo } from "@/components/brand/BrandLogo";
 
 type OrgAuthShellProps = {
   children: ReactNode;
@@ -7,7 +8,7 @@ type OrgAuthShellProps = {
 };
 
 export function OrgAuthShell({ children, organizationLabel }: OrgAuthShellProps) {
-  const orgDisplay = organizationLabel ?? (typeof window !== "undefined" ? "AumentoX26" : Workspace.name);
+  const orgDisplay = organizationLabel ?? (typeof window !== "undefined" ? "FlowTicX" : Workspace.name);
 
   return (
     <div className="min-h-screen flex flex-col lg:flex-row">
@@ -32,11 +33,11 @@ export function OrgAuthShell({ children, organizationLabel }: OrgAuthShellProps)
           }}/>
         <div className="absolute bottom-0 left-0 right-0 h-1/3 bg-gradient-to-t from-[#060f1a] to-transparent" />
 
-        <div className="relative z-10 flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-r from-[#0EA5E9] to-[#38BDF8] flex items-center justify-center shadow-lg">
-            <span className="text-white font-bold text-sm">AT</span>
-          </div>
-          <span className="text-2xl font-bold tracking-tight">{Workspace.name}</span>
+        <div className="relative z-10">
+          <BrandLogo variant="dark" imgClassName="h-10" />
+          <p className="mt-2 text-[9px] font-semibold uppercase tracking-[0.14em] text-white/50">
+            Powered by <span className="text-[#38BDF8]">Aumento Infoway</span>
+          </p>
         </div>
 
         <div className="relative z-10 max-w-md">
@@ -55,18 +56,22 @@ export function OrgAuthShell({ children, organizationLabel }: OrgAuthShellProps)
 
       {/* Form panel */}
       <div className="flex-1 flex flex-col min-h-screen bg-[#e8ecf1]">
-        <div className="lg:hidden flex items-center gap-3 px-6 py-5 bg-[#0b1a2e] text-white">
-          <div className="w-9 h-9 rounded-lg bg-gradient-to-r from-[#0EA5E9] to-[#38BDF8] flex items-center justify-center">
-            <span className="text-white font-bold text-xs">AT</span>
-          </div>
-          <span className="font-bold text-lg">{Workspace.name}</span>
+        <div className="lg:hidden flex items-center px-6 py-4 bg-[#0b1a2e] text-white">
+          <BrandLogo variant="dark" imgClassName="h-8" />
         </div>
 
         <div className="flex-1 flex items-center justify-center p-6 sm:p-10">
           <div className="w-full max-w-[420px] bg-white rounded-2xl shadow-[0_8px_40px_rgba(15,23,42,0.12)] px-8 py-10 sm:px-10 sm:py-12">
             <div className="text-center mb-8">
-              <p className="text-[15px] text-gray-500 mb-1">Join us on</p>
-              <p className="text-xl font-bold text-gray-900 break-all">{orgDisplay}</p>
+              <div className="mb-5 flex justify-center">
+                <BrandLogo variant="light" imgClassName="h-9" />
+              </div>
+              {orgDisplay.trim() && orgDisplay.trim() !== Workspace.name ? (
+                <>
+                  <p className="text-[15px] text-gray-500 mb-1">Join us on</p>
+                  <p className="text-xl font-bold text-gray-900 break-all">{orgDisplay}</p>
+                </>
+              ) : null}
             </div>
             {children}
           </div>

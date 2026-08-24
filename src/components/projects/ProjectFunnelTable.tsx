@@ -35,6 +35,7 @@ interface ProjectFunnelTableProps {
   onToggleSelect: (id: number) => void;
   onToggleSelectAll: () => void;
   onProjectClick: (id: number) => void;
+  hideClientAgency?: boolean;
 }
 
 function ProjectIcon({
@@ -62,6 +63,7 @@ export function ProjectFunnelTable({
   onToggleSelect,
   onToggleSelectAll,
   onProjectClick,
+  hideClientAgency = false,
 }: ProjectFunnelTableProps) {
   if (isLoading) {
     return (
@@ -109,7 +111,7 @@ export function ProjectFunnelTable({
                         <span className="text-sm font-medium text-[#1F2937] truncate">
                           {project.name}
                         </span>
-                        {project.clientName?.trim() ? (
+                        {!hideClientAgency && project.clientName?.trim() ? (
                           <span className="text-sm text-gray-500 truncate">
                             {" "}· {project.clientName.trim()}
                           </span>

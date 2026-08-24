@@ -189,17 +189,19 @@ export function TaskSearchFilterPanel({
         ...filters,
         projectId: suggestion.id,
         personUserId: null,
-        text: suggestion.label,
+        text: "",
       });
-      onSearchInputChange(suggestion.label);
+      onSearchInputChange("");
     }
     closePanel();
   };
 
   const inputValue =
     filterSummary &&
-    filters.personUserId != null &&
-    searchInput.trim() === (selectedPerson?.name ?? "").trim()
+    ((filters.personUserId != null &&
+      searchInput.trim() === (selectedPerson?.name ?? "").trim()) ||
+      (filters.projectId != null &&
+        searchInput.trim() === (selectedProject?.name ?? "").trim()))
       ? ""
       : searchInput;
 

@@ -12,6 +12,7 @@ export const DEPARTMENT_OPTIONS = [
   "Project Manager",
   ...EMPLOYEE_DEPARTMENT_OPTIONS,
   "HR",
+  "Finance",
 ] as const;
 
 /** Chart labels used on the HR Employees-by-Department overview. */
@@ -73,7 +74,7 @@ export function normalizeHrOverviewDepartment(
 /**
  * Options for a department `<select>`.
  * - `employee`: Developer, Designer, QA, UI/UX Designer only
- * - `all`: includes Administrator, Project Manager, HR
+ * - `all`: includes Administrator, Project Manager, HR, Finance
  *
  * If `current` is set and not in the list (legacy value), it is prepended so the
  * controlled select keeps a valid selected value — without offering managerial
@@ -98,6 +99,8 @@ export function departmentSelectOptions(
 export function departmentSelectScopeForRole(
   role?: string | null,
 ): DepartmentSelectScope {
-  if (role === "admin" || role === "manager" || role === "hr") return "all";
+  if (role === "admin" || role === "manager" || role === "hr" || role === "finance") {
+    return "all";
+  }
   return "employee";
 }

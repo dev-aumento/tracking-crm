@@ -25,6 +25,7 @@ const PERSONAL_FIELD_DEFAULTS = {
   panCard: null,
   notificationLanguage: null,
   employmentType: "full_time" as const,
+  onNoticePeriod: false,
   headOfDepartmentUserIds: [] as number[],
 };
 
@@ -45,6 +46,7 @@ function personalPatchFromUser(user: UserDoc): Partial<EmployeeDoc> {
     panCard: user.panCard ?? null,
     notificationLanguage: user.notificationLanguage ?? null,
     employmentType: user.employmentType === "intern" ? "intern" : "full_time",
+    onNoticePeriod: Boolean(user.onNoticePeriod),
     headOfDepartmentUserIds: user.headOfDepartmentUserIds ?? [],
   };
 }
@@ -118,16 +120,24 @@ export async function getEmployeeUserIdSet() {
 
 /**
  * Employees must exist in the employees collection to appear in the CRM.
- * Admins/managers are listed from users even without an employee row.
+ * Admins/managers/HR/finance are listed from users even without an employee row.
+ * Clients are external accounts and stay out of the staff directory.
  */
 export function isListedInEmployeeDirectory(
   user: Pick<UserDoc, "id" | "role">,
   employeeUserIds: Set<number>,
 ) {
-  // Clients are external accounts — never list them as company staff.
   if (user.role === "client") return false;
   if (user.role !== "employee") return true;
   return employeeUserIds.has(user.id);
+}
+
+/** Roles included in workforce / headcount metrics (not clients or account managers). */
+export function isCountedInWorkforce(
+  user: Pick<UserDoc, "role"> | { role?: string | null } | null | undefined,
+) {
+  const role = String(user?.role ?? "").toLowerCase();
+  return role !== "client" && role !== "finance";
 }
 
 export async function syncEmployeeFromUser(

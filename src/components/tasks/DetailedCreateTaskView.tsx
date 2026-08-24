@@ -3,7 +3,7 @@ import {
   Flame, Calendar, Clock, Paperclip, AtSign, List, ListOrdered,
   Sparkles, ListChecks, FolderOpen, Users,
   Loader2, UserPlus, Search, Smile, Mic, Send,
-  ChevronDown, User, Play, Plus, Folder, Flag,
+  ChevronDown, User, Play, Plus, Folder, Flag, X,
 } from "lucide-react";
 import type { CreateTaskFormData } from "@/components/tasks/CreateTaskModal";
 import {
@@ -13,9 +13,15 @@ import {
   TaskMetaRow,
   TaskSectionCard,
 } from "@/components/tasks/task-form-ui";
-import { RichTextCommentEditor } from "@/components/tasks/RichTextCommentEditor";
+import {
+  RichTextCommentEditor,
+  deleteTextRange,
+  getCaretOffset,
+  getPlainText,
+} from "@/components/tasks/RichTextCommentEditor";
 import { UserSearchSelect } from "@/components/tasks/UserSearchSelect";
 import { ProjectSearchSelect } from "@/components/tasks/ProjectSearchSelect";
+import { UserAvatar } from "@/components/shared/UserAvatar";
 import {
   KANBAN_STAGES,
   type PipelineStageDef,
@@ -26,9 +32,15 @@ import { assertAttachmentFileSize } from "@/lib/task-files";
 import { buildRichCommentMessage } from "@/lib/rich-comment";
 import { createStagedAttachmentPreviewResolver } from "@/lib/attachment-preview";
 import { stageTaskMediaFile } from "@/lib/staged-task-media";
+import {
+  filterMentionUsers,
+  filterMentionableUsers,
+  getMentionQuery,
+  type MentionUser,
+} from "@/lib/task-comment-mentions";
 import { cn } from "@/lib/utils";
 
-type UserOption = { id: number; name: string | null; avatar?: string | null };
+type UserOption = { id: number; name: string | null; avatar?: string | null; role?: string | null };
 type ProjectOption = { id: number; name: string };
 type TaskLinkOption = { id: number; title: string };
 
@@ -45,6 +57,10 @@ interface DetailedCreateTaskViewProps {
   onSubmit: () => void;
   onCancel: () => void;
   pipelineStages?: PipelineStageDef[];
+  /** Hide Task Chat column (mobile create / full-screen create). */
+  hideTaskChat?: boolean;
+  /** Invited clients stay the owner so assigned work appears in Client's Tasks. */
+  lockOwner?: boolean;
 }
 
 import {
@@ -64,12 +80,23 @@ export function DetailedCreateTaskView({
   onSubmit,
   onCancel,
   pipelineStages = KANBAN_STAGES.map((s) => ({ ...s })),
+  hideTaskChat = false,
+  lockOwner = false,
 }: DetailedCreateTaskViewProps) {
   const titleRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formDataRef = useRef(formData);
   const [chatHtml, setChatHtml] = useState("");
   const [chatMedia, setChatMedia] = useState<CreateTaskFormData["descriptionMedia"]>([]);
+  /** Bump only when clearing the chat composer (after Add to chat), not on each keystroke. */
+  const [chatEditorKey, setChatEditorKey] = useState(0);
+  const [chatMentionChips, setChatMentionChips] = useState<MentionUser[]>([]);
+  const [chatPlainText, setChatPlainText] = useState("");
+  const [chatCaretPosition, setChatCaretPosition] = useState(0);
+  const [chatMentionIndex, setChatMentionIndex] = useState(0);
+  const [chatMentionDismissed, setChatMentionDismissed] = useState(false);
+  const chatEditorHostRef = useRef<HTMLDivElement>(null);
+  const chatMentionRangeRef = useRef<{ query: string; start: number; end: number } | null>(null);
   // const [templatesOpen, setTemplatesOpen] = useState(false);
   const [showTimePlanning, setShowTimePlanning] = useState(false);
   const estimateParts = splitEstimatedHoursMinutes(formData.estimatedHours);
@@ -166,10 +193,103 @@ export function DetailedCreateTaskView({
     }
   };
 
+  const chatEditorElement = () =>
+    chatEditorHostRef.current?.querySelector<HTMLDivElement>("[contenteditable]") ?? null;
+
+  const syncChatCaret = () => {
+    const editor = chatEditorElement();
+    if (!editor) return;
+    setChatPlainText(getPlainText(editor));
+    setChatCaretPosition(getCaretOffset(editor));
+  };
+
+  const chatMentionState = useMemo(
+    () => getMentionQuery(chatPlainText, chatCaretPosition),
+    [chatPlainText, chatCaretPosition],
+  );
+
+  useEffect(() => {
+    chatMentionRangeRef.current = chatMentionState;
+  }, [chatMentionState]);
+
+  const chatMentionSuggestions = useMemo(() => {
+    if (!chatMentionState) return [];
+    return filterMentionUsers(
+      filterMentionableUsers(users).filter(
+        (user) => !chatMentionChips.some((chip) => chip.id === user.id),
+      ),
+      chatMentionState.query,
+    );
+  }, [chatMentionState, users, chatMentionChips]);
+
+  useEffect(() => {
+    setChatMentionIndex(0);
+    setChatMentionDismissed(false);
+  }, [chatMentionState?.query, chatMentionState?.start, chatMentionSuggestions.length]);
+
+  const insertChatMention = (
+    user: MentionUser,
+    range = chatMentionRangeRef.current,
+  ) => {
+    if (!range) return;
+
+    setChatMentionChips((current) => {
+      if (current.some((chip) => chip.id === user.id)) return current;
+      return [...current, user];
+    });
+
+    const editor = chatEditorElement();
+    if (editor) {
+      deleteTextRange(editor, range.start, range.end);
+      setChatHtml(editor.innerHTML);
+      setChatPlainText(getPlainText(editor));
+      setChatCaretPosition(getCaretOffset(editor));
+    }
+
+    chatMentionRangeRef.current = null;
+    editor?.focus();
+  };
+
+  const removeChatMentionChip = (userId: number) => {
+    setChatMentionChips((current) => current.filter((chip) => chip.id !== userId));
+  };
+
+  const handleChatComposerKeyDown = (event: React.KeyboardEvent) => {
+    if (
+      !chatMentionDismissed &&
+      chatMentionSuggestions.length > 0 &&
+      chatMentionRangeRef.current
+    ) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setChatMentionIndex((prev) => (prev + 1) % chatMentionSuggestions.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setChatMentionIndex(
+          (prev) => (prev - 1 + chatMentionSuggestions.length) % chatMentionSuggestions.length,
+        );
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        insertChatMention(chatMentionSuggestions[chatMentionIndex]);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        chatMentionRangeRef.current = null;
+        setChatMentionDismissed(true);
+        return;
+      }
+    }
+  };
+
   const sendChatDraft = () => {
     // Keep staged (negative) media tokens so submitCreateTask can remap them
     // to real attachment IDs after upload.
-    const message = buildRichCommentMessage([], chatHtml, chatMedia, {
+    const message = buildRichCommentMessage(chatMentionChips, chatHtml, chatMedia, {
       keepPendingMedia: true,
     });
     if (!message.trim()) return;
@@ -181,6 +301,10 @@ export function DetailedCreateTaskView({
     });
     setChatHtml("");
     setChatMedia([]);
+    setChatMentionChips([]);
+    setChatPlainText("");
+    setChatCaretPosition(0);
+    setChatEditorKey((key) => key + 1);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -197,18 +321,42 @@ export function DetailedCreateTaskView({
     (formData.assigneeId && formData.assigneeId !== formData.ownerId ? 1 : 0) +
     formData.participantIds.length;
 
+  const pickerUsers = useMemo(() => {
+    if (!currentUser) return users;
+    if (users.some((user) => user.id === currentUser.id)) return users;
+    return [currentUser, ...users];
+  }, [users, currentUser]);
+  const knownUsers = currentUser ? [currentUser] : [];
+
   // Assignees may also be participants (self-include on create).
-  const availableParticipants = users;
-  const availableObservers = users.filter(
+  const availableParticipants = pickerUsers;
+  const availableObservers = pickerUsers.filter(
     (u) => u.id !== formData.assigneeId && !formData.participantIds.includes(u.id),
   );
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col h-full min-h-0">
-      <div className="flex flex-1 min-h-0 flex-col lg:flex-row">
+    <form onSubmit={handleSubmit} className="flex h-full min-h-0 flex-col">
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col",
+          !hideTaskChat && "lg:flex-row",
+        )}
+      >
         {/* Left — task form (matches TaskDetailPanel layout) */}
-        <div className="w-full lg:w-[44%] flex flex-col min-h-0 bg-white border-r border-gray-200">
-          <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        <div
+          className={cn(
+            "flex min-h-0 w-full flex-col bg-white",
+            hideTaskChat
+              ? "flex-1"
+              : "border-r border-gray-200 lg:w-[44%]",
+          )}
+        >
+          <div
+            className={cn(
+              "flex-1 space-y-4 overflow-y-auto overscroll-contain p-6",
+              hideTaskChat && "pt-14",
+            )}
+          >
             {/* Title */}
             <section>
               <div className="flex items-start justify-between gap-3 mb-3">
@@ -308,20 +456,24 @@ export function DetailedCreateTaskView({
                 <TaskMetaRow label="Task owner" icon={User}>
                   <UserSearchSelect
                     mode="single"
-                    users={users}
+                    users={pickerUsers}
+                    knownUsers={knownUsers}
                     value={formData.ownerId}
-                    onValueChange={(ownerId) =>
-                      update({ ownerId: ownerId })
-                    }
+                    onValueChange={(ownerId) => {
+                      if (lockOwner) return;
+                      update({ ownerId: ownerId });
+                    }}
                     placeholder="Select owner…"
                     searchPlaceholder="Search employees…"
                     triggerClassName="h-9 max-w-[240px] border-gray-200"
+                    disabled={lockOwner}
                   />
                 </TaskMetaRow>
 
                 <TaskMetaRow label="Assignees" icon={Users}>
                   <UserSearchSelect
-                    users={users}
+                    users={pickerUsers}
+                    knownUsers={knownUsers}
                     mode="single"
                     value={formData.assigneeId}
                     onValueChange={(assigneeId) =>
@@ -510,8 +662,9 @@ export function DetailedCreateTaskView({
           </div>
         </div>
 
-        {/* Right — task chat */}
-        <div className="flex-1 flex flex-col min-h-[280px] lg:min-h-0 bg-[#E8F0FE]">
+        {/* Right — task chat (hidden on mobile / full-screen create) */}
+        {!hideTaskChat ? (
+        <div className="hidden min-h-0 flex-1 flex-col bg-[#E8F0FE] lg:flex">
           <div className="px-5 py-3 bg-white/80 border-b border-gray-200 shrink-0">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -556,25 +709,82 @@ export function DetailedCreateTaskView({
             )}
           </div>
 
-          <div className="shrink-0 bg-white/90 border-t border-gray-200/80 p-3 dark:bg-[#0b1220]">
-            <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-              <RichTextCommentEditor
-                key={`${chatHtml}-${chatMedia.length}-${formData.chatDrafts.length}`}
-                initialHtml={chatHtml}
-                initialMedia={chatMedia}
-                onChange={(html, media) => {
-                  setChatHtml(html);
-                  setChatMedia(media);
-                }}
-                onUploadMedia={chatMediaUpload}
-                resolveMediaPreviewUrl={resolveMediaPreviewUrl}
-                placeholder="Type @ to mention someone..."
-              />
+          <div
+            className="shrink-0 bg-white/90 border-t border-gray-200/80 p-3 dark:bg-[#0b1220] relative"
+            onKeyDown={handleChatComposerKeyDown}
+          >
+            <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-visible relative">
+              {chatMentionSuggestions.length > 0 && !chatMentionDismissed ? (
+                <div className="absolute left-0 right-0 bottom-full mb-2 rounded-xl border border-gray-200 bg-white shadow-lg overflow-hidden z-30 max-h-56 overflow-y-auto">
+                  {chatMentionSuggestions.map((user, index) => (
+                    <button
+                      key={user.id}
+                      type="button"
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        insertChatMention(user);
+                      }}
+                      className={cn(
+                        "w-full flex items-center gap-3 px-3 py-2 text-left text-sm hover:bg-gray-50",
+                        index === chatMentionIndex && "bg-blue-50",
+                      )}
+                    >
+                      <UserAvatar name={user.name} avatar={user.avatar} size={28} />
+                      <span className="font-medium text-gray-800">{user.name}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+
+              {chatMentionChips.length > 0 ? (
+                <div className="flex flex-wrap gap-2 px-3 pt-3">
+                  {chatMentionChips.map((user) => (
+                    <span
+                      key={user.id}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-blue-50 px-2 py-1 text-sm font-medium text-[#2563EB] underline underline-offset-2"
+                    >
+                      {user.name}
+                      <button
+                        type="button"
+                        onClick={() => removeChatMentionChip(user.id)}
+                        className="text-blue-400 hover:text-blue-700"
+                        aria-label={`Remove ${user.name ?? "user"}`}
+                      >
+                        <X size={12} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+
+              <div
+                ref={chatEditorHostRef}
+                onKeyUp={syncChatCaret}
+                onClick={syncChatCaret}
+              >
+                <RichTextCommentEditor
+                  key={chatEditorKey}
+                  initialHtml={chatEditorKey === 0 ? chatHtml : ""}
+                  initialMedia={chatEditorKey === 0 ? chatMedia : []}
+                  onChange={(html, media) => {
+                    setChatHtml(html);
+                    setChatMedia(media);
+                    syncChatCaret();
+                  }}
+                  onUploadMedia={chatMediaUpload}
+                  resolveMediaPreviewUrl={resolveMediaPreviewUrl}
+                  placeholder="Type @ to mention someone..."
+                />
+              </div>
               <div className="flex items-center justify-end gap-2 px-3 py-2 border-t border-gray-100">
                 <button
                   type="button"
                   onClick={sendChatDraft}
-                  disabled={!chatHtml.trim() && chatMedia.length === 0}
+                  disabled={
+                    !chatHtml.trim() &&
+                    chatMedia.length === 0 &&
+                    chatMentionChips.length === 0
+                  }
                   className="h-9 px-4 flex items-center justify-center gap-2 rounded-lg bg-[#2563EB] text-white hover:bg-[#1D4ED8] disabled:opacity-40 text-sm font-medium"
                 >
                   <Send size={16} />
@@ -584,6 +794,7 @@ export function DetailedCreateTaskView({
             </div>
           </div>
         </div>
+        ) : null}
       </div>
     </form>
   );

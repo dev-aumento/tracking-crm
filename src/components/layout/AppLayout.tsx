@@ -1,17 +1,28 @@
 import { useEffect, useState } from "react";
-import { Outlet } from "react-router";
+import { Navigate, Outlet } from "react-router";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 import { AppToaster } from "@/components/ui/app-toaster";
 import { TaskNotificationToasts } from "@/components/notifications/TaskNotificationToasts";
 import { SidebarWidthContext } from "@/hooks/useSidebarWidth";
 import { getSidebarWidth, useLayoutMode } from "@/hooks/use-layout-mode";
+import { GeofenceAutoClockOut } from "@/hooks/useGeofenceAutoClockOut";
+import { useAuth } from "@/hooks/useAuth";
+import { isClientPortalUser } from "@/lib/client-portal";
+import { isPlatformUser } from "@/lib/platform-admin";
 
 export function AppLayout() {
+  const { user } = useAuth();
+  const clientPortal = isClientPortalUser(user);
   const layoutMode = useLayoutMode();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const sidebarWidth = getSidebarWidth(layoutMode, sidebarCollapsed);
+  const sidebarWidth =
+    clientPortal && layoutMode !== "drawer"
+      ? sidebarCollapsed
+        ? 56
+        : 244
+      : getSidebarWidth(layoutMode, sidebarCollapsed);
 
   useEffect(() => {
     if (layoutMode !== "drawer") {
@@ -19,9 +30,20 @@ export function AppLayout() {
     }
   }, [layoutMode]);
 
+  if (isPlatformUser(user)) {
+    return <Navigate to="/platform" replace />;
+  }
+
   return (
     <SidebarWidthContext.Provider value={sidebarWidth}>
-      <div className="min-h-screen bg-[#F8F9FA] dark:bg-[#0b1220]">
+      <div
+        className={
+          clientPortal
+            ? "min-h-screen bg-[#F6F4F2] text-[#1E1F21] dark:bg-[#25262A] dark:text-[#F5F4F3]"
+            : "min-h-screen bg-[#F8F9FA] text-[#1F2937] dark:bg-[#0d1117] dark:text-[#f3f4f6]"
+        }
+      >
+        {clientPortal ? null : <GeofenceAutoClockOut />}
         <Sidebar
           collapsed={sidebarCollapsed}
           onToggle={() => setSidebarCollapsed((value) => !value)}
@@ -37,7 +59,13 @@ export function AppLayout() {
             showMenuButton={layoutMode === "drawer"}
             onMenuClick={() => setDrawerOpen(true)}
           />
-          <main className="flex-1 p-4 pt-[4.5rem] sm:p-5 sm:pt-20 lg:p-6 lg:pt-20 min-w-0">
+          <main
+            className={
+              clientPortal
+                ? "flex-1 px-5 pt-[4.25rem] pb-10 sm:px-7 sm:pt-[4.5rem] min-w-0"
+                : "flex-1 p-4 pt-[4.5rem] sm:p-5 sm:pt-20 lg:p-6 lg:pt-20 min-w-0"
+            }
+          >
             <Outlet />
           </main>
         </div>

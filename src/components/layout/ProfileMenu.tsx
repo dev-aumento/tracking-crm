@@ -11,6 +11,9 @@ import { CrossDayClockOutDialog } from "@/components/time-tracking/CrossDayClock
 import { useClockOutAction } from "@/hooks/useClockOutAction";
 import { formatElapsedHMS, roleConfig } from "@/lib/utils";
 import { isAdminOrManagement } from "@/lib/leave-policy";
+import { isClientPortalUser } from "@/lib/client-portal";
+import { runClockInWithLocation } from "@/lib/clock-in-with-location";
+import { toast } from "sonner";
 import {
   ChevronRight,
   Loader2,
@@ -32,12 +35,17 @@ function userPositionOrDepartment(user: {
   return null;
 }
 
-export function ProfileMenu() {
+export function ProfileMenu({
+  variant = "default",
+}: {
+  variant?: "default" | "admin" | "client";
+}) {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
+  const admin = variant === "admin" || variant === "client";
   const [open, setOpen] = useState(false);
   const utils = trpc.useUtils();
-  const hidePersonalTime = isAdminOrManagement(user);
+  const hidePersonalTime = isAdminOrManagement(user) || isClientPortalUser(user);
 
   const { data: todayStats } = trpc.timeEntry.getStats.useQuery(
     { period: "today" },
@@ -84,6 +92,7 @@ export function ProfileMenu() {
       invalidateTime();
       refetchSession();
     },
+    onError: (err) => toast.error(err.message || "Could not clock in"),
   });
 
   const pauseMutation = trpc.timeEntry.pauseSession.useMutation({
@@ -110,30 +119,56 @@ export function ProfileMenu() {
     ? roleConfig[user.role as keyof typeof roleConfig]?.label ?? "Employee"
     : "Employee";
   const subtitle = userPositionOrDepartment(user);
+  const adminRoleLabel =
+    variant === "client"
+      ? "Client Portal"
+      : user?.role === "admin"
+        ? "Super Admin"
+        : roleLabel;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="flex items-center gap-3 pl-1 rounded-lg hover:bg-gray-50 transition-colors pr-1 py-1"
+          className={
+            admin
+              ? "flex items-center gap-2.5 pl-1 pr-1 py-1 rounded-xl hover:bg-gray-100 dark:hover:bg-white/5 transition-colors"
+              : "flex items-center gap-3 pl-1 rounded-lg hover:bg-gray-50 dark:hover:bg-white/5 transition-colors pr-1 py-1"
+          }
         >
-          <div className="text-right hidden md:block">
-            <div className="text-sm font-medium text-gray-900 leading-tight">{user?.name || "User"}</div>
-            {subtitle ? (
-              <div className="text-xs text-gray-500 truncate">{subtitle}</div>
-            ) : null}
-          </div>
-          <div className="relative">
-            <UserAvatar name={user?.name} avatar={user?.avatar} size={36} />
-            {!hidePersonalTime && isClockedIn && (
-              <span
-                className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${
-                  isPaused ? "bg-amber-400" : "bg-emerald-500"
-                }`}
-              />
-            )}
-          </div>
+          {admin ? (
+            <>
+              <div className="relative">
+                <UserAvatar name={user?.name} avatar={user?.avatar} size={36} />
+              </div>
+              <div className="text-left hidden md:block min-w-0">
+                <div className="text-sm font-medium text-[#1F2937] dark:text-white leading-tight truncate max-w-[140px]">
+                  {user?.name || "User"}
+                </div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">{adminRoleLabel}</div>
+              </div>
+            </>
+          ) : (
+            <div className="text-right hidden md:block">
+              <div className="text-sm font-medium text-gray-900 dark:text-white leading-tight">{user?.name || "User"}</div>
+              {subtitle ? (
+                <div className="text-xs text-gray-500 truncate">{subtitle}</div>
+              ) : null}
+            </div>
+          )}
+          {admin ? null : (
+            <div className="relative">
+              <UserAvatar name={user?.name} avatar={user?.avatar} size={36} />
+              {!hidePersonalTime && isClockedIn && (
+                <span
+                  className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white ${
+                    isPaused ? "bg-amber-400" : "bg-emerald-500"
+                  }`}
+                />
+              )}
+            </div>
+          )}
         </button>
       </PopoverTrigger>
 
@@ -250,7 +285,15 @@ export function ProfileMenu() {
               <button
                 type="button"
                 disabled={isBusy}
-                onClick={() => clockInMutation.mutate()}
+                onClick={() => {
+                  void runClockInWithLocation(
+                    (input) => clockInMutation.mutateAsync(input),
+                    {
+                      isLocationRequired: async () =>
+                        (await utils.location.clockInPolicy.fetch()).required,
+                    },
+                  );
+                }}
                 className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg bg-[#2563EB] text-white text-sm font-medium hover:bg-[#1D4ED8] transition-colors disabled:opacity-50"
               >
                 {clockInMutation.isPending ? (
@@ -265,6 +308,7 @@ export function ProfileMenu() {
         </div>
         ) : null}
 
+        {variant !== "client" ? (
         <button
           type="button"
           onClick={() => {
@@ -279,6 +323,7 @@ export function ProfileMenu() {
           </span>
           <ChevronRight size={16} className="text-gray-400 shrink-0" />
         </button>
+        ) : null}
       </PopoverContent>
 
       {!hidePersonalTime && currentSession?.active ? (

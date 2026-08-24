@@ -7,6 +7,8 @@ import {
 } from "@/lib/invoice-download";
 import type { InvoiceRecord } from "@/lib/invoice-store";
 import { cn } from "@/lib/utils";
+import { useOrganizationBillingProfile } from "@/hooks/useOrganizationBillingProfile";
+import type { OrganizationProfileForm } from "@/lib/organization-profile";
 
 type InvoicePdfPreviewProps = {
   invoice: InvoiceRecord | null;
@@ -14,6 +16,8 @@ type InvoicePdfPreviewProps = {
   useCurrentDate?: boolean;
   className?: string;
   title?: string;
+  /** Optional override; defaults to the server organization billing profile. */
+  organization?: OrganizationProfileForm | null;
 };
 
 export function InvoicePdfPreview({
@@ -22,11 +26,17 @@ export function InvoicePdfPreview({
   useCurrentDate = true,
   className,
   title = "PDF Preview",
+  organization = null,
 }: InvoicePdfPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const { profile: serverOrg } = useOrganizationBillingProfile({
+    enabled: organization == null,
+  });
+  const resolvedOrg = organization ?? serverOrg;
+
   const options: InvoiceExportOptions = useMemo(
-    () => ({ customer, useCurrentDate }),
-    [customer, useCurrentDate],
+    () => ({ customer, useCurrentDate, organization: resolvedOrg }),
+    [customer, useCurrentDate, resolvedOrg],
   );
 
   const html = useMemo(() => {

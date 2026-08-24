@@ -5,6 +5,8 @@ import type { SafeUser } from "../queries/users";
 import { findUserById, omitPasswordHash } from "../queries/users";
 import { getSessionCookieOptions } from "./cookies";
 import { signSessionToken, verifySessionToken } from "./session";
+import { hasMongoConfigured } from "../queries/mongo";
+import * as mock from "./mock-store";
 
 const AUTH_USER_CACHE_TTL_MS = 20_000;
 const authUserCache = new Map<number, { user: SafeUser; expiresAt: number }>();
@@ -17,9 +19,31 @@ export function invalidateAuthUserCache(userId?: number) {
   authUserCache.clear();
 }
 
-export async function authenticateRequest(headers: Headers) {
+/** Cookie, Authorization Bearer, or access_token query (for EventSource). */
+export function getSessionTokenFromHeaders(headers: Headers, url?: string): string | null {
   const cookies = cookie.parse(headers.get("cookie") || "");
-  const token = cookies[Session.cookieName];
+  const fromCookie = cookies[Session.cookieName];
+  if (fromCookie) return fromCookie;
+
+  const auth = headers.get("authorization") || headers.get("Authorization") || "";
+  const bearer = auth.match(/^Bearer\s+(.+)$/i);
+  if (bearer?.[1]) return bearer[1].trim();
+
+  if (url) {
+    try {
+      const parsed = new URL(url);
+      const fromQuery = parsed.searchParams.get("access_token");
+      if (fromQuery) return fromQuery.trim();
+    } catch {
+      // ignore invalid URL
+    }
+  }
+
+  return null;
+}
+
+export async function authenticateRequest(headers: Headers, url?: string) {
+  const token = getSessionTokenFromHeaders(headers, url);
   if (!token) {
     throw Errors.forbidden("Invalid authentication token.");
   }
@@ -34,7 +58,9 @@ export async function authenticateRequest(headers: Headers) {
     return cached.user;
   }
 
-  const user = await findUserById(claim.userId);
+  const user = hasMongoConfigured()
+    ? await findUserById(claim.userId)
+    : mock.mockFindUserById(claim.userId);
   if (!user) {
     throw Errors.forbidden("User not found. Please sign in again.");
   }
@@ -55,10 +81,11 @@ export async function createSessionForUser(
   userId: number,
   reqHeaders: Headers,
   resHeaders: Headers,
-) {
+): Promise<string> {
   invalidateAuthUserCache(userId);
   const token = await signSessionToken({ userId });
   appendSessionCookie(resHeaders, reqHeaders, token);
+  return token;
 }
 
 export function appendSessionCookie(
@@ -67,6 +94,8 @@ export function appendSessionCookie(
   token: string,
 ) {
   const opts = getSessionCookieOptions(reqHeaders);
+  const maxAgeSec = Math.floor(Session.maxAgeMs / 1000);
+  const expires = new Date(Date.now() + Session.maxAgeMs);
   resHeaders.append(
     "set-cookie",
     cookie.serialize(Session.cookieName, token, {
@@ -74,7 +103,8 @@ export function appendSessionCookie(
       path: opts.path,
       sameSite: opts.sameSite?.toLowerCase() as "lax" | "none",
       secure: opts.secure,
-      maxAge: Session.maxAgeMs / 1000,
+      maxAge: maxAgeSec,
+      expires,
     }),
   );
 }
@@ -89,6 +119,7 @@ export function clearSessionCookie(reqHeaders: Headers, resHeaders: Headers) {
       sameSite: opts.sameSite?.toLowerCase() as "lax" | "none",
       secure: opts.secure,
       maxAge: 0,
+      expires: new Date(0),
     }),
   );
 }

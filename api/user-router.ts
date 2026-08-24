@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { createRouter, authedQuery, employeesManageQuery } from "./middleware";
+import { createRouter, authedQuery, employeesManageQuery, employeesDirectoryQuery } from "./middleware";
 import { isAuthDisabled } from "./lib/dev-mode";
 import * as mock from "./lib/mock-store";
 import { getCollection, findById, updateById } from "./queries/connection";
@@ -18,9 +18,40 @@ import {
   buildPersonalInfoUserPatch,
   personalInfoUpdateSchema,
   toPersonalInfoView,
+  type PersonalInfoUpdateInput,
 } from "./queries/personal-info";
 import { assertPermission, assertAnyPermission, hasPermission } from "./lib/permissions";
 import { orgFilter, belongsToUserOrg } from "./lib/tenant";
+import { canManageNoticePeriod } from "@/lib/leave-policy";
+
+function canFullyEditEmployees(
+  user: { role?: string | null; permissions?: string[] | null; department?: string | null },
+) {
+  return (
+    hasPermission(user, "employees.manage") || hasPermission(user, "permissions.manage")
+  );
+}
+
+/** Managers without employees.manage may only update the notice-period flag. */
+function restrictPersonalInfoInputForCaller(
+  caller: { role?: string | null; permissions?: string[] | null; department?: string | null },
+  data: PersonalInfoUpdateInput,
+): PersonalInfoUpdateInput {
+  if (canFullyEditEmployees(caller)) return data;
+  if (!canManageNoticePeriod(caller)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "You do not have permission to update personal information",
+    });
+  }
+  if (data.onNoticePeriod === undefined) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "You can only update the notice period flag",
+    });
+  }
+  return { onNoticePeriod: data.onNoticePeriod };
+}
 
 function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -52,13 +83,18 @@ export const userRouter = createRouter({
         .filter((u) => isListedInEmployeeDirectory(u, employeeUserIds))
         .sort(compareUsersBySortOrder);
 
+      const self = allUsers.find((u) => u.id === ctx.user.id);
+      if (self && !visible.some((u) => u.id === self.id)) {
+        visible.unshift(self);
+      }
+
       return {
         users: visible.slice(0, limit).map(omitPasswordHash),
         total: visible.length,
       };
     }),
 
-  list: employeesManageQuery
+  list: employeesDirectoryQuery
     .input(
       z.object({
         search: z.string().optional(),
@@ -95,18 +131,31 @@ export const userRouter = createRouter({
       ]);
 
       // Hide employee-role users that were removed from the employees collection.
-      // Also deactivate those orphaned accounts so they cannot keep signing in.
+      // Only those orphaned employee accounts are deactivated (not finance/HR/admin/client).
       const visible: UserDoc[] = [];
       for (const user of allUsers) {
         if (isListedInEmployeeDirectory(user, employeeUserIds)) {
+          // Heal account managers wrongly inactivated by the old orphan logic.
+          if (user.role === "finance" && String(user.status).toLowerCase() === "inactive") {
+            const healed = await updateById<UserDoc>(Collections.users, user.id, {
+              status: "active",
+              updatedAt: new Date(),
+            });
+            if (healed) {
+              invalidateAuthUserCache(user.id);
+              visible.push(healed);
+              continue;
+            }
+          }
           visible.push(user);
           continue;
         }
-        if (user.status === "active") {
+        if (user.role === "employee" && user.status === "active") {
           await updateById<UserDoc>(Collections.users, user.id, {
             status: "inactive",
             updatedAt: new Date(),
           });
+          invalidateAuthUserCache(user.id);
         }
       }
 
@@ -117,6 +166,34 @@ export const userRouter = createRouter({
         total: visible.length,
       };
     }),
+
+  listClients: authedQuery.query(async ({ ctx }) => {
+    if (
+      !hasPermission(ctx.user, "employees.manage") &&
+      !hasPermission(ctx.user, "customers.manage") &&
+      !hasPermission(ctx.user, "permissions.manage")
+    ) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "You do not have permission to view clients",
+      });
+    }
+    if (isAuthDisabled() || !hasMongoConfigured()) {
+      const list = mock.mockUserList();
+      return {
+        users: list.users.filter((user) => user.role === "client"),
+      };
+    }
+
+    await ensureSchema();
+    const col = await getCollection<UserDoc>(Collections.users);
+    const clients = await col
+      .find({ ...orgFilter(ctx.user), role: "client" })
+      .sort({ name: 1, id: 1 })
+      .toArray();
+
+    return { users: clients.map(omitPasswordHash) };
+  }),
 
   reorder: employeesManageQuery
     .input(z.object({ orderedIds: z.array(z.number()).min(1) }))
@@ -138,7 +215,7 @@ export const userRouter = createRouter({
       return { success: true };
     }),
 
-  getById: employeesManageQuery
+  getById: employeesDirectoryQuery
     .input(z.object({ id: z.number() }))
     .query(async ({ input }) => {
       if (isAuthDisabled() || !hasMongoConfigured()) {
@@ -150,7 +227,7 @@ export const userRouter = createRouter({
       return user ? omitPasswordHash(user) : null;
     }),
 
-  getPersonalInfo: employeesManageQuery
+  getPersonalInfo: employeesDirectoryQuery
     .input(z.object({ id: z.number() }))
     .query(async ({ ctx, input }) => {
       const canManageHead = hasPermission(ctx.user, "profile.head_of_department");
@@ -187,7 +264,7 @@ export const userRouter = createRouter({
       return view;
     }),
 
-  updatePersonalInfo: employeesManageQuery
+  updatePersonalInfo: employeesDirectoryQuery
     .input(z.object({ id: z.number() }).merge(personalInfoUpdateSchema))
     .mutation(async ({ ctx, input }) => {
       if (input.headOfDepartmentUserIds !== undefined) {
@@ -195,7 +272,8 @@ export const userRouter = createRouter({
       }
 
       const canManageHead = hasPermission(ctx.user, "profile.head_of_department");
-      const { id, ...data } = input;
+      const { id, ...rawData } = input;
+      const data = restrictPersonalInfoInputForCaller(ctx.user, rawData);
 
       if (isAuthDisabled() || !hasMongoConfigured()) {
         const view = mock.mockUpdatePersonalInfo(id, data, { includePrivateNotes: false });
@@ -241,7 +319,7 @@ export const userRouter = createRouter({
     .input(z.object({
       id: z.number(),
       name: z.string().optional(),
-      role: z.enum(["admin", "manager", "employee", "hr", "client"]).optional(),
+      role: z.enum(["admin", "manager", "employee", "hr", "client", "finance"]).optional(),
       status: z.enum(["active", "inactive", "suspended"]).optional(),
       department: z.string().nullable().optional(),
       position: z.string().nullable().optional(),
@@ -317,9 +395,15 @@ export const userRouter = createRouter({
   updateRole: employeesManageQuery
     .input(z.object({
       id: z.number(),
-      role: z.enum(["admin", "manager", "employee", "hr", "client"]),
+      role: z.enum(["admin", "manager", "employee", "hr", "client", "finance"]),
     }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
+      if (String(ctx.user.role ?? "").toLowerCase() === "client") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Clients can invite teammates as employees, but cannot change roles.",
+        });
+      }
       if (isAuthDisabled() || !hasMongoConfigured()) {
         return mock.mockAdminUpdateUser({ id: input.id, role: input.role });
       }
@@ -332,13 +416,17 @@ export const userRouter = createRouter({
       const updated = await updateById<UserDoc>(Collections.users, input.id, {
         role: input.role,
         permissions,
+        // Account managers must remain able to sign in at /finance/login.
+        ...(input.role === "finance" ? { status: "active" as const } : {}),
         updatedAt: new Date(),
       });
       if (updated) {
         invalidateAuthUserCache(updated.id);
         if (updated.role === "employee") {
           await createEmployeeFromUser(updated);
-        } else {
+        } else if (updated.role !== "finance") {
+          // Keep employee profile rows for account managers so staff records stay linked;
+          // other non-employee roles drop the employees-collection row.
           await deleteEmployeeByUserId(updated.id);
         }
       }

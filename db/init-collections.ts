@@ -53,6 +53,7 @@ async function main() {
   }
 
   console.log("\nDone! Refresh Data Explorer in Atlas to see the tracker_app database.");
+  process.exit(0);
 }
 
 main().catch((err) => {

@@ -1,11 +1,12 @@
 import { DEV_USER } from "./dev-mode";
+import type { UserDoc } from "@db/mongo/types";
 import {
   countCompletedTasks,
   countTodoTasks,
 } from "./dashboard-task-stats";
 import type { SafeUser } from "../queries/users";
-import { buildTimeStatsSummary, localDateKey, startOfCalendarWeek, periodClockInBounds, dayBounds, roundHours, attendanceEntrySeconds, getAutoClockOutDeadline, isPastAutoClockOutDeadline, computeAttendanceWorkSeconds, resolveAttendanceDisplaySeconds, filterMeaningfulAttendanceEntries } from "@/lib/work-hours-policy";
-import { buildLeaveCoverageMap, eachLeaveDateKey, isAdminOrManagement, isWeekdayDateKey } from "@/lib/leave-policy";
+import { buildTimeStatsSummary, localDateKey, startOfCalendarWeek, periodClockInBounds, dayBounds, roundHours, attendanceEntrySeconds, getAutoClockOutDeadline, isPastAutoClockOutDeadline, computeAttendanceWorkSeconds, resolveAttendanceDisplaySeconds, filterMeaningfulAttendanceEntries, sumBreakSecondsInWindow } from "@/lib/work-hours-policy";
+import { buildLeaveCoverageMap, eachLeaveDateKey, isAdminOrManagement, isAttendanceTrackableUser, isWeekdayDateKey } from "@/lib/leave-policy";
 import {
   projectPerformancePercent,
 } from "@/lib/project-funnel";
@@ -69,6 +70,7 @@ const users: SafeUser[] = [
     panCard: null,
     notificationLanguage: "en",
     employmentType: "full_time",
+    onNoticePeriod: false,
     headOfDepartmentUserIds: [],
     permissions: [],
     createdAt: daysAgo(90),
@@ -102,6 +104,7 @@ const users: SafeUser[] = [
     panCard: null,
     notificationLanguage: "en",
     employmentType: "full_time",
+    onNoticePeriod: false,
     headOfDepartmentUserIds: [],
     permissions: [],
     createdAt: daysAgo(60),
@@ -112,6 +115,120 @@ const users: SafeUser[] = [
 
 function userById(id: number) {
   return users.find((u) => u.id === id) ?? null;
+}
+
+const passwordHashByUserId = new Map<number, string>();
+let memoryOrganizationName = "FlowTicX";
+
+function nextUserId() {
+  return users.reduce((max, user) => Math.max(max, user.id), 0) + 1;
+}
+
+function splitRegisteredName(fullName: string) {
+  const parts = fullName.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return { firstName: null as string | null, lastName: null as string | null };
+  if (parts.length === 1) return { firstName: parts[0], lastName: null as string | null };
+  return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
+}
+
+export function mockGetOrganizationName() {
+  return memoryOrganizationName;
+}
+
+export function mockSetOrganizationName(name: string) {
+  const trimmed = name.trim();
+  if (trimmed) memoryOrganizationName = trimmed;
+  return memoryOrganizationName;
+}
+
+export function mockFindUserById(id: number): UserDoc | null {
+  const user = userById(id);
+  if (!user) return null;
+  return {
+    ...user,
+    passwordHash: passwordHashByUserId.get(id) ?? null,
+    privateNotes: privateNotesByUserId[id] ?? null,
+  };
+}
+
+export function mockFindUserByEmail(email: string): UserDoc | null {
+  const normalized = email.trim().toLowerCase();
+  const user = users.find((entry) => entry.email?.toLowerCase() === normalized);
+  if (!user) return null;
+  return mockFindUserById(user.id);
+}
+
+export function mockHasUserWithRole(role: UserDoc["role"]) {
+  return users.some((entry) => entry.role === role);
+}
+
+export function mockUpdateLastSignIn(userId: number) {
+  const user = userById(userId);
+  if (!user) return;
+  user.lastSignInAt = new Date();
+  user.updatedAt = new Date();
+}
+
+export function mockSetPasswordHash(userId: number, passwordHash: string) {
+  const user = userById(userId);
+  if (!user) return false;
+  passwordHashByUserId.set(userId, passwordHash);
+  user.updatedAt = new Date();
+  return true;
+}
+
+export function mockCreateRegisteredUser(input: {
+  name: string;
+  email: string;
+  passwordHash: string;
+  role: SafeUser["role"];
+  organizationName: string;
+  department: string | null;
+  position: string | null;
+  permissions: string[];
+}): UserDoc {
+  mockSetOrganizationName(input.organizationName);
+  const now = new Date();
+  const id = nextUserId();
+  const { firstName, lastName } = splitRegisteredName(input.name);
+  const user: SafeUser = {
+    id,
+    unionId: `${input.role}_${id}`,
+    organizationId: 1,
+    name: input.name.trim(),
+    email: input.email,
+    avatar: null,
+    role: input.role,
+    status: "active",
+    department: input.department,
+    position: input.position,
+    phone: null,
+    firstName,
+    lastName,
+    secondName: null,
+    dateOfBirth: null,
+    dateOfJoining: now,
+    sex: null,
+    city: null,
+    address: null,
+    familyContactNumber: null,
+    personalEmail: null,
+    bloodGroup: null,
+    aadhaarCard: null,
+    panCard: null,
+    notificationLanguage: "en",
+    employmentType: "full_time",
+    onNoticePeriod: false,
+    headOfDepartmentUserIds: [],
+    permissions: [...input.permissions],
+    sortOrder: id,
+    createdAt: now,
+    updatedAt: now,
+    lastSignInAt: now,
+  };
+  users.push(user);
+  passwordHashByUserId.set(id, input.passwordHash);
+  return mockFindUserById(id)!;
 }
 
 /** Owner-only notes kept separate from SafeUser so admin APIs never see them. */
@@ -509,9 +626,11 @@ export function mockTaskList(
     status?: string;
     priority?: string;
     assigneeId?: number;
-    projectId?: number;
+    projectId?: number | null;
     search?: string;
+    page?: number;
     limit?: number;
+    clientAssignedToStaff?: boolean;
   },
   currentUser?: SafeUser,
 ) {
@@ -519,6 +638,39 @@ export function mockTaskList(
   if (input?.status) result = result.filter((t) => t.status === input.status);
   if (input?.priority) result = result.filter((t) => t.priority === input.priority);
   if (input?.assigneeId) result = result.filter((t) => t.assigneeId === input.assigneeId);
+  if (input?.clientAssignedToStaff) {
+    const clientIds = new Set(
+      users.filter((u) => String(u.role).toLowerCase() === "client").map((u) => u.id),
+    );
+    const staffIds = new Set(
+      users.filter((u) => u.role !== "client" && u.role !== "platform").map((u) => u.id),
+    );
+    const originatedByClient = new Set<number>();
+    for (const list of Object.values(taskActivities)) {
+      for (const activity of list) {
+        if (
+          activity.action === "created" &&
+          activity.userId != null &&
+          clientIds.has(activity.userId)
+        ) {
+          originatedByClient.add(activity.taskId);
+        }
+      }
+    }
+    result = result.filter(
+      (t) =>
+        t.assigneeId != null &&
+        staffIds.has(t.assigneeId) &&
+        ((t.createdBy != null && clientIds.has(t.createdBy)) || originatedByClient.has(t.id)),
+    );
+  } else if (
+    currentUser?.role === "client" &&
+    !(currentUser.permissions ?? []).includes("tasks.view_all")
+  ) {
+    result = result.filter(
+      (t) => t.createdBy === currentUser.id || t.assigneeId === currentUser.id,
+    );
+  }
   if (input?.projectId) {
     const project = projects.find((p) => p.id === input.projectId);
     const user = currentUser ?? DEV_USER;
@@ -1096,6 +1248,57 @@ export function mockUpdateTaskTimeEntry(
   return entry;
 }
 
+export function mockDeleteTaskTimeEntry(
+  actor: SafeUser,
+  input: {
+    taskId: number;
+    entryId: number;
+  },
+) {
+  const list = taskTimeEntries[input.taskId];
+  if (!list) throw new Error("Time entry not found");
+  const index = list.findIndex((e) => e.id === input.entryId);
+  if (index < 0) throw new Error("Time entry not found");
+  const entry = list[index];
+  if (!entry.clockOut) throw new Error("Cannot delete an active timer session");
+
+  const durationSeconds =
+    typeof entry.durationSeconds === "number" && entry.durationSeconds >= 0
+      ? entry.durationSeconds
+      : (entry.duration ?? 0) * 60;
+  const durationMinutes = Math.floor(durationSeconds / 60);
+
+  list.splice(index, 1);
+
+  const activities = taskActivities[input.taskId] ?? (taskActivities[input.taskId] = []);
+  activities.unshift({
+    id: Date.now(),
+    taskId: input.taskId,
+    userId: actor.id,
+    action: "time_logged",
+    oldValue: null,
+    newValue: `Time entry deleted — ${durationMinutes} min`,
+    metadata: { entryId: input.entryId },
+    createdAt: new Date(),
+    user: actor,
+  });
+
+  const task = tasks.find((t) => t.id === input.taskId);
+  if (task) {
+    const currentActualHours = parseFloat(task.actualHours ?? "0") || 0;
+    task.actualHours = Math.max(0, currentActualHours - durationSeconds / 3600).toFixed(2);
+  }
+  mockNotifyTaskMembers({
+    taskId: input.taskId,
+    actor,
+    type: "task_updated",
+    title: "Time entry deleted",
+    message: `${mockActorLabel(actor)} deleted time logged on "${task?.title ?? "a task"}"`,
+  });
+
+  return { success: true as const };
+}
+
 export function mockAddManualTaskTimeEntry(
   actor: SafeUser,
   input: {
@@ -1662,7 +1865,12 @@ export function mockCreateTask(
     priority: (input.priority ?? "medium") as "low" | "medium" | "high" | "urgent",
     assigneeId: input.assigneeId,
     projectId: input.projectId ?? undefined,
-    createdBy: input.createdBy != null ? Number(input.createdBy) : actor.id,
+    createdBy:
+      String(actor.role ?? "").toLowerCase() === "client"
+        ? actor.id
+        : input.createdBy != null
+          ? Number(input.createdBy)
+          : actor.id,
     dueDate: input.dueDate ? new Date(input.dueDate) : new Date(defaultTaskDeadlineIso()),
     estimatedHours: input.estimatedHours != null ? String(input.estimatedHours) : null,
     actualHours: "0.00",
@@ -2094,8 +2302,21 @@ export function mockRemoveObserver(taskId: number, userId: number) {
   return { success: true };
 }
 
-export function mockProjectList(currentUserId = DEV_USER.id) {
-  return projects.map((p) => {
+export function mockProjectList(
+  currentUserId = DEV_USER.id,
+  options?: { status?: string; joinedOnly?: boolean },
+) {
+  let source = projects;
+  if (options?.status) {
+    source = source.filter((p) => p.status === options.status);
+  }
+  if (options?.joinedOnly) {
+    source = source.filter((p) =>
+      mockIsProjectMember(p.id, currentUserId, p.createdBy),
+    );
+  }
+
+  return source.map((p) => {
     const projectTasks = tasks.filter((t) => t.projectId === p.id);
     const memberMap = new Map<number, SafeUser>();
     for (const t of projectTasks) {
@@ -2543,7 +2764,7 @@ export function mockReorderUsers(orderedIds: number[]) {
 export function mockAdminUpdateUser(input: {
   id: number;
   name?: string;
-  role?: "admin" | "manager" | "employee" | "hr" | "client";
+  role?: "admin" | "manager" | "employee" | "hr" | "client" | "finance";
   status?: "active" | "inactive" | "suspended";
   department?: string | null;
   position?: string | null;
@@ -2640,6 +2861,7 @@ function mockPersonalRecord(
     sex: user.sex ?? null,
     notificationLanguage: user.notificationLanguage ?? "en",
     employmentType: user.employmentType === "intern" ? "intern" : "full_time",
+    onNoticePeriod: Boolean(user.onNoticePeriod),
     headOfDepartmentUserIds: headIds,
     headsOfDepartment: headIds
       .map((id) => userById(id))
@@ -2692,6 +2914,9 @@ export function mockUpdatePersonalInfo(
   }
   if (data.employmentType !== undefined) {
     user.employmentType = data.employmentType;
+  }
+  if (data.onNoticePeriod !== undefined) {
+    user.onNoticePeriod = data.onNoticePeriod;
   }
   if (data.headOfDepartmentUserIds !== undefined) {
     user.headOfDepartmentUserIds = data.headOfDepartmentUserIds;
@@ -3141,7 +3366,7 @@ export function mockTeamMonthAttendance(
   now = new Date(),
 ) {
   return users
-    .filter((u) => !isAdminOrManagement(u))
+    .filter((u) => isAttendanceTrackableUser(u))
     .map((user) => ({
       userId: user.id,
       name: user.name || "Unknown",
@@ -3228,12 +3453,17 @@ function mockDayEntriesForUser(userId: number, dateStr: string, now = new Date()
     (sum, entry) => sum + (entry.durationSeconds ?? 0),
     0,
   );
+  const dayBreaks = mockFindBreaksOverlappingWindow(userId, start, end);
+  const breakSeconds = sumBreakSecondsInWindow(dayBreaks, start, end, now);
 
   return {
     entries: enrichedEntries,
     totalMinutes: totalSeconds / 60,
     totalSeconds,
     totalHours: roundHours(totalSeconds / 3600),
+    breakSeconds,
+    breakMinutes: Math.floor(breakSeconds / 60),
+    breakHours: roundHours(breakSeconds / 3600),
     entriesCount: enrichedEntries.length,
   };
 }
@@ -3771,6 +4001,8 @@ export function mockTeamHours(input?: { date?: string; startDate?: string; endDa
       avatar: user.avatar,
       role: user.role,
       totalHours: day.totalHours,
+      breakHours: day.breakHours,
+      breakSeconds: day.breakSeconds,
       entriesCount: day.entriesCount,
     };
   });
@@ -3827,6 +4059,38 @@ export function mockActiveClockIns() {
         workElapsedSeconds: workSessionTiming(session).workElapsedSeconds,
       };
     });
+}
+
+export function mockUpcomingBirthdays() {
+  const todayLabel = new Date().toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+  });
+  const inDaysLabel = (n: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() + n);
+    return d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+  };
+  return [
+    {
+      id: 2,
+      name: "Sarah Chen",
+      avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Sarah",
+      position: "Engineering Lead",
+      daysLeft: 0,
+      dateLabel: todayLabel,
+      isToday: true,
+    },
+    {
+      id: 4,
+      name: "Emily Rodriguez",
+      avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=Emily",
+      position: "Frontend Developer",
+      daysLeft: 12,
+      dateLabel: inDaysLabel(12),
+      isToday: false,
+    },
+  ];
 }
 
 export function mockHrDashboard() {
@@ -3966,16 +4230,36 @@ export function mockHrDashboard() {
           year: "numeric",
         }),
       })),
-    upcomingBirthdays: [] as Array<{
-      id: number;
-      name: string;
-      avatar: string | null;
-      position: string;
-      daysLeft: number;
-      dateLabel: string;
-    }>,
+    upcomingBirthdays: mockUpcomingBirthdays(),
+    projectOverview: {
+      total: 18,
+      byStatus: [
+        { name: "Completed", count: 8, percent: 44, color: "#2563EB" },
+        { name: "In Progress", count: 7, percent: 39, color: "#3B82F6" },
+        { name: "On Hold", count: 2, percent: 11, color: "#F59E0B" },
+        { name: "Overdue", count: 1, percent: 6, color: "#EF4444" },
+      ],
+    },
+    monthMetrics: {
+      totalHoursLogged: 214.5,
+      totalHoursDeltaPct: 8,
+      trackedHours: 198,
+      trackedHoursPct: 92,
+      trackedHoursDeltaPct: 5,
+      billableHours: 162.3,
+      billablePct: 76,
+      teamUtilizationPct: 78,
+      utilizationDeltaPct: 5,
+      pendingInvoicesAmount: 6250,
+      pendingInvoicesCount: 2,
+      revenueThisMonth: 28450,
+      revenueDeltaPct: 12,
+      currency: "USD",
+    },
   };
 }
+
+export { mockFinanceDashboard } from "./mock-finance-dashboard";
 
 export function mockLeaveSummary() {
   const data = mockHrDashboard();
@@ -3983,6 +4267,7 @@ export function mockLeaveSummary() {
     leaveMonthLabel: data.leaveMonthLabel,
     upcomingLeaves: data.upcomingLeaves,
     upcomingWfh: data.upcomingWfh,
+    upcomingBirthdays: data.upcomingBirthdays,
   };
 }
 
@@ -3990,6 +4275,63 @@ export function mockListTaskAttachments(taskId: number) {
   return (taskAttachments[taskId] ?? [])
     .filter((a) => a.listedInFiles !== false)
     .map(({ dataBase64: _data, ...meta }) => meta);
+}
+
+export function mockListWorkspaceFiles() {
+  return Object.values(taskAttachments)
+    .flat()
+    .filter((attachment) => attachment.listedInFiles !== false)
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .map((attachment) => {
+      const task = tasks.find((row) => row.id === attachment.taskId);
+      const project = task?.projectId ? projects.find((row) => row.id === task.projectId) : null;
+      return {
+        id: attachment.id,
+        fileName: attachment.fileName,
+        mimeType: attachment.mimeType,
+        fileSize: attachment.fileSize,
+        createdAt: attachment.createdAt,
+        taskId: attachment.taskId,
+        taskTitle: task?.title ?? "Task",
+        projectName: project?.name ?? null,
+      };
+    });
+}
+
+export function mockListWorkspaceMeetings() {
+  return Object.values(taskActivities)
+    .flat()
+    .filter((activity) => activity.action === "commented")
+    .map((activity) => {
+      const parsed = mockParseMeetingComment(activity.newValue);
+      if (!parsed) return null;
+      const task = tasks.find((row) => row.id === activity.taskId);
+      const project = task?.projectId ? projects.find((row) => row.id === task.projectId) : null;
+      return {
+        id: activity.id,
+        title: parsed.title,
+        when: parsed.when,
+        createdAt: activity.createdAt,
+        taskId: activity.taskId,
+        taskTitle: task?.title ?? "Task",
+        projectName: project?.name ?? null,
+        createdByName: activity.user?.name ?? null,
+      };
+    })
+    .filter((row): row is NonNullable<typeof row> => row != null)
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+}
+
+function mockParseMeetingComment(message: string | null) {
+  if (!message?.trim()) return null;
+  const match = message.replace(/\s+/g, " ").trim().match(/^(?:📅\s*)?Event or meeting:\s*(.+)$/i);
+  if (!match?.[1]) return null;
+  const rest = match[1].trim();
+  const withWhen = rest.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
+  if (withWhen?.[1]?.trim()) {
+    return { title: withWhen[1].trim(), when: withWhen[2]?.trim() || null };
+  }
+  return { title: rest, when: null };
 }
 
 export function mockGetTaskAttachment(id: number) {
@@ -4042,9 +4384,10 @@ export function mockDeleteTaskAttachment(id: number) {
 
 import {
   TOTAL_PAID_LEAVES,
-  TOTAL_SICK_LEAVES,
   accruedPaidLeavesForYear,
   annualPaidLeaveEntitlement,
+  annualSickLeaveEntitlement,
+  annualWfhEntitlement,
   canCancelLeaveRequest,
   canEditLeaveRequest,
   consumesPaidBalance,
@@ -4093,8 +4436,10 @@ function mockComputeLeaveUsage(
   );
   let approvedPaid = 0;
   let approvedSick = 0;
+  let approvedWfh = 0;
   let pendingPaid = 0;
   let pendingSick = 0;
+  let pendingWfh = 0;
   for (const req of requests) {
     const units = leaveDaysInYear(
       req.startDate,
@@ -4110,29 +4455,52 @@ function mockComputeLeaveUsage(
     } else if (consumesSickBalance(req.leaveType)) {
       if (req.status === "approved") approvedSick += units;
       else pendingSick += units;
+    } else if (isWorkFromHomeLeave(req.leaveType)) {
+      if (req.status === "approved") approvedWfh += units;
+      else pendingWfh += units;
     }
   }
   const usedPaid = approvedPaid + pendingPaid;
   const usedSick = approvedSick + pendingSick;
+  const usedWfh = approvedWfh + pendingWfh;
   const dateOfJoining = userById(userId)?.dateOfJoining ?? null;
   const joiningKey = toJoiningDateKey(dateOfJoining);
   const employmentType = resolveEmploymentType(userById(userId));
-  const paidAccrued = accruedPaidLeavesForYear(year, new Date(), joiningKey, employmentType);
-  const paidAnnual = annualPaidLeaveEntitlement(year, joiningKey, employmentType);
+  const onNoticePeriod = Boolean(userById(userId)?.onNoticePeriod);
+  const paidAccrued = accruedPaidLeavesForYear(
+    year,
+    new Date(),
+    joiningKey,
+    employmentType,
+    onNoticePeriod,
+  );
+  const paidAnnual = annualPaidLeaveEntitlement(
+    year,
+    joiningKey,
+    employmentType,
+    onNoticePeriod,
+  );
+  const sickTotal = annualSickLeaveEntitlement(year, joiningKey);
+  const wfhTotal = annualWfhEntitlement(year, joiningKey);
   return {
     year,
     paidTotal: paidAccrued,
     paidAnnualTotal: paidAnnual,
-    sickTotal: TOTAL_SICK_LEAVES,
+    sickTotal,
+    wfhTotal,
     paidRemaining: roundLeaveUnits(Math.max(0, paidAccrued - usedPaid)),
-    sickRemaining: roundLeaveUnits(Math.max(0, TOTAL_SICK_LEAVES - usedSick)),
+    sickRemaining: roundLeaveUnits(Math.max(0, sickTotal - usedSick)),
+    wfhRemaining: roundLeaveUnits(Math.max(0, wfhTotal - usedWfh)),
     paidUsed: roundLeaveUnits(approvedPaid),
     sickUsed: roundLeaveUnits(approvedSick),
+    wfhUsed: roundLeaveUnits(approvedWfh),
     paidPending: roundLeaveUnits(pendingPaid),
     sickPending: roundLeaveUnits(pendingSick),
+    wfhPending: roundLeaveUnits(pendingWfh),
     usedLeaves: roundLeaveUnits(approvedPaid + approvedSick),
     dateOfJoining: joiningKey ?? dateOfJoining,
     employmentType,
+    onNoticePeriod,
     inProbation: isInProbationPeriod(joiningKey, new Date(), employmentType),
     paidLeaveLockLabel: paidLeaveLockPeriodLabel(employmentType),
   };
@@ -4147,7 +4515,11 @@ function mockAssertYearScopedBalance(params: {
   excludeRequestId?: number;
   forEmployee?: boolean;
 }) {
-  if (!consumesPaidBalance(params.leaveType) && !consumesSickBalance(params.leaveType)) {
+  if (
+    !consumesPaidBalance(params.leaveType) &&
+    !consumesSickBalance(params.leaveType) &&
+    !isWorkFromHomeLeave(params.leaveType)
+  ) {
     return;
   }
 
@@ -4170,7 +4542,9 @@ function mockAssertYearScopedBalance(params: {
     });
     const remaining = consumesPaidBalance(params.leaveType)
       ? usage.paidRemaining
-      : usage.sickRemaining;
+      : consumesSickBalance(params.leaveType)
+        ? usage.sickRemaining
+        : usage.wfhRemaining;
 
     if (needed > remaining) {
       throw new Error(
@@ -4569,6 +4943,34 @@ export function mockListLeaveRequests() {
   };
 }
 
+export function mockUpdateLeaveDetails(
+  _reviewerId: number,
+  input: {
+    id: number;
+    reason: string;
+    reviewNote?: string | null;
+  },
+) {
+  const existing = leaveRequests.find((r) => r.id === input.id);
+  if (!existing) throw new Error("Leave request not found");
+
+  const isWfh = isWorkFromHomeLeave(existing.leaveType);
+  const nextReason = input.reason.trim();
+  if (!isWfh && nextReason.length < 3) {
+    throw new Error("Please enter a reason (at least 3 characters)");
+  }
+
+  existing.reason = isWfh
+    ? nextReason || existing.reason || "Work from home"
+    : nextReason;
+  if (input.reviewNote !== undefined) {
+    existing.reviewNote = input.reviewNote?.trim() || null;
+  }
+  existing.updatedAt = new Date();
+
+  return { request: { ...existing } };
+}
+
 export function mockReviewLeave(
   reviewerId: number,
   input: {
@@ -4841,4 +5243,222 @@ export function mockSetLeaveUsageOverride(
   };
   leaveUsageOverrides.push(override);
   return { override: { ...override } };
+}
+
+// ─── Work locations (geofences) ───────────────────────────────────────────────
+
+import type { WorkLocationDoc } from "@db/mongo/types";
+import { DEFAULT_LOCATION_RADIUS_M } from "@/lib/geofence";
+
+let nextWorkLocationId = 1;
+const workLocations: WorkLocationDoc[] = [];
+
+export function mockListWorkLocations(options?: { includeArchived?: boolean }) {
+  return workLocations
+    .filter((l) => (options?.includeArchived ? true : !l.archived))
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((l) => ({ ...l }));
+}
+
+export function mockListActiveWorkLocations() {
+  return workLocations
+    .filter((l) => !l.archived)
+    .map((l) => ({
+      id: l.id,
+      name: l.name,
+      latitude: l.latitude,
+      longitude: l.longitude,
+      radiusMeters: l.radiusMeters,
+    }));
+}
+
+/** Approved WFH covering dateKey (YYYY-MM-DD) — clock-in may skip geofence. */
+export function mockHasApprovedWfhOnDate(userId: number, dateKey: string): boolean {
+  return leaveRequests.some(
+    (l) =>
+      l.userId === userId &&
+      l.status === "approved" &&
+      isWorkFromHomeLeave(l.leaveType) &&
+      l.startDate <= dateKey &&
+      l.endDate >= dateKey,
+  );
+}
+
+export function mockCreateWorkLocation(input: {
+  name: string;
+  address: string | null;
+  latitude: number;
+  longitude: number;
+  radiusMeters?: number;
+  createdBy: number;
+}) {
+  const now = new Date();
+  const doc: WorkLocationDoc = {
+    id: nextWorkLocationId++,
+    organizationId: 1,
+    name: input.name.trim(),
+    address: input.address,
+    latitude: input.latitude,
+    longitude: input.longitude,
+    radiusMeters: input.radiusMeters ?? DEFAULT_LOCATION_RADIUS_M,
+    archived: false,
+    createdBy: input.createdBy,
+    createdAt: now,
+    updatedAt: now,
+  };
+  workLocations.push(doc);
+  return { ...doc };
+}
+
+export function mockUpdateWorkLocation(
+  id: number,
+  patch: {
+    name: string;
+    address: string | null;
+    latitude: number;
+    longitude: number;
+    radiusMeters: number;
+  },
+) {
+  const existing = workLocations.find((l) => l.id === id);
+  if (!existing) throw new Error("Location not found");
+  existing.name = patch.name.trim();
+  existing.address = patch.address;
+  existing.latitude = patch.latitude;
+  existing.longitude = patch.longitude;
+  existing.radiusMeters = patch.radiusMeters;
+  existing.updatedAt = new Date();
+  return { ...existing };
+}
+
+export function mockSetWorkLocationArchived(id: number, archived: boolean) {
+  const existing = workLocations.find((l) => l.id === id);
+  if (!existing) throw new Error("Location not found");
+  existing.archived = archived;
+  existing.updatedAt = new Date();
+  return { ...existing };
+}
+
+export function mockDeleteWorkLocation(id: number) {
+  const idx = workLocations.findIndex((l) => l.id === id);
+  if (idx < 0) throw new Error("Location not found");
+  workLocations.splice(idx, 1);
+  return { ok: true as const };
+}
+
+// ─── Org attendance QR ───────────────────────────────────────────────────────
+
+import type {
+  OrgAttendanceQrActivityAction,
+  OrgAttendanceQrActivityDoc,
+  OrgAttendanceQrDoc,
+} from "@db/mongo/types";
+import { nanoid } from "nanoid";
+
+let nextOrgQrId = 1;
+let nextOrgQrActivityId = 1;
+const orgAttendanceQrs: OrgAttendanceQrDoc[] = [];
+const orgAttendanceQrActivities: OrgAttendanceQrActivityDoc[] = [];
+
+function toPublicOrgQr(doc: OrgAttendanceQrDoc) {
+  return {
+    token: doc.token,
+    payload: `aumento-attendance:${doc.token}`,
+    createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt,
+  };
+}
+
+function toPublicOrgQrActivity(doc: OrgAttendanceQrActivityDoc) {
+  return {
+    id: doc.id,
+    action: doc.action,
+    userId: doc.userId,
+    userName: doc.userName,
+    createdAt: doc.createdAt,
+  };
+}
+
+function pushOrgQrActivity(params: {
+  organizationId: number;
+  action: OrgAttendanceQrActivityAction;
+  userId: number;
+  userName: string;
+}) {
+  const doc: OrgAttendanceQrActivityDoc = {
+    id: nextOrgQrActivityId++,
+    organizationId: params.organizationId,
+    action: params.action,
+    userId: params.userId,
+    userName: params.userName,
+    createdAt: new Date(),
+  };
+  orgAttendanceQrActivities.push(doc);
+  return toPublicOrgQrActivity(doc);
+}
+
+export function mockGetOrgAttendanceQr(organizationId: number) {
+  const doc = orgAttendanceQrs.find((q) => q.organizationId === organizationId);
+  return doc ? toPublicOrgQr(doc) : null;
+}
+
+export function mockListOrgAttendanceQrActivity(organizationId: number) {
+  return orgAttendanceQrActivities
+    .filter((a) => a.organizationId === organizationId)
+    .slice()
+    .sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      return byTime !== 0 ? byTime : b.id - a.id;
+    })
+    .slice(0, 50)
+    .map(toPublicOrgQrActivity);
+}
+
+export function mockGenerateOrgAttendanceQr(
+  organizationId: number,
+  updatedBy: number,
+  userName: string,
+  action: "created" | "regenerated",
+) {
+  const now = new Date();
+  const existing = orgAttendanceQrs.find((q) => q.organizationId === organizationId);
+  let qr: ReturnType<typeof toPublicOrgQr>;
+  if (existing) {
+    existing.token = nanoid(40);
+    existing.updatedBy = updatedBy;
+    existing.updatedAt = now;
+    qr = toPublicOrgQr(existing);
+  } else {
+    const doc: OrgAttendanceQrDoc = {
+      id: nextOrgQrId++,
+      organizationId,
+      token: nanoid(40),
+      updatedBy,
+      createdAt: now,
+      updatedAt: now,
+    };
+    orgAttendanceQrs.push(doc);
+    qr = toPublicOrgQr(doc);
+  }
+  pushOrgQrActivity({
+    organizationId,
+    action,
+    userId: updatedBy,
+    userName,
+  });
+  return qr;
+}
+
+export function mockRecordOrgAttendanceQrDownload(
+  organizationId: number,
+  userId: number,
+  userName: string,
+) {
+  return pushOrgQrActivity({
+    organizationId,
+    action: "downloaded",
+    userId,
+    userName,
+  });
 }

@@ -24,6 +24,7 @@ import {
 } from "@/lib/project-stats";
 import { invalidateTaskQueries } from "@/lib/invalidate-on-notifications";
 import { hasPermission } from "@/lib/permissions";
+import { isClientPortalUser } from "@/lib/client-portal";
 import { canCreateTask, tryOpenCreateTask } from "@/lib/create-task-permission";
 import { submitCreateTask } from "@/lib/submit-create-task";
 import { resetStagingMediaIds } from "@/lib/staged-task-media";
@@ -56,8 +57,9 @@ export default function ProjectDetail() {
   const projectId = Number(id);
   const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
-
+  const clientPortal = isClientPortalUser(user);
   const taskView = parseProjectView(searchParams.get("view"));
+  const projectsBackPath = "/projects";
   const selectedTask = searchParams.get("task") ? Number(searchParams.get("task")) : null;
   const highlightActivityId = useMemo(
     () => parseActivityIdParam(searchParams.get("activity")),
@@ -441,7 +443,7 @@ export default function ProjectDetail() {
     return (
       <div className="py-16 text-center">
         <p className="text-gray-500">Invalid project.</p>
-        <Link to="/projects" className="text-[#2563EB] text-sm mt-2 inline-block">Back to projects</Link>
+        <Link to={projectsBackPath} className="text-[#2563EB] text-sm mt-2 inline-block">Back to projects</Link>
       </div>
     );
   }
@@ -458,17 +460,17 @@ export default function ProjectDetail() {
     return (
       <div className="py-16 text-center">
         <p className="text-gray-500">Project not found.</p>
-        <Link to="/projects" className="text-[#2563EB] text-sm mt-2 inline-block">Back to projects</Link>
+        <Link to={projectsBackPath} className="text-[#2563EB] text-sm mt-2 inline-block">Back to projects</Link>
       </div>
     );
   }
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4 overflow-x-hidden">
       <ProjectHeaderCard
         name={project.name}
         description={project.description}
-        clientName={project.clientName}
+        clientName={clientPortal ? null : project.clientName}
         stats={stats}
         memberCount={project.memberCount ?? 1}
         creatorName={project.creator?.name ?? null}
@@ -482,6 +484,7 @@ export default function ProjectDetail() {
             : undefined
         }
         joinPending={joinProjectMutation.isPending}
+        backTo={projectsBackPath}
       />
 
       {!canViewTasks ? (
@@ -522,36 +525,37 @@ export default function ProjectDetail() {
           tasks={allTasks}
           searchInput={search}
           onSearchInputChange={setSearch}
-          className="max-w-none w-full"
+          className="max-w-none w-full min-w-0"
           onTaskSelect={handleTaskSearchSelect}
         />
 
-        <div className="flex items-center gap-1 p-1 bg-gray-100 rounded-lg shrink-0 self-end sm:self-auto">
-          <button
-            type="button"
-            onClick={() => setTaskView("list")}
-            className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-sm font-medium transition-colors ${
-              taskView === "list"
-                ? "bg-white text-[#1F2937] shadow-sm"
-                : "text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            <List size={15} />
-            List
-          </button>
-          <button
-            type="button"
-            onClick={() => setTaskView("kanban")}
-            className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-sm font-medium transition-colors ${
-              taskView === "kanban"
-                ? "bg-white text-[#1F2937] shadow-sm"
-                : "text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            <LayoutGrid size={15} />
-            Kanban
-          </button>
-        </div>
+<div className="flex items-center gap-1 p-1 bg-gray-100 rounded-lg shrink-0 self-end sm:self-auto">
+            <button
+              type="button"
+              onClick={() => setTaskView("list")}
+              className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-sm font-medium transition-colors ${
+                taskView === "list"
+                  ? "bg-white text-[#1F2937] shadow-sm"
+                  : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              <List size={15} />
+              List
+            </button>
+            <button
+              type="button"
+              onClick={() => setTaskView("kanban")}
+              className={`flex items-center gap-1.5 h-8 px-3 rounded-md text-sm font-medium transition-colors ${
+                taskView === "kanban"
+                  ? "bg-white text-[#1F2937] shadow-sm"
+                  : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              <LayoutGrid size={15} />
+              Kanban
+            </button>
+          </div>
+
       </div>
 
       {taskView === "list" && taskSelectionEnabled ? (
@@ -703,7 +707,7 @@ export default function ProjectDetail() {
                 id: projectId,
                 name: editForm.name,
                 description: editForm.description || undefined,
-                clientName: editForm.clientName.trim() || null,
+                clientName: clientPortal ? null : editForm.clientName.trim() || null,
                 color: editForm.color,
                 icon: editForm.icon,
               });
@@ -715,6 +719,7 @@ export default function ProjectDetail() {
               onChange={setEditForm}
               clientNameSuggestions={clientNameSuggestions}
               idPrefix="edit-project"
+              hideClientAgency={clientPortal}
             />
             <div className="flex justify-end gap-3 pt-2">
               <button

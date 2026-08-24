@@ -13,6 +13,13 @@ import { personalDocumentRouter } from "./personal-document-router";
 import { formerEmployeeRouter } from "./former-employee-router";
 import { customerRouter } from "./customer-router";
 import { invoiceRouter } from "./invoice-router";
+import { financeRouter } from "./finance-router";
+import { locationRouter } from "./location-router";
+import { orgQrRouter } from "./org-qr-router";
+import { dashboardReminderRouter } from "./dashboard-reminder-router";
+import { organizationRouter } from "./organization-router";
+import { platformRouter } from "./platform-router";
+import { subscriptionRouter } from "./subscription-router";
 import { createRouter, publicQuery } from "./middleware";
 
 export const appRouter = createRouter({
@@ -26,12 +33,19 @@ export const appRouter = createRouter({
   notification: notificationRouter,
   invite: inviteRouter,
   dashboard: dashboardRouter,
+  dashboardReminder: dashboardReminderRouter,
   permissions: permissionsRouter,
   leave: leaveRouter,
+  location: locationRouter,
+  orgQr: orgQrRouter,
   personalDocuments: personalDocumentRouter,
   formerEmployees: formerEmployeeRouter,
   customer: customerRouter,
   invoice: invoiceRouter,
+  finance: financeRouter,
+  organization: organizationRouter,
+  subscription: subscriptionRouter,
+  platform: platformRouter,
 });
 
 export type AppRouter = typeof appRouter;

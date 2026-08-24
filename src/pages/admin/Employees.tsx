@@ -4,7 +4,7 @@ import { UserAvatar } from "@/components/shared/UserAvatar";
 import { RoleBadge } from "@/components/shared/StatusBadge";
 import {
   Users, Search, X, Loader2, Shield, UserCheck,
-  UserX, UserPlus, Link2, Copy, Check, KeyRound, Trash2, GripVertical,
+  UserX, UserPlus, Link2, Copy, KeyRound, Trash2, GripVertical,
 } from "lucide-react";
 import { PERMISSION_GROUPS } from "@contracts/permissions";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -12,25 +12,26 @@ import { motion } from "framer-motion";
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { formatWorkZoneDate } from "@/lib/timezone";
-import { Label } from "@/components/ui/label";
-import { Invite } from "@contracts/constants";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
 import { hasPermission } from "@/lib/permissions";
+import { isClientPortalUser } from "@/lib/client-portal";
 import { EmployeeDetailDialog } from "@/components/admin/EmployeeDetailDialog";
+import { InviteUserDialog } from "@/components/admin/InviteUserDialog";
 import { departmentSelectOptions } from "@/lib/department-options";
 import { FilterSelect } from "@/components/shared/FilterSelect";
 import {
   isInProbationPeriod,
   resolveEmploymentType,
   paidLeaveLockPeriodLabel,
+  canManageNoticePeriod,
 } from "@/lib/leave-policy";
 
 const EMPLOYEE_ROW_GRID =
@@ -48,24 +49,28 @@ type EmployeeRow = {
   dateOfJoining?: Date | string | null;
   employmentType?: string | null;
   position?: string | null;
+  onNoticePeriod?: boolean | null;
 };
 
-export default function AdminEmployees() {
+export default function AdminEmployees({
+  embedded = false,
+}: {
+  embedded?: boolean;
+}) {
   const { user } = useAuth();
+  const clientWorkspace = isClientPortalUser(user);
   const canManageEmployees = hasPermission(user, "employees.manage");
   const canManagePermissions = hasPermission(user, "permissions.manage");
+  const canViewNoticePeriod = canManageNoticePeriod(user);
+  const canOpenEmployeeDetail = canManageEmployees || canViewNoticePeriod;
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [editingUser, setEditingUser] = useState<number | null>(null);
-  const [editRole, setEditRole] = useState<"admin" | "manager" | "employee" | "hr" | "client">("employee");
+  const [editRole, setEditRole] = useState<"admin" | "manager" | "employee" | "hr" | "client" | "finance">("employee");
   const [editDepartment, setEditDepartment] = useState("");
   const [savingEditId, setSavingEditId] = useState<number | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
-  const [inviteUrl, setInviteUrl] = useState("");
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [inviteError, setInviteError] = useState<string | null>(null);
   const [detailUserId, setDetailUserId] = useState<number | null>(null);
   const [accessUser, setAccessUser] = useState<{
     id: number;
@@ -152,29 +157,18 @@ export default function AdminEmployees() {
       return;
     }
     setEditingUser(target.id);
-    setEditRole(target.role as "admin" | "manager" | "employee" | "hr" | "client");
+    setEditRole(target.role as "admin" | "manager" | "employee" | "hr" | "client" | "finance");
     setEditDepartment(target.department ?? "");
   }
-
-  const createInviteMutation = trpc.invite.create.useMutation({
-    onSuccess: (result) => {
-      const url = result.url || `${window.location.origin}/invite/${result.token}`;
-      setInviteUrl(url);
-      setInviteError(null);
-      setCopied(false);
-      refetchInvites();
-    },
-    onError: (err) => {
-      setInviteError(err.message || "Failed to generate invite link. Please try again.");
-    },
-  });
 
   const revokeInviteMutation = trpc.invite.revoke.useMutation({
     onSuccess: () => {
       refetchInvites();
-      if (inviteUrl) setInviteUrl("");
     },
   });
+
+  const employeeInvites =
+    pendingInvites?.invites.filter((invite) => invite.inviteKind !== "client") ?? [];
 
   const hasFilters = search || roleFilter || statusFilter;
 
@@ -183,35 +177,6 @@ export default function AdminEmployees() {
     setRoleFilter("");
     setStatusFilter("");
   };
-
-  function handleOpenInvite() {
-    setInviteOpen(true);
-    setInviteUrl("");
-    setInviteEmail("");
-    setInviteError(null);
-    setCopied(false);
-  }
-
-  function handleGenerateInvite() {
-    setInviteError(null);
-    const email = inviteEmail.trim().toLowerCase();
-    if (!email) {
-      setInviteError("Email is required.");
-      return;
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      setInviteError("Please enter a valid email address.");
-      return;
-    }
-    createInviteMutation.mutate({ email });
-  }
-
-  async function handleCopyLink() {
-    if (!inviteUrl) return;
-    await navigator.clipboard.writeText(inviteUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
 
   function openAccessDialog(u: { id: number; name: string | null; permissions?: string[] }) {
     setAccessUser({ id: u.id, name: u.name, permissions: u.permissions ?? [] });
@@ -279,36 +244,50 @@ export default function AdminEmployees() {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-5">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-[#1F2937]">Employees</h1>
-          <p className="text-sm text-gray-500 mt-0.5">
+      <div className="flex items-center justify-between gap-3">
+        {!embedded ? (
+          <div>
+            <h1 className="text-2xl font-bold text-[#1F2937]">
+              {clientWorkspace ? "Team" : "Employees"}
+            </h1>
+            <p className="text-sm text-gray-500 mt-0.5">
+              {clientWorkspace
+                ? `${totalLabel} teammate${totalLabel === 1 ? "" : "s"} · invite people to join as employees you can assign`
+                : `${totalLabel} total employees${
+                    canReorder ? " · drag rows to reorder" : " · clear filters to reorder"
+                  }`}
+            </p>
+          </div>
+        ) : (
+          <p className="text-sm text-gray-500">
             {totalLabel} total employees
-            {canReorder ? " · drag rows to reorder" : " · clear filters to reorder"}
           </p>
-        </div>
+        )}
         {canManageEmployees ? (
           <Button
-            onClick={handleOpenInvite}
-            className="bg-[#2563EB] hover:bg-[#1D4ED8] gap-2"
+            onClick={() => setInviteOpen(true)}
+            className={
+              clientWorkspace
+                ? "bg-[#F06A6A] hover:bg-[#E45C5C] gap-2 shrink-0"
+                : "bg-[#2563EB] hover:bg-[#1D4ED8] gap-2 shrink-0"
+            }
           >
             <UserPlus size={16} />
-            Invite Employee
+            Invite {clientWorkspace ? "Teammate" : "Employee"}
           </Button>
         ) : null}
       </div>
 
-      {/* Pending invites */}
-      {pendingInvites && pendingInvites.invites.length > 0 && (
+      {employeeInvites.length > 0 ? (
         <div className="bg-blue-50 border border-blue-100 rounded-xl p-4">
           <div className="flex items-center gap-2 mb-3">
             <Link2 size={16} className="text-[#2563EB]" />
             <h2 className="text-sm font-semibold text-[#1F2937]">
-              Pending invite links ({pendingInvites.invites.length})
+              Pending invite links ({employeeInvites.length})
             </h2>
           </div>
           <div className="space-y-2">
-            {pendingInvites.invites.map((invite) => (
+            {employeeInvites.map((invite) => (
               <div
                 key={invite.id}
                 className="flex items-center justify-between gap-3 bg-white rounded-lg px-3 py-2 border border-blue-100"
@@ -341,10 +320,12 @@ export default function AdminEmployees() {
             ))}
           </div>
         </div>
-      )}
+      ) : null}
 
       {/* Filters */}
-      <div className="bg-white border border-gray-200 rounded-xl p-4 flex flex-wrap items-center gap-3">
+      <div
+        className="bg-white border border-gray-200 rounded-xl p-4 flex items-center gap-3 flex-wrap"
+      >
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
           <input
@@ -355,39 +336,41 @@ export default function AdminEmployees() {
             className="w-full h-9 pl-9 pr-4 bg-gray-50 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20"
           />
         </div>
-        <FilterSelect
-          value={roleFilter}
-          onChange={setRoleFilter}
-          options={[
-            { value: "", label: "All Roles" },
-            { value: "admin", label: "Admin" },
-            { value: "manager", label: "Manager" },
-            { value: "employee", label: "Employee" },
-            { value: "hr", label: "HR" },
-          ]}
-          aria-label="Filter by role"
-          triggerClassName="h-9 bg-gray-50"
-        />
-        <FilterSelect
-          value={statusFilter}
-          onChange={setStatusFilter}
-          options={[
-            { value: "", label: "All Statuses" },
-            { value: "active", label: "Active" },
-            { value: "inactive", label: "Inactive" },
-            { value: "suspended", label: "Suspended" },
-          ]}
-          aria-label="Filter by status"
-          triggerClassName="h-9 bg-gray-50"
-        />
-        {hasFilters && (
-          <button onClick={clearFilters} className="h-9 px-3 text-sm text-gray-500 hover:text-[#2563EB] flex items-center gap-1">
-            <X size={14} /> Clear
-          </button>
-        )}
+        <div className="flex gap-2">
+          <FilterSelect
+            value={roleFilter}
+            onChange={setRoleFilter}
+            options={[
+              { value: "", label: "All Roles" },
+              { value: "admin", label: "Admin" },
+              { value: "manager", label: "Manager" },
+              { value: "employee", label: "Employee" },
+              { value: "hr", label: "HR" },
+              { value: "finance", label: "Account Manager" },
+            ]}
+            aria-label="Filter by role"
+            triggerClassName="h-9 bg-gray-50"
+          />
+          <FilterSelect
+            value={statusFilter}
+            onChange={setStatusFilter}
+            options={[
+              { value: "", label: "All Statuses" },
+              { value: "active", label: "Active" },
+              { value: "inactive", label: "Inactive" },
+              { value: "suspended", label: "Suspended" },
+            ]}
+            aria-label="Filter by status"
+            triggerClassName="h-9 bg-gray-50"
+          />
+          {hasFilters && (
+            <button onClick={clearFilters} className="h-9 px-3 text-sm text-gray-500 hover:text-[#2563EB] flex items-center gap-1 shrink-0">
+              <X size={14} /> Clear
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Employee Table */}
       <div className="bg-white border border-gray-200 rounded-xl overflow-x-auto">
         <div className="min-w-[720px]">
           <div
@@ -440,26 +423,26 @@ export default function AdminEmployees() {
                 <div className="flex items-center gap-3 min-w-0">
                   <button
                     type="button"
-                    disabled={!canManageEmployees}
+                    disabled={!canOpenEmployeeDetail}
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (!canManageEmployees) return;
+                      if (!canOpenEmployeeDetail) return;
                       setDetailUserId(u.id);
                     }}
                     className={cn(
                       "flex items-center gap-3 min-w-0 text-left rounded-lg -ml-1 pl-1 pr-2 py-1 transition-colors",
-                      canManageEmployees
+                      canOpenEmployeeDetail
                         ? "hover:bg-gray-100 cursor-pointer"
                         : "cursor-default",
                     )}
-                    title={canManageEmployees ? "View employee details" : undefined}
+                    title={canOpenEmployeeDetail ? "View employee details" : undefined}
                   >
                     <UserAvatar name={u.name} avatar={u.avatar} size={32} />
                     <div className="min-w-0">
                       <div
                         className={cn(
                           "text-sm font-medium truncate capitalize",
-                          canManageEmployees ? "text-[#2563EB]" : "text-[#1F2937]",
+                          canOpenEmployeeDetail ? "text-[#2563EB]" : "text-[#1F2937]",
                         )}
                       >
                         {u.name || "Unknown"}
@@ -488,12 +471,22 @@ export default function AdminEmployees() {
                   )}
                 </div>
                 <div className="min-w-0">
-                  {editingUser === u.id && canManageEmployees ? (
+                  {editingUser === u.id && canManageEmployees && !clientWorkspace ? (
                     <select
                       value={editRole}
-                      onChange={(e) =>
-                        setEditRole(e.target.value as "admin" | "manager" | "employee" | "hr" | "client")
-                      }
+                      onChange={(e) => {
+                        const next = e.target.value as
+                          | "admin"
+                          | "manager"
+                          | "employee"
+                          | "hr"
+                          | "client"
+                          | "finance";
+                        setEditRole(next);
+                        if (next === "finance" && !editDepartment.trim()) {
+                          setEditDepartment("Finance");
+                        }
+                      }}
                       className="h-8 w-full max-w-full px-2 border border-gray-200 rounded-lg text-xs bg-white"
                       aria-label="Edit role"
                     >
@@ -502,9 +495,10 @@ export default function AdminEmployees() {
                       <option value="employee">Employee</option>
                       <option value="hr">HR</option>
                       <option value="client">Client</option>
+                      <option value="finance">Account Manager</option>
                     </select>
                   ) : (
-                    <RoleBadge role={u.role as "admin" | "manager" | "employee" | "hr" | "client"} />
+                    <RoleBadge role={u.role as "admin" | "manager" | "employee" | "hr" | "client" | "finance"} />
                   )}
                 </div>
                 <div className="min-w-0 flex flex-wrap items-center gap-1.5">
@@ -519,7 +513,7 @@ export default function AdminEmployees() {
                   >
                     {u.status}
                   </span>
-                  {canManageEmployees &&
+                  {canViewNoticePeriod &&
                   isInProbationPeriod(
                     u.dateOfJoining,
                     new Date(),
@@ -532,6 +526,14 @@ export default function AdminEmployees() {
                       {resolveEmploymentType(u) === "intern"
                         ? "Internship / probation"
                         : "In probation"}
+                    </span>
+                  ) : null}
+                  {canViewNoticePeriod && u.onNoticePeriod ? (
+                    <span
+                      className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-50 text-rose-700"
+                      title="No paid leave for the current month while on notice period"
+                    >
+                      On notice period
                     </span>
                   ) : null}
                 </div>
@@ -619,121 +621,54 @@ export default function AdminEmployees() {
         </div>
       </div>
 
-      {/* Invite dialog */}
-      <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
-        <DialogContent className="sm:max-w-xl">
-          <DialogHeader>
-            <DialogTitle>Invite via link</DialogTitle>
-            <DialogDescription>
-              Enter the employee&apos;s email, then generate a unique invite link.
-              They will create their account with that email and a password.
-              Each link is single-use and expires after {Invite.expiryDays} days.
-            </DialogDescription>
-          </DialogHeader>
 
-          <div className="space-y-5 pt-2">
-            <div className="space-y-2">
-              <Label htmlFor="inviteEmail">Email</Label>
-              <Input
-                id="inviteEmail"
-                type="email"
-                required
-                placeholder="name@company.com"
-                value={inviteEmail}
-                onChange={(e) => setInviteEmail(e.target.value)}
-                autoComplete="email"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label>Invite via link</Label>
-              <div className="flex gap-2">
-                <Input
-                  readOnly
-                  value={inviteUrl}
-                  placeholder={
-                    createInviteMutation.isPending
-                      ? "Generating link..."
-                      : "Click Generate to create an invite link"
-                  }
-                  className="text-sm bg-gray-50 font-mono text-gray-700"
-                />
-                <Button
-                  type="button"
-                  onClick={handleCopyLink}
-                  disabled={!inviteUrl}
-                  className="shrink-0 gap-1.5 bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-50"
-                >
-                  {copied ? <Check size={14} /> : <Link2 size={14} />}
-                  {copied ? "Copied" : "Copy link"}
-                </Button>
-              </div>
-              {inviteError ? (
-                <p className="text-sm text-red-500">{inviteError}</p>
-              ) : inviteUrl ? (
-                <p className="text-xs text-gray-500">
-                  Link ready — copy and share it. Generate a new link for each person you invite.
-                </p>
-              ) : null}
-            </div>
-
-            <div className="flex gap-2 justify-end pt-1">
-              <Button variant="outline" onClick={() => setInviteOpen(false)}>
-                Close
-              </Button>
-              <Button
-                onClick={handleGenerateInvite}
-                disabled={createInviteMutation.isPending || !inviteEmail.trim()}
-                className="bg-[#2563EB] hover:bg-[#1D4ED8] gap-2"
-              >
-                {createInviteMutation.isPending ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <Link2 size={14} />
-                )}
-                {inviteUrl ? "Generate new link" : "Generate invite link"}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <InviteUserDialog
+        open={inviteOpen}
+        onOpenChange={setInviteOpen}
+        kind="employee"
+        teammateLabel={clientWorkspace}
+      />
 
       {/* Employee access dialog */}
       <Dialog open={!!accessUser} onOpenChange={(open) => !open && setAccessUser(null)}>
-        <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Manage access</DialogTitle>
-            <DialogDescription>
-              Choose what <strong>{accessUser?.name || "this employee"}</strong> can access in the app.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-5 pt-2">
-            {PERMISSION_GROUPS.map((group) => (
-              <div key={group.id}>
-                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-                  {group.label}
-                </h3>
-                <div className="space-y-2">
-                  {group.permissions.map((perm) => (
-                    <label
-                      key={perm.key}
-                      className="flex items-start gap-3 cursor-pointer"
-                    >
-                      <Checkbox
-                        checked={accessPermissions.includes(perm.key)}
-                        onCheckedChange={() => toggleAccessPermission(perm.key)}
-                        className="mt-0.5"
-                      />
-                      <span className="text-sm text-gray-700">{perm.label}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            ))}
+        <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-hidden flex flex-col gap-0 p-0">
+          <div className="shrink-0 border-b border-gray-100 px-6 pt-6 pb-4 pr-12">
+            <DialogHeader>
+              <DialogTitle>Manage access</DialogTitle>
+              <DialogDescription>
+                Choose what <strong>{accessUser?.name || "this employee"}</strong> can access in the app.
+              </DialogDescription>
+            </DialogHeader>
           </div>
 
-          <div className="flex gap-2 justify-end pt-4">
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+            <div className="space-y-5">
+              {PERMISSION_GROUPS.map((group) => (
+                <div key={group.id}>
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                    {group.label}
+                  </h3>
+                  <div className="space-y-2">
+                    {group.permissions.map((perm) => (
+                      <label
+                        key={perm.key}
+                        className="flex items-start gap-3 cursor-pointer"
+                      >
+                        <Checkbox
+                          checked={accessPermissions.includes(perm.key)}
+                          onCheckedChange={() => toggleAccessPermission(perm.key)}
+                          className="mt-0.5"
+                        />
+                        <span className="text-sm text-gray-700">{perm.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <DialogFooter className="shrink-0 border-t border-gray-100 bg-background px-6 py-4 sm:justify-end">
             <Button variant="outline" onClick={() => setAccessUser(null)}>
               Cancel
             </Button>
@@ -754,18 +689,18 @@ export default function AdminEmployees() {
                 "Save access"
               )}
             </Button>
-          </div>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {canManageEmployees ? (
+      {canOpenEmployeeDetail ? (
         <EmployeeDetailDialog
           userId={detailUserId}
           open={detailUserId != null}
           onOpenChange={(open) => {
             if (!open) setDetailUserId(null);
           }}
-          canEdit
+          canEdit={canManageEmployees}
         />
       ) : null}
     </motion.div>

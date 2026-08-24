@@ -177,7 +177,7 @@ function CommentRichContentInner({
   if (!parsed.isRich) {
     return (
       <div
-        className={cn("break-words select-text", className)}
+        className={cn("min-w-0 max-w-full break-words select-text", className)}
         onCopy={handleCommentCopy}
       >
         {renderPlainMentions(message, mentionUsers)}
@@ -191,7 +191,7 @@ function CommentRichContentInner({
 
   return (
     <div
-      className={cn("break-words select-text", className)}
+      className={cn("min-w-0 max-w-full break-words select-text", className)}
       onCopy={handleCommentCopy}
     >
       {parsed.mentionPrefix ? (
@@ -201,13 +201,13 @@ function CommentRichContentInner({
       ) : null}
 
       {blocks.length > 0 ? (
-        <div className="rich-comment-content space-y-3 text-sm text-gray-800">
+        <div className="rich-comment-content min-w-0 max-w-full space-y-3 text-sm text-gray-800">
           {blocks.map((block, index) => {
             if (block.type === "html") {
               return (
                 <div
                   key={`html-${index}`}
-                  className="[&_a]:text-[#2563EB] [&_a]:underline [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-0.5"
+                  className="rich-comment-html min-w-0 max-w-full overflow-x-auto [&_a]:text-[#2563EB] [&_a]:underline [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-0.5"
                   dangerouslySetInnerHTML={{
                     __html: sanitizeRichCommentHtml(block.html),
                   }}

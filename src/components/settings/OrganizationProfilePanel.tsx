@@ -9,6 +9,7 @@ import {
   Send,
   Pencil,
   X,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,17 +20,21 @@ import { WORLD_COUNTRIES } from "@/lib/world-countries";
 import { getStatesForCountry } from "@/lib/country-states";
 import { WORK_TIMEZONE_LABEL } from "@/lib/timezone";
 import { useAuth } from "@/hooks/useAuth";
+import { trpc } from "@/providers/trpc";
 import {
   DEFAULT_ORGANIZATION_PROFILE,
-  ORGANIZATION_PROFILE_STORAGE_KEY,
+  cacheOrganizationProfile,
+  hasOrganizationBillingDetails,
+  hasOrganizationLogo,
   loadOrganizationProfile,
+  mergeOrganizationProfiles,
+  normalizeOrganizationProfile,
   type OrganizationProfileForm,
   type OrgAdditionalField,
 } from "@/lib/organization-profile";
 
 export type { OrganizationProfileForm, OrgAdditionalField };
 
-const STORAGE_KEY = ORGANIZATION_PROFILE_STORAGE_KEY;
 const DEFAULT_FORM = DEFAULT_ORGANIZATION_PROFILE;
 
 const INDUSTRIES = [
@@ -86,10 +91,6 @@ const selectClass = cn(
   "w-full px-3 outline-none focus:border-[#2563EB] focus:ring-[3px] focus:ring-[#2563EB]/30",
 );
 
-function readOrgProfile(): OrganizationProfileForm {
-  return loadOrganizationProfile();
-}
-
 function FieldRow({
   label,
   required,
@@ -141,18 +142,50 @@ export function OrganizationProfilePanel({
   onError,
 }: OrganizationProfilePanelProps) {
   const { user } = useAuth();
+  const utils = trpc.useUtils();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [form, setForm] = useState<OrganizationProfileForm>(readOrgProfile);
-  const [savedSnapshot, setSavedSnapshot] = useState(() =>
-    JSON.stringify(readOrgProfile()),
+  const localCache = loadOrganizationProfile();
+  const [form, setForm] = useState<OrganizationProfileForm>(() =>
+    normalizeOrganizationProfile({
+      ...localCache,
+      primaryContactName: localCache.primaryContactName || user?.name || "",
+      primaryContactEmail: localCache.primaryContactEmail || user?.email || "",
+    }),
   );
+  const [savedSnapshot, setSavedSnapshot] = useState(() => JSON.stringify(form));
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [editingContact, setEditingContact] = useState(false);
   const [contactDraft, setContactDraft] = useState({ name: "", email: "" });
 
-  const hydratedUserRef = useRef(false);
+  const [hydratedFromServer, setHydratedFromServer] = useState(false);
+  const migratedLocalRef = useRef(false);
+
+  const profileQuery = trpc.organization.getBillingProfile.useQuery(undefined, {
+    staleTime: 30_000,
+  });
+
+  const saveMutation = trpc.organization.updateBillingProfile.useMutation({
+    onSuccess: async (data) => {
+      const next = normalizeOrganizationProfile(data);
+      cacheOrganizationProfile(next);
+      setForm(next);
+      setSavedSnapshot(JSON.stringify(next));
+      setEditingContact(false);
+      setError(null);
+      setSaved(true);
+      onSaved?.();
+      await utils.organization.getBillingProfile.invalidate();
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      savedTimerRef.current = setTimeout(() => setSaved(false), 2000);
+    },
+    onError: (err) => {
+      const message = err.message || "Could not save organization profile.";
+      setError(message);
+      onError?.(message);
+    },
+  });
 
   useEffect(() => {
     return () => {
@@ -161,22 +194,53 @@ export function OrganizationProfilePanel({
   }, []);
 
   useEffect(() => {
-    if (!user || hydratedUserRef.current) return;
-    hydratedUserRef.current = true;
-    const stored = readOrgProfile();
-    const next: OrganizationProfileForm = {
-      ...DEFAULT_FORM,
-      ...stored,
-      name: stored.name || "",
-      primaryContactName: stored.primaryContactName || user.name || "",
-      primaryContactEmail: stored.primaryContactEmail || user.email || "",
-      additionalFields: Array.isArray(stored.additionalFields)
-        ? stored.additionalFields
-        : [],
-    };
+    if (!profileQuery.data || hydratedFromServer) return;
+
+    const server = normalizeOrganizationProfile(profileQuery.data);
+    const local = loadOrganizationProfile();
+    // Merge so a server name without logo does not hide a locally saved logo.
+    const preferred = mergeOrganizationProfiles(server, local);
+
+    const next = normalizeOrganizationProfile({
+      ...preferred,
+      organizationId: String(profileQuery.data.organizationId || preferred.organizationId),
+      primaryContactName:
+        preferred.primaryContactName || user?.name || "",
+      primaryContactEmail:
+        preferred.primaryContactEmail || user?.email || "",
+    });
     setForm(next);
     setSavedSnapshot(JSON.stringify(next));
-  }, [user]);
+    setHydratedFromServer(true);
+    if (hasOrganizationBillingDetails(next) || hasOrganizationLogo(next)) {
+      cacheOrganizationProfile(next);
+    }
+
+    // Push local logo/details to the server when missing so finance invoices can show them.
+    const billingProfileSaved = Boolean(
+      (profileQuery.data as { billingProfileSaved?: boolean }).billingProfileSaved,
+    );
+    const contactName = next.primaryContactName.trim();
+    const contactEmail = next.primaryContactEmail.trim();
+    const canMigrate =
+      String(user?.role ?? "").toLowerCase() === "admin" &&
+      Boolean(contactName) &&
+      Boolean(contactEmail) &&
+      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail) &&
+      (
+        !billingProfileSaved ||
+        (hasOrganizationLogo(local) && !hasOrganizationLogo(server))
+      ) &&
+      !migratedLocalRef.current &&
+      !saveMutation.isPending;
+
+    if (canMigrate) {
+      migratedLocalRef.current = true;
+      const { organizationId: _organizationId, ...payload } = next;
+      saveMutation.mutate(payload);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-time hydrate/migrate from server+local cache
+  }, [profileQuery.data, user?.email, user?.name, user?.role, hydratedFromServer]);
 
   const effectiveForm = useMemo((): OrganizationProfileForm => {
     if (!editingContact) return form;
@@ -213,6 +277,12 @@ export function OrganizationProfilePanel({
 
   function handleLogoChange(file: File | null) {
     if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      const message = "Please upload an image file for the logo.";
+      setError(message);
+      onError?.(message);
+      return;
+    }
     if (file.size > 1024 * 1024) {
       const message = "Logo must be 1MB or smaller.";
       setError(message);
@@ -221,7 +291,38 @@ export function OrganizationProfilePanel({
     }
     const reader = new FileReader();
     reader.onload = () => {
-      update("logoDataUrl", typeof reader.result === "string" ? reader.result : null);
+      const raw = typeof reader.result === "string" ? reader.result : null;
+      if (!raw) {
+        update("logoDataUrl", null);
+        return;
+      }
+      // Normalize to PNG so invoice HTML/PDF can render SVG/WebP reliably.
+      const img = new Image();
+      img.onload = () => {
+        const maxSide = 640;
+        const srcW = Math.max(1, img.naturalWidth || img.width || 1);
+        const srcH = Math.max(1, img.naturalHeight || img.height || 1);
+        const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
+        const width = Math.max(1, Math.round(srcW * scale));
+        const height = Math.max(1, Math.round(srcH * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          update("logoDataUrl", raw);
+          return;
+        }
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        try {
+          update("logoDataUrl", canvas.toDataURL("image/png"));
+        } catch {
+          update("logoDataUrl", raw);
+        }
+      };
+      img.onerror = () => update("logoDataUrl", raw);
+      img.src = raw;
     };
     reader.readAsDataURL(file);
   }
@@ -272,19 +373,19 @@ export function OrganizationProfilePanel({
       return;
     }
 
+    const { organizationId: _organizationId, ...payload } = nextForm;
     setForm(nextForm);
-    setEditingContact(false);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(nextForm));
-    setSavedSnapshot(JSON.stringify(nextForm));
-    setError(null);
-    setSaved(true);
-    onSaved?.();
-    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
-    savedTimerRef.current = setTimeout(() => setSaved(false), 2000);
+    saveMutation.mutate(payload);
   }
 
   function handleCancel() {
-    const stored = readOrgProfile();
+    const server = profileQuery.data
+      ? normalizeOrganizationProfile(profileQuery.data)
+      : null;
+    const stored =
+      server && hasOrganizationBillingDetails(server)
+        ? server
+        : loadOrganizationProfile();
     setForm(stored);
     setSavedSnapshot(JSON.stringify(stored));
     setError(null);
@@ -329,6 +430,14 @@ export function OrganizationProfilePanel({
   const displayContactName = form.primaryContactName || "—";
   const displayContactEmail = form.primaryContactEmail || "—";
 
+  if (profileQuery.isLoading && !hydratedFromServer) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <Loader2 size={28} className="animate-spin text-gray-400" />
+      </div>
+    );
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0, x: 10 }}
@@ -341,6 +450,9 @@ export function OrganizationProfilePanel({
           ID: {form.organizationId}
         </span>
       </div>
+      <p className="text-sm text-gray-500">
+        Saved for your organization and used on invoices for both admin and finance logins.
+      </p>
 
       <div className="space-y-3">
         <h3 className="text-sm font-semibold text-[#1F2937]">Organization Logo</h3>
@@ -866,16 +978,19 @@ export function OrganizationProfilePanel({
         <Button
           type="button"
           onClick={handleSave}
-          disabled={!isDirty || saved}
-          className="bg-[#2563EB] hover:bg-[#1D4ED8] text-white min-w-24 disabled:opacity-50 disabled:pointer-events-none"
+          disabled={!isDirty || saved || saveMutation.isPending}
+          className="bg-[#2563EB] hover:bg-[#1D4ED8] text-white min-w-24 disabled:opacity-50 disabled:pointer-events-none gap-2"
         >
-          {saved ? "Saved" : "Save"}
+          {saveMutation.isPending ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : null}
+          {saved ? "Saved" : saveMutation.isPending ? "Saving…" : "Save"}
         </Button>
         <Button
           type="button"
           variant="outline"
           onClick={handleCancel}
-          disabled={!isDirty && !editingContact}
+          disabled={(!isDirty && !editingContact) || saveMutation.isPending}
           className="border-gray-200 text-gray-700 min-w-24"
         >
           Cancel

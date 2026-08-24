@@ -7,6 +7,7 @@ export type MockInvite = {
   invitedBy: number;
   email: string | null;
   department: string | null;
+  inviteKind: "employee" | "client";
   status: "pending" | "accepted" | "expired" | "revoked";
   expiresAt: Date;
   createdAt: Date;
@@ -21,7 +22,11 @@ function expiryDate() {
   return date;
 }
 
-export function mockCreateInvite(invitedBy: number, email: string) {
+export function mockCreateInvite(
+  invitedBy: number,
+  email: string,
+  inviteKind: "employee" | "client" = "employee",
+) {
   const token = nanoid(Invite.tokenLength);
   const invite: MockInvite = {
     id: nextId++,
@@ -29,6 +34,7 @@ export function mockCreateInvite(invitedBy: number, email: string) {
     invitedBy,
     email: email.toLowerCase(),
     department: null,
+    inviteKind,
     status: "pending",
     expiresAt: expiryDate(),
     createdAt: new Date(),

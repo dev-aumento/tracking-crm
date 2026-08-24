@@ -1,10 +1,7 @@
 import type { FetchCreateContextFnOptions } from "@trpc/server/adapters/fetch";
-import * as cookie from "cookie";
-import { Session } from "@contracts/constants";
 import type { SafeUser } from "./queries/users";
-import { authenticateRequest } from "./lib/auth";
+import { authenticateRequest, getSessionTokenFromHeaders } from "./lib/auth";
 import { DEV_USER, isAuthDisabled } from "./lib/dev-mode";
-import { ensureSchema } from "./lib/migrate";
 
 export type TrpcContext = {
   req: Request;
@@ -21,16 +18,15 @@ export async function createContext(
 
   const ctx: TrpcContext = { req: opts.req, resHeaders: opts.resHeaders };
 
-  const cookies = cookie.parse(opts.req.headers.get("cookie") || "");
-  if (!cookies[Session.cookieName]) {
+  const token = getSessionTokenFromHeaders(opts.req.headers, opts.req.url);
+  if (!token) {
     return ctx;
   }
 
   try {
-    await ensureSchema();
-    ctx.user = await authenticateRequest(opts.req.headers);
+    ctx.user = await authenticateRequest(opts.req.headers, opts.req.url);
   } catch {
-    // Invalid or expired session cookie
+    // Invalid or expired session
   }
 
   return ctx;

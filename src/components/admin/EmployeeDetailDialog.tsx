@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { trpc } from "@/providers/trpc";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import { RoleBadge } from "@/components/shared/StatusBadge";
-import { SEX_OPTIONS, PersonalInformationPanel } from "@/components/settings/PersonalInformationPanel";
+import { PersonalInformationPanel } from "@/components/settings/PersonalInformationPanel";
 import {
   Dialog,
   DialogContent,
@@ -11,8 +11,8 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Loader2, Mail, Phone, MapPin, Briefcase, Building2, Calendar } from "lucide-react";
-import { formatWorkZoneDate, formatWorkZoneDateTime } from "@/lib/timezone";
+import { Loader2, Building2 } from "lucide-react";
+import { formatWorkZoneDateTime } from "@/lib/timezone";
 import { departmentSelectOptions } from "@/lib/department-options";
 
 type EmployeeDetailDialogProps = {
@@ -22,16 +22,8 @@ type EmployeeDetailDialogProps = {
   canEdit?: boolean;
 };
 
-function formatDisplayDate(value: Date | string | null | undefined) {
-  return formatWorkZoneDate(value);
-}
-
 function formatDateTime(value: Date | string | null | undefined) {
   return formatWorkZoneDateTime(value);
-}
-
-function sexLabel(value: string | null | undefined) {
-  return SEX_OPTIONS.find((o) => o.value === value)?.label ?? "—";
 }
 
 function DetailItem({
@@ -66,14 +58,14 @@ export function EmployeeDetailDialog({
     { enabled: open && userId != null },
   );
 
-  const [editRole, setEditRole] = useState<"admin" | "manager" | "employee" | "hr" | "client">("employee");
+  const [editRole, setEditRole] = useState<"admin" | "manager" | "employee" | "hr" | "client" | "finance">("employee");
   const [editDepartment, setEditDepartment] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!employee) return;
-    setEditRole(employee.role as "admin" | "manager" | "employee" | "hr" | "client");
+    setEditRole(employee.role as "admin" | "manager" | "employee" | "hr" | "client" | "finance");
     setEditDepartment(employee.department ?? "");
     setSaveError(null);
   }, [employee]);
@@ -134,7 +126,7 @@ export function EmployeeDetailDialog({
                   {employee.name || "Unknown"}
                 </h3>
                 <div className="flex flex-wrap items-center gap-2 mt-1.5">
-                  <RoleBadge role={employee.role as "admin" | "manager" | "employee" | "hr" | "client"} />
+                  <RoleBadge role={employee.role as "admin" | "manager" | "employee" | "hr" | "client" | "finance"} />
                   <span
                     className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium capitalize ${
                       employee.status === "Active"
@@ -176,9 +168,19 @@ export function EmployeeDetailDialog({
                     </label>
                     <select
                       value={editRole}
-                      onChange={(e) =>
-                        setEditRole(e.target.value as "admin" | "manager" | "employee" | "hr" | "client")
-                      }
+                      onChange={(e) => {
+                        const next = e.target.value as
+                          | "admin"
+                          | "manager"
+                          | "employee"
+                          | "hr"
+                          | "client"
+                          | "finance";
+                        setEditRole(next);
+                        if (next === "finance" && !editDepartment.trim()) {
+                          setEditDepartment("Finance");
+                        }
+                      }}
                       className="w-full h-10 px-3 rounded-lg border border-gray-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
                     >
                       <option value="admin">Admin</option>
@@ -186,6 +188,7 @@ export function EmployeeDetailDialog({
                       <option value="employee">Employee</option>
                       <option value="hr">HR</option>
                       <option value="client">Client</option>
+                      <option value="finance">Account Manager</option>
                     </select>
                   </div>
                 </div>
@@ -204,101 +207,27 @@ export function EmployeeDetailDialog({
               </div>
             ) : null}
 
-            {canEdit ? (
-              <PersonalInformationPanel
-                userId={userId!}
-                onError={setSaveError}
-                onSaved={() => {
-                  if (userId != null) {
-                    void utils.user.getById.invalidate({ id: userId });
-                  }
-                }}
-              />
-            ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 rounded-xl border border-gray-100 bg-gray-50/80 p-4">
-              <DetailItem label="First name" value={employee.firstName} />
-              <DetailItem label="Last name" value={employee.lastName} />
-              <DetailItem
-                label="Email"
-                value={
-                  employee.email ? (
-                    <a href={`mailto:${employee.email}`} className="text-[#2563EB] hover:underline">
-                      {employee.email}
-                    </a>
-                  ) : (
-                    "—"
-                  )
+            <PersonalInformationPanel
+              userId={userId!}
+              onError={setSaveError}
+              onSaved={() => {
+                if (userId != null) {
+                  void utils.user.getById.invalidate({ id: userId });
+                  void utils.user.list.invalidate();
                 }
-                icon={<Mail size={14} className="text-gray-400 shrink-0" />}
-              />
-              <DetailItem
-                label="Position"
-                value={employee.position}
-                icon={<Briefcase size={14} className="text-gray-400 shrink-0" />}
-              />
-              <DetailItem
-                label="Phone"
-                value={
-                  employee.phone ? (
-                    <a href={`tel:${employee.phone}`} className="text-[#2563EB] hover:underline">
-                      {employee.phone}
-                    </a>
-                  ) : (
-                    "—"
-                  )
-                }
-                icon={<Phone size={14} className="text-gray-400 shrink-0" />}
-              />
-              {!canEdit ? (
+              }}
+            />
+
+            {!canEdit ? (
+              <div className="rounded-xl border border-gray-100 bg-gray-50/80 p-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <DetailItem
                   label="Department"
                   value={employee.department}
                   icon={<Building2 size={14} className="text-gray-400 shrink-0" />}
                 />
-              ) : null}
-              <DetailItem
-                label="City"
-                value={employee.city}
-                icon={<MapPin size={14} className="text-gray-400 shrink-0" />}
-              />
-              <DetailItem
-                label="Address"
-                value={employee.address}
-                icon={<MapPin size={14} className="text-gray-400 shrink-0" />}
-              />
-              <DetailItem
-                label="Family contact"
-                value={
-                  employee.familyContactNumber ? (
-                    <a
-                      href={`tel:${employee.familyContactNumber}`}
-                      className="text-[#2563EB] hover:underline"
-                    >
-                      {employee.familyContactNumber}
-                    </a>
-                  ) : (
-                    "—"
-                  )
-                }
-                icon={<Phone size={14} className="text-gray-400 shrink-0" />}
-              />
-              <DetailItem label="Blood group" value={employee.bloodGroup} />
-              <DetailItem label="Aadhaar card" value={employee.aadhaarCard} />
-              <DetailItem label="PAN card" value={employee.panCard} />
-              <DetailItem
-                label="Date of birth"
-                value={formatDisplayDate(employee.dateOfBirth)}
-                icon={<Calendar size={14} className="text-gray-400 shrink-0" />}
-              />
-              <DetailItem
-                label="Date of joining"
-                value={formatDisplayDate(employee.dateOfJoining)}
-                icon={<Calendar size={14} className="text-gray-400 shrink-0" />}
-              />
-              <DetailItem label="Sex" value={sexLabel(employee.sex)} />
-              <DetailItem label="Last sign in" value={formatDateTime(employee.lastSignInAt)} />
-            </div>
-            )}
+                <DetailItem label="Last sign in" value={formatDateTime(employee.lastSignInAt)} />
+              </div>
+            ) : null}
           </div>
         )}
       </DialogContent>

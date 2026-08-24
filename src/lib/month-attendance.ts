@@ -64,7 +64,10 @@ export type MonthAttendanceSummary = {
   attendanceDays: number;
   /** Attendance days where first clock-in was after 10:30 IST. */
   lateDays: number;
-  /** Weekdays on approved paid / sick / unpaid leave (WFH excluded). */
+  /**
+   * Approved paid / sick / unpaid leave weekdays (WFH excluded).
+   * Matches leaveBreakdown paid+sick+unpaid, including weekday public holidays.
+   */
   absentDays: number;
   /** Weekdays with approved half-day leave. */
   halfDays: number;
@@ -157,15 +160,15 @@ export function buildMonthLeaveBreakdown(
       breakdown.wfhDays += daysInScope;
       continue;
     }
+
     if (half) {
       breakdown.halfDays += daysInScope;
-      continue;
     }
 
     const type = String(leave.leaveType).toLowerCase();
     if (type === "sick") breakdown.sickDays += daysInScope;
     else if (type === "unpaid") breakdown.unpaidDays += daysInScope;
-    else breakdown.paidDays += daysInScope; // paid + legacy "half" handled above
+    else breakdown.paidDays += daysInScope; // paid + legacy "half"
   }
 
   breakdown.items.sort((a, b) => a.startDate.localeCompare(b.startDate));
@@ -290,7 +293,6 @@ export function classifyMonthAttendance(
 
   let attendanceDays = 0;
   let lateDays = 0;
-  let absentDays = 0;
   let halfDays = 0;
   let workedSeconds = 0;
 
@@ -301,22 +303,29 @@ export function classifyMonthAttendance(
     workedSeconds += Math.max(0, day.workedSeconds || 0);
   }
 
-  for (const dateKey of monthDateKeys) {
-    if (!isAttendanceWorkday(dateKey)) continue;
+  // Same source as the employee-list "X leave" total (paid + sick + unpaid).
+  // Do not skip public holidays here — leave breakdown counts weekday holidays,
+  // so Absent was undercounting when a leave day fell on a holiday.
+  const absentDays =
+    Math.round(
+      (leaveBreakdown.paidDays +
+        leaveBreakdown.sickDays +
+        leaveBreakdown.unpaidDays) *
+        10,
+    ) / 10;
 
+  for (const dateKey of monthDateKeys) {
     const snap = byDate.get(dateKey);
     const worked = Math.max(0, snap?.workedSeconds || 0);
     const leave = snap?.leaveCoverage ?? null;
 
-    // Half days = approved half-day leave only (not late / short hours).
-    if (leave === "half") {
+    // Half days = approved half-day leave on weekdays (including holidays).
+    if (isWeekdayDateKey(dateKey) && leave === "half") {
       halfDays += 1;
     }
 
-    // Absent = approved paid / sick / unpaid leave days only (not no-shows).
-    if (leave === "full") {
-      absentDays += 1;
-    }
+    // Present / late only on Mon–Fri that are not public holidays.
+    if (!isAttendanceWorkday(dateKey)) continue;
 
     if (worked > 0) {
       attendanceDays += 1;

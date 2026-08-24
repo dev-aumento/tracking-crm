@@ -2,11 +2,9 @@ node_modules
 dist
 .git
 .env
-.env.*
 *.log
-coverage
-.vscode
-.idea
 .DS_Store
+.idea
+.vscode
+.cursor
 agent-transcripts
-terminals

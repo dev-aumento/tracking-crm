@@ -6,6 +6,7 @@ import { GripVertical, Plus, Loader2, Calendar, Clock, Pencil, Trash2, ChevronLe
 import { AnimatePresence, motion } from "framer-motion";
 import { EdgeScrollArea } from "@/components/shared/EdgeScrollArea";
 import {
+  formatDueLabel,
   isTaskDueToday,
   isTaskOverdue,
   trackedSecondsFromHours,
@@ -25,7 +26,6 @@ import {
   type PipelineStageDef,
   type ProjectPipelineStageKey,
 } from "@/lib/task-kanban";
-import { formatWorkZoneDateTime } from "@/lib/timezone";
 
 type KanbanTask = {
   id: number;
@@ -40,7 +40,7 @@ type KanbanTask = {
 };
 
 function formatKanbanDeadline(dueDate: string | Date) {
-  return formatWorkZoneDateTime(dueDate, {
+  return formatDueLabel(dueDate, {
     month: "short",
     day: "numeric",
     hour: "numeric",

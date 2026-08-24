@@ -99,6 +99,7 @@ export async function createUser(
     notificationLanguage: null,
     privateNotes: null,
     employmentType: "full_time",
+    onNoticePeriod: false,
     headOfDepartmentUserIds: [],
     ...data,
     organizationId: data.organizationId,

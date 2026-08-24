@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { trpc } from "@/providers/trpc";
 import { UserAvatar } from "@/components/shared/UserAvatar";
@@ -14,21 +14,31 @@ import {
   writeNotificationPrefs,
   type NotificationPrefs,
 } from "@/lib/notification-prefs";
-import {
-  WORK_TIMEZONE,
-  WORK_TIMEZONE_LABEL,
-} from "@/lib/timezone";
+import { WORK_TIMEZONE, WORK_TIMEZONE_LABEL } from "@/lib/timezone";
 import { departmentSelectOptions, departmentSelectScopeForRole } from "@/lib/department-options";
+import { isFinanceRoleOnly } from "@/lib/leave-policy";
+import { isClientPortalUser } from "@/lib/client-portal";
 import { motion } from "framer-motion";
-import { User, Building2, BellRing, Camera, Check, Loader2, IdCard, Landmark } from "lucide-react";
+import {
+  User,
+  Building2,
+  BellRing,
+  Camera,
+  Check,
+  Loader2,
+  IdCard,
+  Landmark,
+} from "lucide-react";
 
 const TABS = [
   { key: "profile", label: "Profile", icon: User },
   { key: "personal", label: "Personal Information", icon: IdCard },
-  { key: "organization", label: "Organization Profile", icon: Landmark, adminOnly: true },
   { key: "workspace", label: "Workspace", icon: Building2 },
   { key: "notifications", label: "Notifications", icon: BellRing },
-];
+  { key: "organization", label: "Organization Profile", icon: Landmark, adminOnly: true },
+] as const;
+
+const FINANCE_HIDDEN_TABS = new Set(["personal", "workspace", "notifications"]);
 
 const WORKSPACE_KEY = "settings-workspace";
 
@@ -60,9 +70,28 @@ function readWorkspacePrefs(): WorkspaceForm {
   }
 }
 
+function sameNotificationPrefs(a: NotificationPrefs, b: NotificationPrefs) {
+  return NOTIFICATION_PREF_ITEMS.every((item) => a[item.key] === b[item.key]);
+}
+
+async function invalidateProfileViews(utils: ReturnType<typeof trpc.useUtils>) {
+  await Promise.all([
+    utils.auth.me.invalidate(),
+    utils.auth.getPersonalInfo.invalidate(),
+    utils.user.listForPicker.invalidate(),
+    utils.user.list.invalidate(),
+    utils.project.list.invalidate(),
+    utils.task.list.invalidate(),
+    utils.task.getById.invalidate(),
+    utils.dashboard.getStats.invalidate(),
+    utils.timeEntry.getTeamHours.invalidate(),
+  ]);
+}
+
 export default function Settings() {
   const { user } = useAuth();
   const utils = trpc.useUtils();
+  const financeOnly = isFinanceRoleOnly(user);
   const [activeTab, setActiveTab] = useState("profile");
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -73,33 +102,48 @@ export default function Settings() {
     avatar: null,
     department: "",
   });
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
+  const [savedProfile, setSavedProfile] = useState<ProfileForm>({
+    name: "",
+    avatar: null,
+    department: "",
+  });
 
   const [workspaceForm, setWorkspaceForm] = useState<WorkspaceForm>(readWorkspacePrefs);
+  const [savedWorkspace, setSavedWorkspace] = useState<WorkspaceForm>(readWorkspacePrefs);
   const [notificationPrefs, setNotificationPrefs] = useState<NotificationPrefs>(
+    () => ({ ...DEFAULT_NOTIFICATION_PREFS }),
+  );
+  const [savedNotificationPrefs, setSavedNotificationPrefs] = useState<NotificationPrefs>(
     () => ({ ...DEFAULT_NOTIFICATION_PREFS }),
   );
 
   useEffect(() => {
     if (!user) return;
-    setProfileForm({
+    const nextProfile = {
       name: user.name ?? "",
       avatar: user.avatar ?? null,
       department: user.department ?? "",
-    });
-    setNotificationPrefs(readNotificationPrefs(user.id));
+    };
+    setProfileForm(nextProfile);
+    setSavedProfile(nextProfile);
+    const nextNotifications = readNotificationPrefs(user.id);
+    setNotificationPrefs(nextNotifications);
+    setSavedNotificationPrefs(nextNotifications);
   }, [user]);
 
   useEffect(() => {
-    if (user?.role === "client" && activeTab === "workspace") {
-      setActiveTab("profile");
-    }
     if (user?.role !== "admin" && activeTab === "organization") {
       setActiveTab("profile");
+      return;
     }
-  }, [user?.role, activeTab]);
+    if (isClientPortalUser(user) && activeTab === "workspace") {
+      setActiveTab("profile");
+      return;
+    }
+    if (financeOnly && FINANCE_HIDDEN_TABS.has(activeTab)) {
+      setActiveTab("profile");
+    }
+  }, [user, financeOnly, activeTab]);
 
   const updateProfileMutation = trpc.auth.updateProfile.useMutation({
     onSuccess: async (updatedUser) => {
@@ -110,6 +154,14 @@ export default function Settings() {
         position: updatedUser.position,
         phone: updatedUser.phone,
       });
+
+      const nextProfile = {
+        name: updatedUser.name ?? "",
+        avatar: updatedUser.avatar ?? null,
+        department: updatedUser.department ?? "",
+      };
+      setProfileForm(nextProfile);
+      setSavedProfile(nextProfile);
 
       await invalidateProfileViews(utils);
 
@@ -122,21 +174,36 @@ export default function Settings() {
     },
   });
 
-  const changePasswordMutation = trpc.auth.changePassword.useMutation({
-    onSuccess: () => {
-      setCurrentPassword("");
-      setNewPassword("");
-      setConfirmPassword("");
-      setSaveError(null);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
-    },
-    onError: (error) => {
-      setSaveError(error.message || "Could not update password.");
-    },
-  });
+  const isSaving = updateProfileMutation.isPending;
 
-  const isSaving = updateProfileMutation.isPending || changePasswordMutation.isPending;
+  const profileDirty = useMemo(() => {
+    return (
+      profileForm.name.trim() !== savedProfile.name.trim() ||
+      (profileForm.department.trim() || "") !== (savedProfile.department.trim() || "") ||
+      (profileForm.avatar ?? null) !== (savedProfile.avatar ?? null)
+    );
+  }, [profileForm, savedProfile]);
+
+  const workspaceDirty = useMemo(() => {
+    return (
+      workspaceForm.startTime !== savedWorkspace.startTime ||
+      workspaceForm.endTime !== savedWorkspace.endTime
+    );
+  }, [workspaceForm, savedWorkspace]);
+
+  const notificationsDirty = useMemo(
+    () => !sameNotificationPrefs(notificationPrefs, savedNotificationPrefs),
+    [notificationPrefs, savedNotificationPrefs],
+  );
+
+  const canSave =
+    activeTab === "profile"
+      ? profileDirty && profileForm.name.trim().length > 0
+      : activeTab === "workspace"
+        ? workspaceDirty
+        : activeTab === "notifications"
+          ? notificationsDirty
+          : false;
 
   const handleAvatarSelect = (avatarUrl: string) => {
     setProfileForm((prev) => ({ ...prev, avatar: avatarUrl }));
@@ -152,47 +219,22 @@ export default function Settings() {
       return;
     }
 
-    const wantsPasswordChange =
-      currentPassword.length > 0 || newPassword.length > 0 || confirmPassword.length > 0;
-
-    if (wantsPasswordChange) {
-      if (!currentPassword) {
-        setSaveError("Enter your current password to change it.");
-        return;
-      }
-      if (newPassword.length < 8) {
-        setSaveError("New password must be at least 8 characters.");
-        return;
-      }
-      if (newPassword !== confirmPassword) {
-        setSaveError("New password and confirmation do not match.");
-        return;
-      }
-    }
-
     try {
       await updateProfileMutation.mutateAsync({
         name: profileForm.name.trim(),
         avatar: profileForm.avatar,
         department: profileForm.department.trim() || null,
       });
-
-      if (wantsPasswordChange) {
-        await changePasswordMutation.mutateAsync({
-          currentPassword,
-          newPassword,
-        });
-      }
     } catch {
       // Errors are handled in mutation onError handlers.
     }
   };
 
   const handleSaveWorkspace = () => {
-    localStorage.setItem(
-      WORKSPACE_KEY,
-      JSON.stringify({ ...workspaceForm, timezone: WORK_TIMEZONE }),
-    );
+    const next = { ...workspaceForm, timezone: WORK_TIMEZONE };
+    localStorage.setItem(WORKSPACE_KEY, JSON.stringify(next));
+    setWorkspaceForm(next);
+    setSavedWorkspace(next);
     setSaveError(null);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -204,22 +246,30 @@ export default function Settings() {
       return;
     }
     writeNotificationPrefs(user.id, notificationPrefs);
+    setSavedNotificationPrefs({ ...notificationPrefs });
     setSaveError(null);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
 
   const handleSave = () => {
-    if (activeTab === "profile") handleSaveProfile();
+    if (!canSave || isSaving) return;
+    if (activeTab === "profile") void handleSaveProfile();
     else if (activeTab === "workspace") handleSaveWorkspace();
-    else handleSaveNotifications();
+    else if (activeTab === "notifications") handleSaveNotifications();
   };
 
   const visibleTabs = TABS.filter((tab) => {
-    if (user?.role === "client" && tab.key === "workspace") return false;
-    if (tab.adminOnly && user?.role !== "admin") return false;
+    if ("adminOnly" in tab && tab.adminOnly && user?.role !== "admin") return false;
+    if (isClientPortalUser(user) && tab.key === "workspace") return false;
+    if (financeOnly && FINANCE_HIDDEN_TABS.has(tab.key)) return false;
     return true;
   });
+
+  const showSaveButton =
+    activeTab === "profile" ||
+    activeTab === "workspace" ||
+    activeTab === "notifications";
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-5xl mx-auto space-y-6">
@@ -237,6 +287,7 @@ export default function Settings() {
                 onClick={() => {
                   setActiveTab(tab.key);
                   setSaveError(null);
+                  setSaved(false);
                 }}
                 className={`flex items-center gap-2 lg:gap-3 px-3 sm:px-4 py-2.5 lg:py-3 text-sm font-medium transition-all whitespace-nowrap lg:w-full ${
                   activeTab === tab.key
@@ -281,9 +332,11 @@ export default function Settings() {
                     onChange={(e) => setProfileForm((prev) => ({ ...prev, name: e.target.value }))}
                     className="w-full h-10 px-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
                   />
-                  <p className="text-xs text-gray-400 mt-1">
-                    Contact details are managed under Personal information.
-                  </p>
+                  {!financeOnly ? (
+                    <p className="text-xs text-gray-400 mt-1">
+                      Contact details are managed under Personal information.
+                    </p>
+                  ) : null}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="profile-email">
@@ -302,54 +355,9 @@ export default function Settings() {
                   </p>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="profile-current-password">
-                    Current password
-                  </label>
-                  <input
-                    id="profile-current-password"
-                    type="password"
-                    autoComplete="current-password"
-                    value={currentPassword}
-                    onChange={(e) => setCurrentPassword(e.target.value)}
-                    placeholder="Required only when changing password"
-                    className="w-full h-10 px-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="profile-new-password">
-                    New password
-                  </label>
-                  <input
-                    id="profile-new-password"
-                    type="password"
-                    autoComplete="new-password"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="At least 8 characters"
-                    className="w-full h-10 px-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="profile-confirm-password">
-                    Confirm new password
-                  </label>
-                  <input
-                    id="profile-confirm-password"
-                    type="password"
-                    autoComplete="new-password"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    placeholder="Re-enter new password"
-                    className="w-full h-10 px-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#2563EB]/20 focus:border-[#2563EB]"
-                  />
-                  <p className="text-xs text-gray-400 mt-1">
-                    Leave password fields blank to keep your current password.
-                  </p>
-                </div>
-                <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
                   <div className="h-10 flex items-center">
-                    <RoleBadge role={user?.role as "admin" | "manager" | "employee" | "hr" | "client" || "employee"} />
+                    <RoleBadge role={user?.role || "employee"} />
                   </div>
                 </div>
                 <div>
@@ -374,15 +382,17 @@ export default function Settings() {
                       </option>
                     ))}
                   </select>
-                  <p className="text-xs text-gray-400 mt-1">
-                    Shown in the Projects table for projects you create.
-                  </p>
+                  {!financeOnly ? (
+                    <p className="text-xs text-gray-400 mt-1">
+                      Shown in the Projects table for projects you create.
+                    </p>
+                  ) : null}
                 </div>
               </div>
             </motion.div>
           )}
 
-          {activeTab === "personal" && (
+          {activeTab === "personal" && !financeOnly ? (
             <PersonalInformationPanel
               onSaved={() => {
                 setSaveError(null);
@@ -391,20 +401,9 @@ export default function Settings() {
               }}
               onError={setSaveError}
             />
-          )}
+          ) : null}
 
-          {activeTab === "organization" && user?.role === "admin" && (
-            <OrganizationProfilePanel
-              onSaved={() => {
-                setSaveError(null);
-                setSaved(true);
-                setTimeout(() => setSaved(false), 2000);
-              }}
-              onError={setSaveError}
-            />
-          )}
-
-          {activeTab === "workspace" && (
+          {activeTab === "workspace" && !financeOnly ? (
             <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} className="space-y-6">
               <h2 className="text-lg font-semibold text-[#1F2937]">Workspace Settings</h2>
 
@@ -438,15 +437,18 @@ export default function Settings() {
                 </div>
               </div>
             </motion.div>
-          )}
+          ) : null}
 
-          {activeTab === "notifications" && (
+          {activeTab === "notifications" && !financeOnly ? (
             <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} className="space-y-6">
               <h2 className="text-lg font-semibold text-[#1F2937]">Notification Preferences</h2>
 
               <div className="space-y-4">
                 {NOTIFICATION_PREF_ITEMS.map((item) => (
-                  <label key={item.key} className="flex items-start gap-3 p-3 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors">
+                  <label
+                    key={item.key}
+                    className="flex items-start gap-3 p-3 rounded-lg hover:bg-gray-50 cursor-pointer transition-colors"
+                  >
                     <input
                       type="checkbox"
                       checked={notificationPrefs[item.key]}
@@ -463,28 +465,43 @@ export default function Settings() {
                 ))}
               </div>
             </motion.div>
-          )}
+          ) : null}
 
-          {saveError && <p className="text-sm text-red-500">{saveError}</p>}
+          {activeTab === "organization" && user?.role === "admin" ? (
+            <OrganizationProfilePanel
+              onSaved={() => {
+                setSaveError(null);
+                setSaved(true);
+                setTimeout(() => setSaved(false), 2000);
+              }}
+              onError={setSaveError}
+            />
+          ) : null}
 
-          {activeTab !== "personal" && activeTab !== "organization" && (
-          <div className="pt-4">
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={isSaving}
-              className="h-10 px-6 bg-gradient-to-r from-[#2563EB] to-[#3B82F6] text-white rounded-lg text-sm font-semibold hover:shadow-lg hover:shadow-blue-200 transition-all flex items-center gap-2 disabled:opacity-60"
-            >
-              {isSaving ? (
-                <><Loader2 size={16} className="animate-spin" /> Saving...</>
-              ) : saved ? (
-                <><Check size={16} /> Saved</>
-              ) : (
-                "Save Changes"
-              )}
-            </button>
-          </div>
-          )}
+          {saveError ? <p className="text-sm text-red-500">{saveError}</p> : null}
+
+          {showSaveButton ? (
+            <div className="pt-4">
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={!canSave || isSaving}
+                className="h-10 px-6 bg-gradient-to-r from-[#2563EB] to-[#3B82F6] text-white rounded-lg text-sm font-semibold hover:shadow-lg hover:shadow-blue-200 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-none"
+              >
+                {isSaving ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" /> Saving...
+                  </>
+                ) : saved && !canSave ? (
+                  <>
+                    <Check size={16} /> Saved
+                  </>
+                ) : (
+                  "Save Changes"
+                )}
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -497,17 +514,4 @@ export default function Settings() {
       />
     </motion.div>
   );
-}
-
-function invalidateProfileViews(utils: ReturnType<typeof trpc.useUtils>) {
-  return Promise.all([
-    utils.auth.getPersonalInfo.invalidate(),
-    utils.user.listForPicker.invalidate(),
-    utils.user.list.invalidate(),
-    utils.project.list.invalidate(),
-    utils.task.list.invalidate(),
-    utils.task.getById.invalidate(),
-    utils.dashboard.getStats.invalidate(),
-    utils.timeEntry.getTeamHours.invalidate(),
-  ]);
 }

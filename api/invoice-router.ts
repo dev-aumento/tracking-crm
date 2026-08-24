@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { createRouter, adminQuery } from "./middleware";
+import { createRouter, authedQuery } from "./middleware";
 import { ensureSchema } from "./lib/migrate";
 import {
   getCollection,
@@ -62,7 +62,7 @@ function toClient(doc: InvoiceDoc) {
 }
 
 export const invoiceRouter = createRouter({
-  list: adminQuery.query(async ({ ctx }) => {
+  list: authedQuery.query(async ({ ctx }) => {
     assertPermission(ctx.user, "invoices.manage");
     if (useMock()) {
       return mockInvoices
@@ -79,7 +79,7 @@ export const invoiceRouter = createRouter({
     return docs.map(toClient);
   }),
 
-  get: adminQuery
+  get: authedQuery
     .input(z.object({ id: z.number() }))
     .query(async ({ ctx, input }) => {
       assertPermission(ctx.user, "invoices.manage");
@@ -97,7 +97,7 @@ export const invoiceRouter = createRouter({
       return toClient(doc);
     }),
 
-  create: adminQuery
+  create: authedQuery
     .input(invoiceInputSchema)
     .mutation(async ({ ctx, input }) => {
       assertPermission(ctx.user, "invoices.manage");
@@ -128,7 +128,7 @@ export const invoiceRouter = createRouter({
       return toClient(doc);
     }),
 
-  update: adminQuery
+  update: authedQuery
     .input(invoiceInputSchema.extend({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       assertPermission(ctx.user, "invoices.manage");
@@ -165,7 +165,7 @@ export const invoiceRouter = createRouter({
       return toClient(updated!);
     }),
 
-  delete: adminQuery
+  delete: authedQuery
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       assertPermission(ctx.user, "invoices.manage");
@@ -193,7 +193,7 @@ export const invoiceRouter = createRouter({
       return { success: true };
     }),
 
-  importLegacy: adminQuery
+  importLegacy: authedQuery
     .input(
       z.object({
         invoices: z.array(

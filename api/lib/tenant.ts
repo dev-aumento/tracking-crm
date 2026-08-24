@@ -1,8 +1,11 @@
 import { TRPCError } from "@trpc/server";
 import { Collections } from "@db/mongo/collections";
-import type { OrganizationDoc, SafeUser, UserDoc } from "@db/mongo/types";
+import type { OrganizationDoc, SafeUser, SubscriptionPlan, SubscriptionStatus, UserDoc, WorkspaceType } from "@db/mongo/types";
 import { Workspace } from "@contracts/constants";
-import { findById, getCollection, insertDoc, updateById } from "../queries/connection";
+import { addPlanDuration } from "@/lib/platform-admin";
+import { findById, getCollection, hasMongoConfigured, insertDoc, updateById } from "../queries/connection";
+
+export type { WorkspaceType };
 
 /** Resolve the caller's organization id or fail closed. */
 export function requireOrganizationId(
@@ -34,14 +37,84 @@ export async function findOrganizationById(id: number) {
   return findById<OrganizationDoc>(Collections.organizations, id);
 }
 
-export async function createOrganization(name: string, createdBy: number | null = null) {
+export async function createOrganization(
+  name: string,
+  createdBy: number | null = null,
+  options?: {
+    workspaceType?: WorkspaceType;
+    plan?: SubscriptionPlan;
+    planStatus?: SubscriptionStatus;
+    subscriptionAmount?: number;
+    purchasedAt?: Date | null;
+  },
+) {
   const now = new Date();
+  const workspaceType = options?.workspaceType ?? "standard";
+  const isCustomer = workspaceType !== "platform";
   return insertDoc<OrganizationDoc>(Collections.organizations, {
     name: name.trim() || Workspace.name,
+    workspaceType,
+    plan: options?.plan ?? (isCustomer ? "trial" : undefined),
+    planStatus: options?.planStatus ?? (isCustomer ? "trial" : undefined),
+    subscriptionAmount: options?.subscriptionAmount ?? (isCustomer ? 0 : undefined),
+    purchasedAt: options?.purchasedAt ?? (isCustomer ? now : null),
+    planStartsAt: isCustomer ? now : null,
+    planExpiresAt: isCustomer ? addPlanDuration(now, options?.plan ?? "trial") : null,
     createdBy,
     createdAt: now,
     updatedAt: now,
   });
+}
+
+/**
+ * True when this org is (or should be healed as) a client portal workspace.
+ * Existing client orgs created before workspaceType are inferred from a client-role owner.
+ */
+export async function resolveClientWorkspace(
+  organizationId: number | null | undefined,
+): Promise<boolean> {
+  if (organizationId == null || organizationId <= 0) return false;
+  if (!hasMongoConfigured()) return false;
+
+  const org = await findOrganizationById(organizationId);
+  if (!org) return false;
+  if (org.workspaceType === "client") return true;
+  if (org.workspaceType === "standard" || org.workspaceType === "platform") return false;
+
+  const userCol = await getCollection<UserDoc>(Collections.users);
+  const clientOwner = await userCol.findOne({
+    organizationId,
+    role: "client",
+    status: "active",
+  });
+  if (!clientOwner) {
+    await updateById<OrganizationDoc>(Collections.organizations, organizationId, {
+      workspaceType: "standard",
+      updatedAt: new Date(),
+    });
+    return false;
+  }
+
+  // Staff CRMs always have an admin and may later invite clients. Inferring
+  // "client portal" from any client user would hide Client's Tasks from admins.
+  const staffAdmin = await userCol.findOne({
+    organizationId,
+    role: "admin",
+    status: "active",
+  });
+  if (staffAdmin) {
+    await updateById<OrganizationDoc>(Collections.organizations, organizationId, {
+      workspaceType: "standard",
+      updatedAt: new Date(),
+    });
+    return false;
+  }
+
+  await updateById<OrganizationDoc>(Collections.organizations, organizationId, {
+    workspaceType: "client",
+    updatedAt: new Date(),
+  });
+  return true;
 }
 
 export async function getOrganizationNameById(id: number | null | undefined) {

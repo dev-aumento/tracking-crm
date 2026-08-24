@@ -1,6 +1,6 @@
 import { MongoClient, type Collection, type Db, type Document, type Filter } from "mongodb";
 import { Collections, type CollectionName } from "@db/mongo/collections";
-import { env, isMongoUriConfigured } from "../lib/env";
+import { env, isDatabaseEnabled } from "../lib/env";
 
 let client: MongoClient | null = null;
 let db: Db | null = null;
@@ -33,9 +33,9 @@ async function closeMongoClient() {
 }
 
 async function createMongoDb(): Promise<Db> {
-  if (!isMongoUriConfigured()) {
+  if (!isDatabaseEnabled()) {
     throw new Error(
-      "MongoDB is not configured. Set MONGODB_CLUSTER_HOST (and MONGODB_USER / MONGODB_PASSWORD) in .env",
+      "Database is disabled. Set USE_DATABASE=true and MongoDB connection values in .env to reconnect.",
     );
   }
 
@@ -166,5 +166,5 @@ export async function countDocs(
 }
 
 export function hasMongoConfigured() {
-  return isMongoUriConfigured();
+  return isDatabaseEnabled();
 }

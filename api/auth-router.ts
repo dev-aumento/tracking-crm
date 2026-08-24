@@ -3,9 +3,11 @@ import { clearSessionCookie, createSessionForUser, invalidateAuthUserCache } fro
 import { ensureSchema } from "./lib/migrate";
 import { isAuthDisabled } from "./lib/dev-mode";
 import * as mock from "./lib/mock-store";
-import { updateById, findById } from "./queries/connection";
+import { updateById, findById, getCollection } from "./queries/connection";
 import { hashPassword, verifyPassword } from "./lib/password";
-import { createUser, findUserByEmail, omitPasswordHash, updateLastSignIn } from "./queries/users";
+import { createUser, findUserByEmail, updateLastSignIn } from "./queries/users";
+import { hasMongoConfigured } from "./queries/mongo";
+import { DEFAULT_PERMISSIONS_BY_ROLE } from "@db/mongo/types";
 import { syncEmployeeFromUser } from "./queries/employees";
 import {
   buildPersonalInfoUserPatch,
@@ -15,12 +17,22 @@ import {
 import { assertPermission, hasPermission } from "./lib/permissions";
 import { getOrganizationName } from "./lib/organization";
 import { createOrganization, getOrganizationNameById } from "./lib/tenant";
+import {
+  healPortalUser,
+  isClientWorkspaceUser,
+  toSessionUser,
+} from "./lib/client-workspace";
+import { assertActiveSubscription } from "./lib/subscription-access";
+import { findPlatformPlan } from "./lib/platform-plans";
+import { queuePlanNotification } from "./lib/notify-plan";
 import { ALL_PERMISSION_KEYS } from "@contracts/permissions";
 import { Collections } from "@db/mongo/collections";
 import type { OrganizationDoc, UserDoc } from "@db/mongo/types";
 import { TRPCError } from "@trpc/server";
 import { nanoid } from "nanoid";
 import { z } from "zod";
+import { canManageNoticePeriod } from "@/lib/leave-policy";
+import type { SelfPersonalInfoUpdateInput } from "./queries/personal-info";
 
 const profileUpdateSchema = z.object({
   name: z.string().min(1).max(255).optional(),
@@ -42,11 +54,163 @@ function splitName(fullName: string) {
   return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
 }
 
+function useMemoryStore() {
+  return !hasMongoConfigured();
+}
+
+async function platformAdminExists() {
+  if (useMemoryStore()) return mock.mockHasUserWithRole("platform");
+  const userCol = await getCollection<UserDoc>(Collections.users);
+  const existing = await userCol.findOne({ role: "platform" });
+  return !!existing;
+}
+
+async function assertPlatformSignupAvailable() {
+  if (await platformAdminExists()) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "A platform administrator already exists. Sign in at /admin/login.",
+    });
+  }
+}
+
+async function assertLoginPortal(
+  user: { role?: string | null; organizationId?: number | null },
+  portal?: "finance" | "client" | "platform",
+) {
+  const normalized = String(user.role ?? "").toLowerCase();
+  if (portal === "platform" && normalized !== "platform") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "This portal is for FlowTicX platform administrators. Use the main login instead.",
+    });
+  }
+  if (normalized === "platform" && portal !== "platform") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Platform administrators sign in at /admin/login",
+    });
+  }
+  if (portal === "finance" && normalized !== "finance") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "This portal is for account managers only. Use the main login instead.",
+    });
+  }
+  if (normalized === "finance" && portal !== "finance") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Account managers sign in at /finance/login",
+    });
+  }
+
+  const clientWorkspace = await isClientWorkspaceUser(user);
+  if (portal === "client" && !clientWorkspace) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "This portal is for client workspaces. Staff accounts sign in at /login.",
+    });
+  }
+  if (!portal && clientWorkspace) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Client workspace members sign in at /client/login",
+    });
+  }
+}
+
+async function registerMemoryUser(
+  input: {
+    name: string;
+    email: string;
+    password: string;
+    organizationName: string;
+    role: "admin" | "client" | "finance" | "platform";
+  },
+  ctx: { req: Request; resHeaders: Headers },
+) {
+  const email = input.email.trim().toLowerCase();
+  if (mock.mockFindUserByEmail(email)) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "An account with this email already exists",
+    });
+  }
+
+  const passwordHash = await hashPassword(input.password);
+  const roleDefaults = {
+    admin: {
+      department: "Management",
+      position: "Administrator",
+      permissions: [...ALL_PERMISSION_KEYS],
+    },
+    client: {
+      department: "Client",
+      position: "Client",
+      permissions: [...DEFAULT_PERMISSIONS_BY_ROLE.client],
+    },
+    finance: {
+      department: "Finance",
+      position: "Account Manager",
+      permissions: [...DEFAULT_PERMISSIONS_BY_ROLE.finance],
+    },
+    platform: {
+      department: "Platform",
+      position: "Master Admin",
+      permissions: [...DEFAULT_PERMISSIONS_BY_ROLE.platform],
+    },
+  }[input.role];
+
+  const user = mock.mockCreateRegisteredUser({
+    name: input.name,
+    email,
+    passwordHash,
+    role: input.role,
+    organizationName: input.organizationName,
+    department: roleDefaults.department,
+    position: roleDefaults.position,
+    permissions: roleDefaults.permissions,
+  });
+
+  const token = await createSessionForUser(user.id, ctx.req.headers, ctx.resHeaders);
+  return {
+    user: await toSessionUser(user, input.role === "client"),
+    organizationName: mock.mockGetOrganizationName(),
+    token,
+  };
+}
+
 export const authRouter = createRouter({
-  me: publicQuery.query(({ ctx }) => ctx.user ?? null),
+  me: publicQuery.query(async ({ ctx }) => {
+    if (!ctx.user) return null;
+    await assertActiveSubscription(ctx.user, {
+      reqHeaders: ctx.req.headers,
+      resHeaders: ctx.resHeaders,
+    });
+    if (hasMongoConfigured() && !isAuthDisabled()) {
+      try {
+        const fresh = await findById<UserDoc>(Collections.users, ctx.user.id);
+        if (fresh) {
+          const healed = await healPortalUser(fresh);
+          await assertActiveSubscription(healed, {
+            reqHeaders: ctx.req.headers,
+            resHeaders: ctx.resHeaders,
+          });
+          return toSessionUser(healed);
+        }
+      } catch (error) {
+        if (error instanceof TRPCError) throw error;
+        return toSessionUser(ctx.user);
+      }
+    }
+    return toSessionUser(ctx.user);
+  }),
 
   organizationName: publicQuery.query(async ({ ctx }) => {
-    if (isAuthDisabled()) return { name: "AumentoX26" };
+    if (isAuthDisabled()) return { name: "FlowTicX" };
+    if (useMemoryStore()) {
+      return { name: mock.mockGetOrganizationName() };
+    }
     try {
       await ensureSchema();
       if (ctx.user?.organizationId) {
@@ -54,7 +218,16 @@ export const authRouter = createRouter({
       }
       return { name: await getOrganizationName() };
     } catch {
-      return { name: "AumentoX26" };
+      return { name: "FlowTicX" };
+    }
+  }),
+
+  platformSignupAvailable: publicQuery.query(async () => {
+    try {
+      if (!useMemoryStore()) await ensureSchema();
+      return { available: !(await platformAdminExists()) };
+    } catch {
+      return { available: false };
     }
   }),
 
@@ -68,6 +241,10 @@ export const authRouter = createRouter({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      if (useMemoryStore()) {
+        return registerMemoryUser({ ...input, role: "admin" }, ctx);
+      }
+
       try {
         await ensureSchema();
       } catch (error) {
@@ -114,11 +291,25 @@ export const authRouter = createRouter({
         updatedAt: new Date(),
       });
 
-      await createSessionForUser(user.id, ctx.req.headers, ctx.resHeaders);
+      const catalog = await findPlatformPlan(org.plan ?? "trial");
+      queuePlanNotification({
+        kind: "joined",
+        organizationId: org.id,
+        organizationName: org.name,
+        planName: catalog?.name ?? "Trial",
+        actorId: user.id,
+      });
+
+      const token = await createSessionForUser(
+        user.id,
+        ctx.req.headers,
+        ctx.resHeaders,
+      );
 
       return {
-        user: omitPasswordHash(user),
+        user: await toSessionUser(user, false),
         organizationName: org.name,
+        token,
       };
     }),
 
@@ -132,6 +323,10 @@ export const authRouter = createRouter({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      if (useMemoryStore()) {
+        return registerMemoryUser({ ...input, role: "client" }, ctx);
+      }
+
       try {
         await ensureSchema();
       } catch (error) {
@@ -154,7 +349,9 @@ export const authRouter = createRouter({
 
       const passwordHash = await hashPassword(input.password);
       const { firstName, lastName } = splitName(input.name);
-      const org = await createOrganization(input.organizationName, null);
+      const org = await createOrganization(input.organizationName, null, {
+        workspaceType: "client",
+      });
 
       const user = await createUser({
         unionId: `client_${nanoid()}`,
@@ -177,18 +374,119 @@ export const authRouter = createRouter({
         updatedAt: new Date(),
       });
 
-      await createSessionForUser(user.id, ctx.req.headers, ctx.resHeaders);
+      const catalog = await findPlatformPlan(org.plan ?? "trial");
+      queuePlanNotification({
+        kind: "joined",
+        organizationId: org.id,
+        organizationName: org.name,
+        planName: catalog?.name ?? "Trial",
+        actorId: user.id,
+      });
+
+      const token = await createSessionForUser(
+        user.id,
+        ctx.req.headers,
+        ctx.resHeaders,
+      );
 
       return {
-        user: omitPasswordHash(user),
+        user: await toSessionUser(user, true),
         organizationName: org.name,
+        token,
+      };
+    }),
+
+  registerPlatform: publicQuery
+    .input(
+      z.object({
+        name: z.string().min(1).max(255),
+        email: z.string().email().max(320),
+        password: z.string().min(8).max(128),
+        organizationName: z.string().min(1).max(200).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (useMemoryStore()) {
+        await assertPlatformSignupAvailable();
+        return registerMemoryUser(
+          {
+            ...input,
+            organizationName: input.organizationName?.trim() || "FlowTicX",
+            role: "platform",
+          },
+          ctx,
+        );
+      }
+
+      try {
+        await ensureSchema();
+      } catch (error) {
+        console.error("[auth] Database setup failed:", error);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message:
+            "Database setup failed. Check MONGODB_URI and ensure MongoDB is reachable.",
+        });
+      }
+
+      await assertPlatformSignupAvailable();
+
+      const email = input.email.trim().toLowerCase();
+      const existing = await findUserByEmail(email);
+      if (existing) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "An account with this email already exists",
+        });
+      }
+
+      const passwordHash = await hashPassword(input.password);
+      const { firstName, lastName } = splitName(input.name);
+      const org = await createOrganization(
+        input.organizationName?.trim() || "FlowTicX",
+        null,
+        { workspaceType: "platform" },
+      );
+
+      const user = await createUser({
+        unionId: `platform_${nanoid()}`,
+        organizationId: org.id,
+        name: input.name.trim(),
+        email,
+        passwordHash,
+        avatar: null,
+        role: "platform",
+        status: "active" as UserDoc["status"],
+        department: "Platform",
+        position: "Master Admin",
+        phone: null,
+        firstName,
+        lastName,
+        permissions: [...DEFAULT_PERMISSIONS_BY_ROLE.platform],
+      });
+
+      await updateById<OrganizationDoc>(Collections.organizations, org.id, {
+        createdBy: user.id,
+        updatedAt: new Date(),
+      });
+
+      const token = await createSessionForUser(
+        user.id,
+        ctx.req.headers,
+        ctx.resHeaders,
+      );
+
+      return {
+        user: await toSessionUser(user, false),
+        organizationName: org.name,
+        token,
       };
     }),
 
   getPersonalInfo: authedQuery.query(async ({ ctx }) => {
     const canManageHead = hasPermission(ctx.user, "profile.head_of_department");
 
-    if (isAuthDisabled()) {
+    if (isAuthDisabled() || useMemoryStore()) {
       const view = mock.mockGetPersonalInfo(ctx.user.id, { includePrivateNotes: true });
       if (!canManageHead) {
         return {
@@ -223,9 +521,13 @@ export const authRouter = createRouter({
       }
 
       const canManageHead = hasPermission(ctx.user, "profile.head_of_department");
+      const sanitized: SelfPersonalInfoUpdateInput = { ...input };
+      if (!canManageNoticePeriod(ctx.user)) {
+        delete sanitized.onNoticePeriod;
+      }
 
-      if (isAuthDisabled()) {
-        const view = mock.mockUpdatePersonalInfo(ctx.user.id, input, {
+      if (isAuthDisabled() || useMemoryStore()) {
+        const view = mock.mockUpdatePersonalInfo(ctx.user.id, sanitized, {
           includePrivateNotes: true,
         });
         if (!canManageHead) {
@@ -240,7 +542,7 @@ export const authRouter = createRouter({
 
       await ensureSchema();
 
-      const patch = buildPersonalInfoUserPatch(input, ctx.user);
+      const patch = buildPersonalInfoUserPatch(sanitized, ctx.user);
 
       const updated = await updateById<UserDoc>(Collections.users, ctx.user.id, patch);
       if (!updated) {
@@ -263,8 +565,9 @@ export const authRouter = createRouter({
   updateProfile: authedQuery
     .input(profileUpdateSchema)
     .mutation(async ({ ctx, input }) => {
-      if (isAuthDisabled()) {
-        return mock.mockUpdateUserProfile(ctx.user.id, input);
+      if (isAuthDisabled() || useMemoryStore()) {
+        const updated = mock.mockUpdateUserProfile(ctx.user.id, input);
+        return toSessionUser(updated, String(ctx.user.role).toLowerCase() === "client");
       }
 
       try {
@@ -289,13 +592,39 @@ export const authRouter = createRouter({
       invalidateAuthUserCache(ctx.user.id);
       await syncEmployeeFromUser(updated);
 
-      return omitPasswordHash(updated);
+      return toSessionUser(updated);
     }),
 
   changePassword: authedQuery
     .input(changePasswordSchema)
     .mutation(async ({ ctx, input }) => {
       if (isAuthDisabled()) {
+        return { success: true };
+      }
+
+      if (useMemoryStore()) {
+        const user = mock.mockFindUserById(ctx.user.id);
+        if (!user?.passwordHash) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Password change is not available for this account",
+          });
+        }
+        const currentValid = await verifyPassword(input.currentPassword, user.passwordHash);
+        if (!currentValid) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "Current password is incorrect",
+          });
+        }
+        if (input.currentPassword === input.newPassword) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "New password must be different from your current password",
+          });
+        }
+        mock.mockSetPasswordHash(user.id, await hashPassword(input.newPassword));
+        invalidateAuthUserCache(user.id);
         return { success: true };
       }
 
@@ -360,6 +689,26 @@ export const authRouter = createRouter({
         return { success: true };
       }
 
+      if (useMemoryStore()) {
+        const email = input.email.trim().toLowerCase();
+        const user = mock.mockFindUserByEmail(email);
+        if (!user) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "No account found with this email",
+          });
+        }
+        if (user.status !== "active") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Account is not active",
+          });
+        }
+        mock.mockSetPasswordHash(user.id, await hashPassword(input.newPassword));
+        invalidateAuthUserCache(user.id);
+        return { success: true };
+      }
+
       try {
         await ensureSchema();
       } catch (error) {
@@ -402,14 +751,129 @@ export const authRouter = createRouter({
       return { success: true };
     }),
 
+  registerFinance: publicQuery
+    .input(
+      z.object({
+        name: z.string().min(1).max(255),
+        email: z.string().email().max(320),
+        password: z.string().min(8).max(128),
+        organizationName: z.string().min(1).max(200),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (useMemoryStore()) {
+        return registerMemoryUser({ ...input, role: "finance" }, ctx);
+      }
+
+      try {
+        await ensureSchema();
+      } catch (error) {
+        console.error("[auth] Database setup failed:", error);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message:
+            "Database setup failed. Check MONGODB_URI and ensure MongoDB is reachable.",
+        });
+      }
+
+      const email = input.email.trim().toLowerCase();
+      const existing = await findUserByEmail(email);
+      if (existing) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "An account with this email already exists",
+        });
+      }
+
+      const passwordHash = await hashPassword(input.password);
+      const { firstName, lastName } = splitName(input.name);
+      const org = await createOrganization(input.organizationName, null);
+
+      const user = await createUser({
+        unionId: `finance_${nanoid()}`,
+        organizationId: org.id,
+        name: input.name.trim(),
+        email,
+        passwordHash,
+        avatar: null,
+        role: "finance",
+        status: "active" as UserDoc["status"],
+        department: "Finance",
+        position: "Account Manager",
+        phone: null,
+        firstName,
+        lastName,
+      });
+
+      await updateById<OrganizationDoc>(Collections.organizations, org.id, {
+        createdBy: user.id,
+        updatedAt: new Date(),
+      });
+
+      const catalog = await findPlatformPlan(org.plan ?? "trial");
+      queuePlanNotification({
+        kind: "joined",
+        organizationId: org.id,
+        organizationName: org.name,
+        planName: catalog?.name ?? "Trial",
+        actorId: user.id,
+      });
+
+      const token = await createSessionForUser(
+        user.id,
+        ctx.req.headers,
+        ctx.resHeaders,
+      );
+
+      return {
+        user: await toSessionUser(user, false),
+        organizationName: org.name,
+        token,
+      };
+    }),
+
   login: publicQuery
     .input(
       z.object({
         email: z.string().email(),
         password: z.string().min(1),
+        /** When set to finance, only finance-role accounts may sign in. */
+        portal: z.enum(["finance", "client", "platform"]).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      if (useMemoryStore()) {
+        const user = mock.mockFindUserByEmail(input.email.toLowerCase());
+        if (!user?.passwordHash) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "Invalid email or password",
+          });
+        }
+        if (user.status !== "active") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Account is not active",
+          });
+        }
+        const valid = await verifyPassword(input.password, user.passwordHash);
+        if (!valid) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "Invalid email or password",
+          });
+        }
+        await assertLoginPortal(user, input.portal);
+        await assertActiveSubscription(user);
+        mock.mockUpdateLastSignIn(user.id);
+        const token = await createSessionForUser(
+          user.id,
+          ctx.req.headers,
+          ctx.resHeaders,
+        );
+        return { user: await toSessionUser(user), token };
+      }
+
       try {
         await ensureSchema();
 
@@ -420,6 +884,21 @@ export const authRouter = createRouter({
             code: "UNAUTHORIZED",
             message: "Invalid email or password",
           });
+        }
+
+        // Heal account managers wrongly marked inactive by the old employee-list orphan logic.
+        if (
+          user.role === "finance" &&
+          String(user.status).toLowerCase() === "inactive"
+        ) {
+          const healed = await updateById<UserDoc>(Collections.users, user.id, {
+            status: "active",
+            updatedAt: new Date(),
+          });
+          if (healed) {
+            invalidateAuthUserCache(user.id);
+            Object.assign(user, healed);
+          }
         }
 
         if (user.status !== "active") {
@@ -437,10 +916,21 @@ export const authRouter = createRouter({
           });
         }
 
-        await updateLastSignIn(user.id);
-        await createSessionForUser(user.id, ctx.req.headers, ctx.resHeaders);
+        await assertLoginPortal(user, input.portal);
 
-        return { user: omitPasswordHash(user) };
+        const healed = await healPortalUser(user);
+        Object.assign(user, healed);
+
+        await assertActiveSubscription(user);
+
+        await updateLastSignIn(user.id);
+        const token = await createSessionForUser(
+          user.id,
+          ctx.req.headers,
+          ctx.resHeaders,
+        );
+
+        return { user: await toSessionUser(user), token };
       } catch (error) {
         if (error instanceof TRPCError) throw error;
         console.error("[auth] Login failed:", error);

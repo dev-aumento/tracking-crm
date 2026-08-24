@@ -32,7 +32,7 @@ export const NOTIFICATION_PREF_ITEMS: {
   {
     key: "dueDateReminders",
     label: "Due Date Reminders",
-    desc: "24 hours before task due dates",
+    desc: "When a task deadline is reached or overdue",
   },
   {
     key: "weeklySummary",

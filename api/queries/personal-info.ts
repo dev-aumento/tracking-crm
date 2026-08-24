@@ -38,6 +38,7 @@ export const personalInfoUpdateSchema = z.object({
   sex: z.enum(["male", "female", "other", "prefer_not_to_say"]).nullable().optional(),
   notificationLanguage: z.string().max(20).nullable().optional(),
   employmentType: z.enum(["full_time", "intern"]).optional(),
+  onNoticePeriod: z.boolean().optional(),
   headOfDepartmentUserIds: z.array(z.number()).optional(),
 });
 
@@ -69,6 +70,7 @@ export type PersonalInfoRecord = {
   sex: SexOption | null;
   notificationLanguage: string | null;
   employmentType: EmploymentType;
+  onNoticePeriod: boolean;
   headOfDepartmentUserIds: number[];
   /** Only populated for the owning employee; never returned to admin/HR. */
   privateNotes?: string | null;
@@ -133,6 +135,9 @@ export function buildPersonalInfoUserPatch(
   if (input.employmentType !== undefined) {
     patch.employmentType = input.employmentType;
   }
+  if (input.onNoticePeriod !== undefined) {
+    patch.onNoticePeriod = input.onNoticePeriod;
+  }
   if (input.headOfDepartmentUserIds !== undefined) {
     patch.headOfDepartmentUserIds = input.headOfDepartmentUserIds;
   }
@@ -184,6 +189,7 @@ export function personalFieldsFromUser(
     sex: user.sex ?? null,
     notificationLanguage: user.notificationLanguage ?? null,
     employmentType: user.employmentType === "intern" ? "intern" : "full_time",
+    onNoticePeriod: Boolean(user.onNoticePeriod),
     headOfDepartmentUserIds: user.headOfDepartmentUserIds ?? [],
   };
 

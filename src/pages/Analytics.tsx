@@ -42,7 +42,7 @@ function WorkloadNameTick({
   );
 }
 
-export default function Analytics() {
+export default function Analytics({ embedded = false }: { embedded?: boolean }) {
   const [period, setPeriod] = useState<"week" | "month">("week");
   const [clockInsOpen, setClockInsOpen] = useState(false);
   const { data: workload, isLoading: workloadLoading } = trpc.dashboard.getWorkload.useQuery();
@@ -89,10 +89,12 @@ export default function Analytics() {
 
   return (
     <motion.div variants={containerVariants} initial="hidden" animate="visible" className="space-y-6">
-      <motion.div variants={itemVariants}>
-        <h1 className="text-2xl font-bold text-[#1F2937]">Analytics</h1>
-        <p className="text-sm text-gray-500 mt-0.5">Team performance and workload insights</p>
-      </motion.div>
+      {!embedded ? (
+        <motion.div variants={itemVariants}>
+          <h1 className="text-2xl font-bold text-[#1F2937]">Reports & Analytics</h1>
+          <p className="text-sm text-gray-500 mt-0.5">Employee data, attendance, and team workload</p>
+        </motion.div>
+      ) : null}
 
       {adminStats && (
         <motion.div variants={itemVariants} className="grid grid-cols-2 sm:grid-cols-4 gap-4">

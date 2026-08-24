@@ -4,7 +4,7 @@ import {
   classifyMonthAttendance,
   type MonthAttendanceSummary,
 } from "@/lib/month-attendance";
-import { buildLeaveCoverageMap, isAdminOrManagement } from "@/lib/leave-policy";
+import { buildLeaveCoverageMap, isAttendanceTrackableUser } from "@/lib/leave-policy";
 import {
   computeAttendanceWorkSeconds,
   localDateKey,
@@ -131,6 +131,7 @@ export async function computeTeamMonthAttendance(
   year: number,
   month: number,
   now = new Date(),
+  organizationId?: number | null,
 ): Promise<
   Array<{
     userId: number;
@@ -156,8 +157,13 @@ export async function computeTeamMonthAttendance(
   const sessionCol = await getCollection<WorkSessionDoc>(Collections.workSessions);
   const breakCol = await getCollection<WorkBreakDoc>(Collections.workBreaks);
 
+  const userFilter: Record<string, unknown> = { status: "active" };
+  if (organizationId != null) {
+    userFilter.organizationId = organizationId;
+  }
+
   const allUsers = await userCol
-    .find({ status: "active" })
+    .find(userFilter)
     .project({
       id: 1,
       name: 1,
@@ -169,12 +175,14 @@ export async function computeTeamMonthAttendance(
     })
     .toArray();
 
-  const trackableUsers = allUsers.filter((u) => !isAdminOrManagement(u));
+  const trackableUsers = allUsers.filter((u) => isAttendanceTrackableUser(u));
   const userIds = trackableUsers.map((u) => u.id);
   if (userIds.length === 0) return [];
 
-  const organizationId =
-    trackableUsers.find((u) => u.organizationId != null)?.organizationId ?? null;
+  const holidayOrgId =
+    organizationId ??
+    trackableUsers.find((u) => u.organizationId != null)?.organizationId ??
+    null;
 
   const [entries, leaves, sessions, breaks, holidayDateKeys] = await Promise.all([
     timeCol
@@ -200,7 +208,7 @@ export async function computeTeamMonthAttendance(
         $or: [{ endTime: { $gt: lookbackStart } }, { endTime: null }],
       })
       .toArray(),
-    loadHolidayDateKeysForMonth(year, month, organizationId),
+    loadHolidayDateKeysForMonth(year, month, holidayOrgId),
   ]);
 
   const entriesByUser = new Map<number, TimeEntryDoc[]>();

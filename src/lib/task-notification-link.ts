@@ -39,7 +39,20 @@ export function buildMyTasksViewPath(taskId: number, activityId?: number | null)
 
 /** In-app All Tasks URL — keeps "All tasks" nav active. */
 export function buildAllTasksViewPath(taskId: number, activityId?: number | null) {
-  const base = `/admin/tasks/task=${taskId}/`;
+  return buildAdminTaskListPath("/admin/tasks", taskId, activityId);
+}
+
+/** Tasks clients assigned to staff — keeps "Client's Tasks" nav active. */
+export function buildClientTasksViewPath(taskId: number, activityId?: number | null) {
+  return buildAdminTaskListPath("/admin/client-tasks", taskId, activityId);
+}
+
+export function buildAdminTaskListPath(
+  basePath: "/admin/tasks" | "/admin/client-tasks",
+  taskId: number,
+  activityId?: number | null,
+) {
+  const base = `${basePath}/task=${taskId}/`;
   if (activityId != null && activityId > 0) {
     return `${base}?activity=${activityId}`;
   }

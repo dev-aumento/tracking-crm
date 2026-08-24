@@ -74,6 +74,9 @@ export type CustomerRecord = {
   customFieldValue: string;
   remarks: string;
   createdAt: string;
+  status?: "active" | "inactive";
+  sourceUserId?: number | null;
+  sourceOrganizationId?: number | null;
 };
 
 const emptyContactPerson = () => ({

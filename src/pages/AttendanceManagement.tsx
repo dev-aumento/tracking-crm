@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import { CalendarCheck2, ChevronLeft, ChevronRight, Loader2, Search } from "lucide-react";
 import { trpc } from "@/providers/trpc";
 import { useAuth } from "@/hooks/useAuth";
-import { canManageLeaves } from "@/lib/leave-policy";
+import { canManageLeaves, isAttendanceTrackableUser } from "@/lib/leave-policy";
 import { workZoneDateParts } from "@/lib/timezone";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import { MonthAttendanceCard } from "@/components/dashboard/MonthAttendanceCard";
@@ -37,9 +37,10 @@ export default function AttendanceManagement() {
   );
 
   const filtered = useMemo(() => {
+    const rows = (data ?? []).filter((row) => isAttendanceTrackableUser(row));
     const q = search.trim().toLowerCase();
-    if (!q) return data ?? [];
-    return (data ?? []).filter(
+    if (!q) return rows;
+    return rows.filter(
       (row) =>
         row.name.toLowerCase().includes(q) ||
         (row.email ?? "").toLowerCase().includes(q) ||
@@ -84,7 +85,7 @@ export default function AttendanceManagement() {
             Attendance
           </h1>
           <p className="text-sm text-gray-500 mt-1">
-            Month-wise attendance for all employees (Mon–Fri working days)
+            Month-wise attendance for employees, HR, and project managers (Mon–Fri working days)
           </p>
         </div>
 
@@ -135,7 +136,10 @@ export default function AttendanceManagement() {
           <div className="bg-white border border-gray-200 rounded-xl overflow-hidden max-h-[70vh] overflow-y-auto">
             {filtered.map((row) => {
               const active = (selected?.userId ?? null) === row.userId;
-              const leaveTotal = row.attendance.leaveBreakdown?.totalLeaveDays ?? 0;
+              const leaveTotal =
+                (row.attendance.leaveBreakdown?.paidDays ?? 0) +
+                (row.attendance.leaveBreakdown?.sickDays ?? 0) +
+                (row.attendance.leaveBreakdown?.unpaidDays ?? 0);
               return (
                 <button
                   key={row.userId}
@@ -237,17 +241,6 @@ export default function AttendanceManagement() {
                         </td>
                         <td className="px-4 py-2.5 text-right font-medium">
                           {formatLeaveMetric(leaveBreakdown?.unpaidDays ?? 0)}
-                        </td>
-                      </tr>
-                      <tr>
-                        <td className="px-4 py-2.5">
-                          Half day
-                          <span className="block text-xs text-gray-400 font-normal">
-                            Approved half-day leave
-                          </span>
-                        </td>
-                        <td className="px-4 py-2.5 text-right font-medium">
-                          {formatLeaveMetric(leaveBreakdown?.halfDays ?? 0)}
                         </td>
                       </tr>
                       <tr>

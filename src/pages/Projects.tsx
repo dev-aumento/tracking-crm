@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router";
 import { trpc } from "@/providers/trpc";
 import { useAuth } from "@/hooks/useAuth";
 import { hasPermission } from "@/lib/permissions";
+import { isClientPortalUser } from "@/lib/client-portal";
 import { ProjectFunnelTable } from "@/components/projects/ProjectFunnelTable";
 import { ProjectFormFields } from "@/components/projects/ProjectFormFields";
 import { ListPaginationControls } from "@/components/shared/ListPaginationControls";
@@ -24,6 +24,7 @@ import {
 } from "@/lib/project-appearance";
 import { Plus, X, Loader2, Search, Trash2 } from "lucide-react";
 import { motion } from "framer-motion";
+import { useNavigate, useSearchParams } from "react-router";
 import { ModalBackdrop } from "@/components/shared/ModalBackdrop";
 import {
   AlertDialog,
@@ -37,8 +38,13 @@ import {
 } from "@/components/ui/alert-dialog";
 
 export default function Projects() {
+  return <ProjectsWebPage />;
+}
+
+function ProjectsWebPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const [searchParams] = useSearchParams();
   const [listState] = useState(() => loadProjectsListState());
   const [search, setSearch] = useState(listState.search);
   const [searchField, setSearchField] = useState<ProjectSearchField>(listState.searchField);
@@ -72,6 +78,21 @@ export default function Projects() {
 
   const canCreate = hasPermission(user, "projects.manage");
   const canDelete = hasPermission(user, "projects.manage");
+
+  useEffect(() => {
+    if (searchParams.get("create") === "1" && canCreate) {
+      setCreateError(null);
+      setShowCreate(true);
+    }
+  }, [searchParams, canCreate]);
+  const clientPortal = isClientPortalUser(user);
+
+  useEffect(() => {
+    if (!clientPortal) return;
+    if (searchField === "client") setSearchField("name");
+    if (sortBy.startsWith("client-")) setSortBy("name-asc");
+    if (agencyFilter) setAgencyFilter("");
+  }, [agencyFilter, clientPortal, searchField, sortBy]);
 
   const clientNameSuggestions = useMemo(
     () => collectClientNameSuggestions(projects ?? []),
@@ -164,32 +185,62 @@ export default function Projects() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-5">
-      <div className="rounded-2xl bg-gradient-to-r from-[#1e3a5f] via-[#2563EB] to-[#3B82F6] px-6 py-5 text-white shadow-lg overflow-hidden relative">
-        <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_top_right,_white,_transparent_55%)]" />
-        <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex flex-wrap gap-4 items-center">
-            <h1 className="text-2xl font-bold">Projects</h1>
-            <p className="text-sm text-blue-100 mt-1">
+      {isClientPortalUser(user) ? (
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="text-[28px] font-semibold tracking-tight text-[#1E1F21] dark:text-white">
+              Projects
+            </h1>
+            <p className="text-sm text-[#6D6E6F] mt-1">
               {filteredProjects.length} project{filteredProjects.length === 1 ? "" : "s"}
               {filteredProjects.length > LIST_PAGE_SIZE
                 ? ` · page ${projectPagination.page} of ${projectPagination.totalPages}`
                 : ""}
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {canCreate && (
-              <button type="button"
-                onClick={() => {
-                  setCreateError(null);
-                  setShowCreate(true);
-                }}
-                className="h-10 px-4 bg-white text-[#2563EB] rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-blue-50 transition-colors">
-                <Plus size={16} /> Create
-              </button>
-            )}
+          {canCreate ? (
+            <button
+              type="button"
+              onClick={() => {
+                setCreateError(null);
+                setShowCreate(true);
+              }}
+              className="h-9 px-3.5 bg-[#F06A6A] text-white rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-[#E45C5C]"
+            >
+              <Plus size={16} /> Create
+            </button>
+          ) : null}
+        </div>
+      ) : (
+        <div className="rounded-2xl bg-gradient-to-r from-[#1e3a5f] via-[#2563EB] to-[#3B82F6] px-6 py-5 text-white shadow-lg overflow-hidden relative">
+          <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_top_right,_white,_transparent_55%)]" />
+          <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap gap-4 items-center">
+              <h1 className="text-2xl font-bold">Projects</h1>
+              <p className="text-sm text-blue-100 mt-1">
+                {filteredProjects.length} project{filteredProjects.length === 1 ? "" : "s"}
+                {filteredProjects.length > LIST_PAGE_SIZE
+                  ? ` · page ${projectPagination.page} of ${projectPagination.totalPages}`
+                  : ""}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {canCreate && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCreateError(null);
+                    setShowCreate(true);
+                  }}
+                  className="h-10 px-4 bg-white text-[#2563EB] rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-blue-50 transition-colors"
+                >
+                  <Plus size={16} /> Create
+                </button>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -197,7 +248,10 @@ export default function Projects() {
             <FilterSelect
               value={searchField}
               onChange={(value) => setSearchField(value as ProjectSearchField)}
-              options={PROJECT_SEARCH_FIELD_OPTIONS.map((option) => ({
+              options={(clientPortal
+                ? PROJECT_SEARCH_FIELD_OPTIONS.filter((option) => option.value !== "client")
+                : PROJECT_SEARCH_FIELD_OPTIONS
+              ).map((option) => ({
                 value: option.value,
                 label: option.label,
               }))}
@@ -221,7 +275,10 @@ export default function Projects() {
             <FilterSelect
               value={sortBy}
               onChange={(value) => setSortBy(value as ProjectSortOption)}
-              options={PROJECT_SORT_OPTIONS.map((option) => ({
+              options={(clientPortal
+                ? PROJECT_SORT_OPTIONS.filter((option) => !option.value.startsWith("client-"))
+                : PROJECT_SORT_OPTIONS
+              ).map((option) => ({
                 value: option.value,
                 label: option.label,
               }))}
@@ -229,11 +286,13 @@ export default function Projects() {
               className="min-w-[10.5rem]"
             />
 
+            {clientPortal ? null : (
             <FilterSelect value={agencyFilter} onChange={setAgencyFilter}
               options={[
                 { value: "", label: "All Clients / Agencies" },
                 ...clientNameSuggestions.map((name) => ({ value: name, label: name })),
               ]} aria-label="Filter by client or agency" className="min-w-[11.5rem]" align="end"/>
+            )}
           </div>
         </div>
 
@@ -262,6 +321,7 @@ export default function Projects() {
         onToggleSelect={toggleSelect}
         onToggleSelectAll={toggleSelectAll}
         onProjectClick={(id) => navigate(`/projects/${id}`)}
+        hideClientAgency={clientPortal}
       />
 
       <ListPaginationControls
@@ -308,7 +368,7 @@ export default function Projects() {
               createMutation.mutate({
                 name: formData.name,
                 description: formData.description || undefined,
-                clientName: formData.clientName || undefined,
+                clientName: clientPortal ? undefined : formData.clientName || undefined,
                 color: formData.color,
                 icon: formData.icon,
               });
@@ -323,6 +383,7 @@ export default function Projects() {
               onChange={setFormData}
               clientNameSuggestions={clientNameSuggestions}
               idPrefix="create-project"
+              hideClientAgency={clientPortal}
             />
             <div className="flex justify-end gap-3 pt-2">
               <button

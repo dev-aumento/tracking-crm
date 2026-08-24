@@ -13,6 +13,7 @@ import { CrossDayClockOutDialog } from "@/components/time-tracking/CrossDayClock
 import { useClockOutAction } from "@/hooks/useClockOutAction";
 import { WorkforceOverviewPanels } from "@/components/dashboard/WorkforceOverviewPanels";
 import { WorkforceKpiCards } from "@/components/dashboard/WorkforceKpiCards";
+import { TodayBirthdaysBanner } from "@/components/dashboard/UpcomingBirthdaysPanel";
 import { motion } from "framer-motion";
 import { useEffect, useMemo } from "react";
 import {
@@ -20,6 +21,8 @@ import {
   Square,
   Loader2,
 } from "lucide-react";
+import { runClockInWithLocation } from "@/lib/clock-in-with-location";
+import { toast } from "sonner";
 
 export function HrDashboard() {
   const { user } = useAuth();
@@ -56,6 +59,7 @@ export function HrDashboard() {
   const clockOutAction = useClockOutAction(invalidateTimeStats);
   const clockInMutation = trpc.timeEntry.clockIn.useMutation({
     onSuccess: invalidateTimeStats,
+    onError: (err) => toast.error(err.message || "Could not clock in"),
   });
 
   const isClockedIn = !!currentSession?.active;
@@ -95,7 +99,14 @@ export function HrDashboard() {
       >
         <div className="min-w-0">
           <h1 className="text-lg sm:text-2xl font-bold text-[#1F2937] whitespace-nowrap overflow-hidden text-ellipsis">
-            {greeting}, {firstName}!
+            {greeting}, {firstName}{" "}
+            <span
+              className="inline-block origin-[70%_70%] animate-wave"
+              role="img"
+              aria-label="waving hand"
+            >
+              👋
+            </span>
           </h1>
           <p className="text-sm text-gray-500 mt-1 w-full">
             {formatWorkZoneDate(new Date(), {
@@ -133,7 +144,13 @@ export function HrDashboard() {
             onClick={() =>
               isClockedIn
                 ? clockOutAction.requestClockOut(currentSession!.startTime)
-                : clockInMutation.mutate()
+                : void runClockInWithLocation(
+                    (input) => clockInMutation.mutateAsync(input),
+                    {
+                      isLocationRequired: async () =>
+                        (await utils.location.clockInPolicy.fetch()).required,
+                    },
+                  )
             }
             disabled={clockInMutation.isPending || clockOutAction.isPending}
             className={`h-10 px-5 rounded-lg font-semibold text-sm flex items-center gap-2 transition-all ${
@@ -156,6 +173,8 @@ export function HrDashboard() {
           </button>
         </div>
       </motion.div>
+
+      <TodayBirthdaysBanner birthdays={data?.upcomingBirthdays ?? []} />
 
       <motion.div variants={itemVariants}>
         <WorkforceKpiCards data={data} />

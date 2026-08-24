@@ -12,6 +12,7 @@ import {
   roundHours,
   resolveAttendanceDisplaySeconds,
   filterMeaningfulAttendanceEntries,
+  sumBreakSecondsInWindow,
 } from "@/lib/work-hours-policy";
 import { buildLeaveCoverageMap, canManageLeaves } from "@/lib/leave-policy";
 import {
@@ -41,6 +42,7 @@ import {
   resyncActiveSessionFromBreaks,
 } from "./lib/attendance-breaks";
 import { formatWorkZoneTime } from "@/lib/timezone";
+import { assertClockInWithinGeofence } from "./location-router";
 import {
   applyBreakApproval,
   applyClockInApproval,
@@ -270,20 +272,40 @@ async function buildDayHoursForUser(userId: number, dateStr: string, now = new D
     (sum, entry) => sum + (entry.durationSeconds ?? 0),
     0,
   );
+  const breakSeconds = sumBreakSecondsInWindow(dayBreaks, start, end, now);
 
   return {
     entries: enrichedEntries,
     totalMinutes: totalSeconds / 60,
     totalSeconds,
     totalHours: roundHours(totalSeconds / 3600),
+    breakSeconds,
+    breakMinutes: Math.floor(breakSeconds / 60),
+    breakHours: roundHours(breakSeconds / 3600),
     entriesCount: enrichedEntries.length,
   };
 }
 
 export const timeEntryRouter = createRouter({
   clockIn: authedQuery
-    .input(z.object({ note: z.string().optional() }).optional())
+    .input(
+      z
+        .object({
+          note: z.string().optional(),
+          latitude: z.number().min(-90).max(90).optional(),
+          longitude: z.number().min(-180).max(180).optional(),
+          accuracyMeters: z.number().min(0).max(50_000).optional(),
+        })
+        .optional(),
+    )
     .mutation(async ({ ctx, input }) => {
+      await assertClockInWithinGeofence({
+        user: ctx.user,
+        latitude: input?.latitude,
+        longitude: input?.longitude,
+        accuracyMeters: input?.accuracyMeters,
+      });
+
       if (isAuthDisabled() || !hasMongoConfigured()) {
         return mock.mockClockIn(ctx.user.id, input?.note);
       }
@@ -1230,7 +1252,12 @@ export const timeEntryRouter = createRouter({
       assertLeaveManager(ctx.user);
       const { year, month } = resolveMonthInput(input);
       await ensureSchema();
-      return computeTeamMonthAttendance(year, month);
+      return computeTeamMonthAttendance(
+        year,
+        month,
+        new Date(),
+        ctx.user.organizationId,
+      );
     }),
 
   getTeamHours: authedQuery
@@ -1273,6 +1300,8 @@ export const timeEntryRouter = createRouter({
             avatar: user.avatar,
             role: user.role,
             totalHours: day.totalHours,
+            breakHours: day.breakHours,
+            breakSeconds: day.breakSeconds,
             entriesCount: day.entriesCount,
           };
         }),

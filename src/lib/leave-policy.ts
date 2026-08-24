@@ -1,12 +1,18 @@
 import { REQUIRED_DAILY_HOURS } from "@/lib/work-hours-policy";
-import { WORK_TIMEZONE, workZoneDateParts } from "@/lib/timezone";
+import { WORK_TIMEZONE, workZoneDateKey, workZoneDateParts } from "@/lib/timezone";
 
 /** Fixed annual leave entitlements. */
 export const MONTHLY_PAID_LEAVES = 1;
 export const TOTAL_PAID_LEAVES = 12; // 1 paid leave × 12 months
 export const TOTAL_SICK_LEAVES = 3;
+/** Sick leave is granted in 4-month spans (1 SL per span). */
+export const SICK_LEAVE_SPAN_MONTHS = 4;
+export const SICK_LEAVE_PER_SPAN = 1;
 /** Annual work-from-home day entitlement. */
 export const TOTAL_WFH_DAYS = 20;
+/** WFH is granted in 3-month spans (5 days per span). */
+export const WFH_SPAN_MONTHS = 3;
+export const WFH_DAYS_PER_SPAN = 5;
 /** Regular employees: no paid leave for this many calendar months from probation start. */
 export const PAID_LEAVE_PROBATION_MONTHS = 3;
 /**
@@ -154,7 +160,8 @@ export function isInProbationPeriod(
  * Paid leave is locked for:
  * - any month before joining, and
  * - the no-PL window starting at the date-adjusted lock month for
- *   {@link PAID_LEAVE_PROBATION_MONTHS} (or {@link INTERN_PAID_LEAVE_LOCK_MONTHS} for interns).
+ *   {@link PAID_LEAVE_PROBATION_MONTHS} (or {@link INTERN_PAID_LEAVE_LOCK_MONTHS} for interns), and
+ * - the current month and all future months while {@link onNoticePeriod} is true.
  *
  * Example: joined 20 Apr → lock starts May → full-time locks May–Jul → PL from Aug.
  * Example: joined 25 Jul → lock starts Aug → full-time locks Aug–Oct → PL from Nov.
@@ -164,10 +171,19 @@ export function isPaidLeaveMonthLocked(
   month: number,
   dateOfJoining: Date | string | null | undefined,
   employmentType?: EmploymentType | string | null,
+  onNoticePeriod?: boolean,
+  asOf: Date | string = new Date(),
 ): boolean {
-  if (!dateOfJoining) return false;
   if (month < 1 || month > 12) return false;
   const monthIdx = year * 12 + (month - 1);
+
+  if (onNoticePeriod) {
+    const now = workZoneDateParts(asOf);
+    const nowIdx = now.year * 12 + (now.month - 1);
+    if (monthIdx >= nowIdx) return true;
+  }
+
+  if (!dateOfJoining) return false;
   return monthIdx < paidLeaveEligibilityStartMonthIndex(dateOfJoining, employmentType);
 }
 
@@ -176,9 +192,11 @@ export function paidLeaveMonthCapacities(
   year: number,
   dateOfJoining: Date | string | null | undefined,
   employmentType?: EmploymentType | string | null,
+  onNoticePeriod?: boolean,
+  asOf: Date | string = new Date(),
 ): number[] {
   return Array.from({ length: 12 }, (_, i) =>
-    isPaidLeaveMonthLocked(year, i + 1, dateOfJoining, employmentType)
+    isPaidLeaveMonthLocked(year, i + 1, dateOfJoining, employmentType, onNoticePeriod, asOf)
       ? 0
       : MONTHLY_PAID_LEAVES,
   );
@@ -187,17 +205,106 @@ export function paidLeaveMonthCapacities(
 /**
  * Annual paid-leave entitlement for a calendar year.
  * Sum of eligible months (excludes months before joining and the lock window).
- * No joining date → full {@link TOTAL_PAID_LEAVES}.
+ * No joining date → full {@link TOTAL_PAID_LEAVES} (still reduced while on notice for current+future).
  */
 export function annualPaidLeaveEntitlement(
   year: number,
   dateOfJoining: Date | string | null | undefined,
   employmentType?: EmploymentType | string | null,
+  onNoticePeriod?: boolean,
+  asOf: Date | string = new Date(),
 ): number {
-  if (!dateOfJoining) return TOTAL_PAID_LEAVES;
-  return paidLeaveMonthCapacities(year, dateOfJoining, employmentType).reduce(
-    (sum, cap) => sum + cap,
+  if (!dateOfJoining && !onNoticePeriod) return TOTAL_PAID_LEAVES;
+  return paidLeaveMonthCapacities(
+    year,
+    dateOfJoining,
+    employmentType,
+    onNoticePeriod,
+    asOf,
+  ).reduce((sum, cap) => sum + cap, 0);
+}
+
+type CalendarSpan = {
+  /** Inclusive start month (1–12). */
+  startMonth: number;
+  /** Inclusive end month (1–12). */
+  endMonth: number;
+  amount: number;
+};
+
+function buildYearSpans(
+  spanMonths: number,
+  amountPerSpan: number,
+): CalendarSpan[] {
+  const spans: CalendarSpan[] = [];
+  for (let start = 1; start <= 12; start += spanMonths) {
+    spans.push({
+      startMonth: start,
+      endMonth: Math.min(12, start + spanMonths - 1),
+      amount: amountPerSpan,
+    });
+  }
+  return spans;
+}
+
+/**
+ * Annual entitlement from fixed calendar spans, prorated by joining month.
+ * Spans that end entirely before the joining month are removed.
+ * Mid-span joins still receive that span’s full allotment.
+ *
+ * Examples (WFH, 5 days × 3 months):
+ * - Join 1 May → miss Jan–Mar → 15
+ * - Join 1 Apr → keep Apr–Jun onward → 20
+ *
+ * Examples (sick, 1 day × 4 months):
+ * - Join 1 May → miss Jan–Apr → 2
+ * - Join 1 Sep → miss Jan–Aug → 1
+ */
+export function annualSpanEntitlement(
+  year: number,
+  dateOfJoining: Date | string | null | undefined,
+  spanMonths: number,
+  amountPerSpan: number,
+  fullTotal: number,
+): number {
+  if (!dateOfJoining) return fullTotal;
+  const join = joiningCalendarParts(dateOfJoining);
+  if (!join.year || !join.month) return fullTotal;
+  if (join.year > year) return 0;
+  if (join.year < year) return fullTotal;
+
+  const spans = buildYearSpans(spanMonths, amountPerSpan);
+  return spans.reduce(
+    (sum, span) => (span.endMonth >= join.month ? sum + span.amount : sum),
     0,
+  );
+}
+
+/** Annual WFH entitlement for a calendar year (5 days per 3-month span). */
+export function annualWfhEntitlement(
+  year: number,
+  dateOfJoining: Date | string | null | undefined,
+): number {
+  return annualSpanEntitlement(
+    year,
+    dateOfJoining,
+    WFH_SPAN_MONTHS,
+    WFH_DAYS_PER_SPAN,
+    TOTAL_WFH_DAYS,
+  );
+}
+
+/** Annual sick-leave entitlement for a calendar year (1 SL per 4-month span). */
+export function annualSickLeaveEntitlement(
+  year: number,
+  dateOfJoining: Date | string | null | undefined,
+): number {
+  return annualSpanEntitlement(
+    year,
+    dateOfJoining,
+    SICK_LEAVE_SPAN_MONTHS,
+    SICK_LEAVE_PER_SPAN,
+    TOTAL_SICK_LEAVES,
   );
 }
 
@@ -211,6 +318,7 @@ export function accruedPaidLeavesForYear(
   asOf: Date | string = new Date(),
   dateOfJoining?: Date | string | null,
   employmentType?: EmploymentType | string | null,
+  onNoticePeriod?: boolean,
 ): number {
   const { year: asOfYear, month: asOfMonth } = workZoneDateParts(asOf);
   if (year > asOfYear) return 0;
@@ -218,7 +326,16 @@ export function accruedPaidLeavesForYear(
   const lastMonth = year < asOfYear ? 12 : asOfMonth;
   let accrued = 0;
   for (let month = 1; month <= lastMonth; month += 1) {
-    if (!isPaidLeaveMonthLocked(year, month, dateOfJoining ?? null, employmentType)) {
+    if (
+      !isPaidLeaveMonthLocked(
+        year,
+        month,
+        dateOfJoining ?? null,
+        employmentType,
+        onNoticePeriod,
+        asOf,
+      )
+    ) {
       accrued += MONTHLY_PAID_LEAVES;
     }
   }
@@ -299,11 +416,13 @@ export const SICK_DURATION_OPTIONS = LEAVE_DURATION_OPTIONS;
 export function isHalfDayLeave(leave: {
   leaveType?: string | null;
   isHalfDay?: boolean | null;
-  days?: number | null;
+  days?: number | string | null;
 }): boolean {
   if (leave.isHalfDay) return true;
   if (leave.leaveType === "half") return true;
-  if (leave.days === 0.5) return true;
+  const days = Number(leave.days);
+  // Tolerate string/Decimal-ish 0.5 values from storage/serialization.
+  if (Number.isFinite(days) && Math.abs(days - 0.5) < 0.05) return true;
   return false;
 }
 
@@ -542,8 +661,9 @@ export function remainingMonthlyPaidLeave(
 /**
  * Allocate paid-leave day units across months (Jan…Dec).
  * Each month has capacity from `monthCapacities` (defaults to 1; 0 during probation).
- * Days that fall in a month consume that month first; any excess borrows from previous
- * months that still have capacity (e.g. 2 days in July → 1 from July + 1 from June).
+ * Days that fall in a month consume that month first; any excess borrows only from the
+ * immediately previous month (e.g. 2 days in August → 1 from August + 1 from July).
+ * Earlier months are never charged.
  *
  * @param rawDaysByMonth length-12 array, index 0 = January
  * @param monthCapacities optional length-12 capacities (defaults to {@link MONTHLY_PAID_LEAVES})
@@ -566,12 +686,15 @@ export function allocatePaidLeaveAcrossMonths(
     used[monthIndex] += takeHere;
     need = roundLeaveUnits(need - takeHere);
 
-    for (let prev = monthIndex - 1; prev >= 0 && need > 0; prev -= 1) {
+    // Borrow only from the immediately previous month (not further back to January).
+    if (need > 0 && monthIndex > 0) {
+      const prev = monthIndex - 1;
       const space = Math.max(0, capacityFor(prev) - used[prev]);
-      if (space <= 0) continue;
-      const take = Math.min(need, space);
-      used[prev] += take;
-      need = roundLeaveUnits(need - take);
+      if (space > 0) {
+        const take = Math.min(need, space);
+        used[prev] += take;
+        need = roundLeaveUnits(need - take);
+      }
     }
   }
 
@@ -645,6 +768,30 @@ export function leaveDateKeysInYear(
   );
 }
 
+/** Normalize leave date fields (string or Date) to YYYY-MM-DD. */
+export function toLeaveDateKey(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value === "string") {
+    const match = value.trim().match(/^(\d{4}-\d{2}-\d{2})/);
+    return match?.[1] ?? null;
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    // Use work-zone calendar day so IST midnights are not shifted via UTC.
+    return workZoneDateKey(value);
+  }
+  // Plain Date-like objects (e.g. deserialized JSON).
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "getTime" in value &&
+    typeof (value as Date).getTime === "function"
+  ) {
+    const d = new Date((value as Date).getTime());
+    if (!Number.isNaN(d.getTime())) return workZoneDateKey(d);
+  }
+  return null;
+}
+
 /** True when two inclusive YYYY-MM-DD ranges share any calendar day. */
 export function leaveDateRangesOverlap(
   aStart: string,
@@ -652,27 +799,42 @@ export function leaveDateRangesOverlap(
   bStart: string,
   bEnd: string,
 ): boolean {
-  return aStart <= bEnd && aEnd >= bStart;
+  const aS = toLeaveDateKey(aStart) ?? aStart;
+  const aE = toLeaveDateKey(aEnd) ?? aEnd;
+  const bS = toLeaveDateKey(bStart) ?? bStart;
+  const bE = toLeaveDateKey(bEnd) ?? bEnd;
+  return aS <= bE && aE >= bS;
 }
 
 /** First date in `startDate`–`endDate` that overlaps an existing leave range, if any. */
 export function firstOverlappingLeaveDate(
   startDate: string,
   endDate: string,
-  existing: { startDate: string; endDate: string },
+  existing: { startDate: string | Date; endDate: string | Date },
 ): string | null {
-  if (!leaveDateRangesOverlap(startDate, endDate, existing.startDate, existing.endDate)) {
+  const rangeStart = toLeaveDateKey(startDate);
+  const rangeEnd = toLeaveDateKey(endDate) ?? rangeStart;
+  const existingStart = toLeaveDateKey(existing.startDate);
+  const existingEnd = toLeaveDateKey(existing.endDate) ?? existingStart;
+  if (!rangeStart || !rangeEnd || !existingStart || !existingEnd) return null;
+
+  if (!leaveDateRangesOverlap(rangeStart, rangeEnd, existingStart, existingEnd)) {
     return null;
   }
-  for (const key of eachLeaveDateKey(startDate, endDate)) {
-    if (key >= existing.startDate && key <= existing.endDate) return key;
+  for (const key of eachLeaveDateKey(rangeStart, rangeEnd)) {
+    if (key >= existingStart && key <= existingEnd) return key;
   }
-  return startDate;
+  return rangeStart;
 }
 
 /** User-facing message when applying leave on a day that already has a request. */
 export function alreadyAppliedLeaveMessage(_date?: string | null) {
   return "You have already applied for leave on this day.";
+}
+
+/** HR-facing message when recording leave on a day that already has leave. */
+export function leaveAlreadyExistsForEmployeeMessage(_date?: string | null) {
+  return "Leave for this day already exists for this employee.";
 }
 
 /** Count leave day units that fall in a given calendar month (1–12). Weekends excluded. */
@@ -684,15 +846,51 @@ export function leaveDaysInMonth(
   leaveType: LeaveType | string = "paid",
   isHalfDay = false,
 ): number {
+  const startKey = toLeaveDateKey(startDate);
+  const endKey = toLeaveDateKey(endDate) ?? startKey;
+  if (!startKey || !endKey) return 0;
+
   if (leaveType === "half" || isHalfDay) {
-    const prefix = `${year}-${String(month).padStart(2, "0")}-`;
-    if (!startDate.startsWith(prefix)) return 0;
-    return isWeekdayDateKey(startDate) ? 0.5 : 0;
+    const y = Number(startKey.slice(0, 4));
+    const m = Number(startKey.slice(5, 7));
+    if (y !== year || m !== month) return 0;
+    return isWeekdayDateKey(startKey) ? 0.5 : 0;
   }
-  const prefix = `${year}-${String(month).padStart(2, "0")}-`;
-  return eachLeaveDateKey(startDate, endDate).filter(
-    (key) => key.startsWith(prefix) && isWeekdayDateKey(key),
-  ).length;
+
+  return eachLeaveDateKey(startKey, endKey).filter((key) => {
+    const y = Number(key.slice(0, 4));
+    const m = Number(key.slice(5, 7));
+    return y === year && m === month && isWeekdayDateKey(key);
+  }).length;
+}
+
+/**
+ * True when any calendar day of the leave falls in `year`/`month` (1–12).
+ * Used for month detail lists (includes weekend half-days that count 0 units).
+ */
+export function leaveTouchesMonth(
+  startDate: string,
+  endDate: string,
+  year: number,
+  month: number,
+  leaveType: LeaveType | string = "paid",
+  isHalfDay = false,
+): boolean {
+  const startKey = toLeaveDateKey(startDate);
+  const endKey = toLeaveDateKey(endDate) ?? startKey;
+  if (!startKey || !endKey) return false;
+
+  if (leaveType === "half" || isHalfDay) {
+    return (
+      Number(startKey.slice(0, 4)) === year &&
+      Number(startKey.slice(5, 7)) === month
+    );
+  }
+
+  return eachLeaveDateKey(startKey, endKey).some(
+    (key) =>
+      Number(key.slice(0, 4)) === year && Number(key.slice(5, 7)) === month,
+  );
 }
 
 /** Count leave day units that fall in a given calendar year. Weekends excluded. */
@@ -768,6 +966,27 @@ export function canManageLeaves(
 }
 
 /**
+ * Admin, HR, and project managers (role `manager`) may set/view the notice-period flag.
+ * Also allows anyone with `employees.manage` (covers custom grants).
+ */
+export function canManageNoticePeriod(
+  user:
+    | {
+        role?: string | null;
+        department?: string | null;
+        permissions?: string[] | null;
+      }
+    | null
+    | undefined,
+): boolean {
+  if (!user) return false;
+  const role = String(user.role ?? "").toLowerCase();
+  if (role === "admin" || role === "manager") return true;
+  if (isHrUser(user)) return true;
+  return user.permissions?.includes("employees.manage") ?? false;
+}
+
+/**
  * Admins and leadership departments do not use personal clock-in / own-hours tracking.
  * Matched by system role `admin` or department Management / Administration / Administrator.
  */
@@ -775,6 +994,7 @@ export function isAdminOrManagement(
   user: { role?: string | null; department?: string | null } | null | undefined,
 ): boolean {
   if (!user) return false;
+  if (String(user.role ?? "").toLowerCase() === "platform") return false;
   if (String(user.role ?? "").toLowerCase() === "admin") return true;
   const department = (user.department ?? "").trim().toLowerCase().replace(/\s+/g, " ");
   return (
@@ -782,6 +1002,27 @@ export function isAdminOrManagement(
     department === "administration" ||
     department === "administrator"
   );
+}
+
+/**
+ * People listed on the Attendance management page: employees, HR, and project managers.
+ * Excludes admins, clients, finance, and platform accounts.
+ */
+export function isAttendanceTrackableUser(
+  user: { role?: string | null; department?: string | null } | null | undefined,
+): boolean {
+  if (!user) return false;
+  if (isAdminOrManagement(user)) return false;
+  const role = String(user.role ?? "").toLowerCase();
+  if (
+    role === "admin" ||
+    role === "client" ||
+    role === "finance" ||
+    role === "platform"
+  ) {
+    return false;
+  }
+  return role === "employee" || role === "hr" || role === "manager" || isHrUser(user);
 }
 
 /**
@@ -814,11 +1055,62 @@ export function isHrRoleOnly(
 export function isHrRestrictedPath(path: string): boolean {
   if (path === "/tasks" || path.startsWith("/tasks/")) return true;
   if (path === "/admin/tasks" || path.startsWith("/admin/tasks/")) return true;
+  if (path === "/admin/client-tasks" || path.startsWith("/admin/client-tasks")) return true;
   if (path === "/projects" || path.startsWith("/projects/")) return true;
   if (path === "/task-chats" || path.startsWith("/task-chats/")) return true;
   if (path === "/admin/permissions" || path.startsWith("/admin/permissions/")) return true;
+  if (path === "/admin/pricing" || path.startsWith("/admin/pricing")) return true;
   if (path === "/admin/invoices" || path.startsWith("/admin/invoices/")) return true;
   if (path === "/admin/customers" || path.startsWith("/admin/customers/")) return true;
+  if (path === "/admin/reports" || path.startsWith("/admin/reports/")) return true;
+  return false;
+}
+
+/**
+ * Finance managers only see finance product areas (dashboard, invoices, customers).
+ * Matched by system role `finance` or department Finance / Accounts.
+ */
+export function isFinanceUser(
+  user: { role?: string | null; department?: string | null } | null | undefined,
+): boolean {
+  if (!user) return false;
+  if (String(user.role ?? "").toLowerCase() === "finance") return true;
+  const department = (user.department ?? "").trim().toLowerCase();
+  return (
+    department === "finance" ||
+    department === "accounts" ||
+    department === "accounting"
+  );
+}
+
+/** True only when the system role is `finance` — exclusive finance dashboard/nav. */
+export function isFinanceRoleOnly(
+  user: { role?: string | null } | null | undefined,
+): boolean {
+  return String(user?.role ?? "").toLowerCase() === "finance";
+}
+
+/** Office / ops routes finance managers must not open. */
+export function isFinanceRestrictedPath(path: string): boolean {
+  if (path === "/tasks" || path.startsWith("/tasks/")) return true;
+  if (path === "/admin/tasks" || path.startsWith("/admin/tasks/")) return true;
+  if (path === "/admin/client-tasks" || path.startsWith("/admin/client-tasks")) return true;
+  if (path === "/projects" || path.startsWith("/projects/")) return true;
+  if (path === "/task-chats" || path.startsWith("/task-chats/")) return true;
+  if (path === "/time-tracking" || path.startsWith("/time-tracking")) return true;
+  if (path === "/analytics" || path.startsWith("/analytics")) return true;
+  if (path === "/admin/employees" || path.startsWith("/admin/employees")) return true;
+  if (path === "/admin/departments" || path.startsWith("/admin/departments")) return true;
+  if (path === "/admin/permissions" || path.startsWith("/admin/permissions")) return true;
+  if (path === "/admin/pricing" || path.startsWith("/admin/pricing")) return true;
+  if (path === "/leaves" || path.startsWith("/leaves")) return true;
+  if (path === "/leave-management" || path.startsWith("/leave-management")) return true;
+  if (path === "/attendance-management" || path.startsWith("/attendance-management")) return true;
+  if (path === "/locations" || path.startsWith("/locations")) return true;
+  if (path === "/qr-code" || path.startsWith("/qr-code")) return true;
+  if (path === "/recent-employees" || path.startsWith("/recent-employees")) return true;
+  if (path === "/feed" || path.startsWith("/feed")) return true;
+  if (path === "/m/work" || path.startsWith("/m/work")) return true;
   return false;
 }
 

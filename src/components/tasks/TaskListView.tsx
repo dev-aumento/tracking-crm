@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import { PriorityBadge } from "@/components/shared/StatusBadge";
-import { isTaskOverdue } from "@/lib/task-deadline";
+import { formatDueLabel, isTaskOverdue } from "@/lib/task-deadline";
 import { taskLocateHighlightClass } from "@/hooks/useLocateTaskInView";
 import { useTaskLiveTimer } from "@/hooks/useTaskLiveTimer";
 import { cn, formatElapsedHMS } from "@/lib/utils";
@@ -363,7 +363,13 @@ function TaskListRow({
       <div
         className={`text-xs whitespace-nowrap ${overdue ? "text-red-600 font-medium" : "text-gray-500"}`}
       >
-        {formatListDate(task.dueDate)}
+        {task.dueDate
+          ? formatDueLabel(task.dueDate, {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+            })
+          : "—"}
       </div>
 
       <div className="flex items-center">

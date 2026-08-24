@@ -136,4 +136,6 @@ export const roleConfig = {
   employee: { label: "Employee", color: "#059669", bg: "#D1FAE5" },
   hr: { label: "HR", color: "#7C3AED", bg: "#F5F3FF" },
   client: { label: "Client", color: "#0D9488", bg: "#CCFBF1" },
+  finance: { label: "Account Manager", color: "#B45309", bg: "#FEF3C7" },
+  platform: { label: "Master Admin", color: "#2563EB", bg: "#EFF6FF" },
 } as const;

@@ -75,6 +75,11 @@ export function isMongoUriConfigured(): boolean {
   return Boolean(uri) && !uri.includes("YOUR_CLUSTER");
 }
 
+/** Mongo is used only when USE_DATABASE=true and a connection string is set. */
+export function isDatabaseEnabled(): boolean {
+  return process.env.USE_DATABASE === "true" && isMongoUriConfigured();
+}
+
 export const env = {
   appSecret: required("APP_SECRET"),
   isProduction: process.env.NODE_ENV === "production",

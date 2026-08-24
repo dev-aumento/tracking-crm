@@ -75,8 +75,11 @@ export const ROUTE_PERMISSIONS: Record<string, AppPermissionKey | AppPermissionK
   "/time-tracking": ["time.edit_own", "time.view_team", "time.edit_all"],
   "/analytics": "analytics.view",
   "/admin/employees": ["employees.manage", "permissions.manage"],
+  "/admin/departments": ["employees.manage", "permissions.manage"],
   "/admin/permissions": "permissions.manage",
   "/admin/tasks": "tasks.view_all",
+  "/admin/client-tasks": "tasks.view_all",
   "/admin/invoices": "invoices.manage",
   "/admin/customers": "customers.manage",
+  "/admin/reports": ["invoices.manage", "customers.manage"],
 };

@@ -3,6 +3,7 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
 import { hasPermission } from "./lib/permissions";
+import { assertActiveSubscription } from "./lib/subscription-access";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
@@ -14,14 +15,19 @@ export const publicQuery = t.procedure;
 const requireAuth = t.middleware(async (opts) => {
   const { ctx, next } = opts;
 
-  if (!ctx.user) {
-    throw new TRPCError({
-      code: "UNAUTHORIZED",
-      message: ErrorMessages.unauthenticated,
-    });
-  }
+    if (!ctx.user) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: ErrorMessages.unauthenticated,
+      });
+    }
 
-  return next({ ctx: { ...ctx, user: ctx.user } });
+    await assertActiveSubscription(ctx.user, {
+      reqHeaders: ctx.req.headers,
+      resHeaders: ctx.resHeaders,
+    });
+
+    return next({ ctx: { ...ctx, user: ctx.user } });
 });
 
 function requireRole(role: string) {
@@ -96,8 +102,41 @@ function requireEmployeesManage() {
   });
 }
 
+/**
+ * Employee directory view/edit: employees.manage / permissions.manage, or project manager role.
+ * Managers get read access + notice-period updates; full edits still require employees.manage.
+ */
+function requireEmployeesDirectoryAccess() {
+  return t.middleware(async (opts) => {
+    const { ctx, next } = opts;
+
+    if (!ctx.user) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: ErrorMessages.unauthenticated,
+      });
+    }
+
+    const role = String(ctx.user.role ?? "").toLowerCase();
+    if (
+      role === "manager" ||
+      hasPermission(ctx.user, "employees.manage") ||
+      hasPermission(ctx.user, "permissions.manage")
+    ) {
+      return next({ ctx: { ...ctx, user: ctx.user } });
+    }
+
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: ErrorMessages.insufficientRole,
+    });
+  });
+}
+
 export const authedQuery = t.procedure.use(requireAuth);
+export const platformQuery = authedQuery.use(requireRole("platform"));
 export const adminQuery = authedQuery.use(requireRole("admin"));
 export const adminOrHrQuery = authedQuery.use(requireAdminOrHr());
 export const managerQuery = authedQuery.use(requireManagerOrAbove());
 export const employeesManageQuery = authedQuery.use(requireEmployeesManage());
+export const employeesDirectoryQuery = authedQuery.use(requireEmployeesDirectoryAccess());

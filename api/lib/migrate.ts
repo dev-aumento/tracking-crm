@@ -1,9 +1,13 @@
 import { bootstrapMongo } from "./migrate-indexes";
-import { resetMongoConnection, withMongoRetry } from "../queries/mongo";
+import { hasMongoConfigured, resetMongoConnection, withMongoRetry } from "../queries/mongo";
 
 let migrationPromise: Promise<void> | null = null;
 
 export function ensureSchema() {
+  if (!hasMongoConfigured()) {
+    return Promise.resolve();
+  }
+
   if (!migrationPromise) {
     migrationPromise = withMongoRetry(() => bootstrapMongo()).catch((error) => {
       migrationPromise = null;

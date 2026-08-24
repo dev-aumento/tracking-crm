@@ -2,11 +2,14 @@ import { useEffect, useState, type ReactNode } from "react";
 import { trpc } from "@/providers/trpc";
 import { useAuth } from "@/hooks/useAuth";
 import { hasPermission } from "@/lib/permissions";
+import { isClientPortalUser } from "@/lib/client-portal";
+import { canManageNoticePeriod } from "@/lib/leave-policy";
 import { departmentSelectOptions, departmentSelectScopeForRole } from "@/lib/department-options";
 import { Loader2, Pencil, Phone, FileUp, Download, Trash2, Paperclip } from "lucide-react";
 import { motion } from "framer-motion";
 import { formatWorkZoneDate, formatWorkZoneDateTime, workZoneDateKey } from "@/lib/timezone";
 import { downloadFileFromBase64, readFileAsBase64 } from "@/lib/task-files";
+import { Checkbox } from "@/components/ui/checkbox";
 
 export const SEX_OPTIONS = [
   { value: "male", label: "Male" },
@@ -47,6 +50,7 @@ type PersonalForm = {
   headOfDepartmentUserIds: number[];
   privateNotes: string;
   employmentType: "full_time" | "intern";
+  onNoticePeriod: boolean;
 };
 
 const EMPTY_FORM: PersonalForm = {
@@ -70,6 +74,7 @@ const EMPTY_FORM: PersonalForm = {
   headOfDepartmentUserIds: [],
   privateNotes: "",
   employmentType: "full_time",
+  onNoticePeriod: false,
 };
 
 function toDateInputValue(value: Date | string | null | undefined) {
@@ -113,6 +118,7 @@ function formFromPersonalData(data: {
   headOfDepartmentUserIds?: number[];
   privateNotes?: string | null;
   employmentType?: "full_time" | "intern" | string | null;
+  onNoticePeriod?: boolean | null;
 }): PersonalForm {
   return {
     firstName: data.firstName ?? "",
@@ -135,6 +141,7 @@ function formFromPersonalData(data: {
     headOfDepartmentUserIds: data.headOfDepartmentUserIds ?? [],
     privateNotes: data.privateNotes ?? "",
     employmentType: data.employmentType === "intern" ? "intern" : "full_time",
+    onNoticePeriod: Boolean(data.onNoticePeriod),
   };
 }
 
@@ -205,8 +212,14 @@ export function PersonalInformationPanel({
   const [form, setForm] = useState<PersonalForm>(EMPTY_FORM);
 
   const isSelf = userId == null || userId === user?.id;
+  const compact = isClientPortalUser(user);
   const canManageHeadOfDepartment = hasPermission(user, "profile.head_of_department");
   const canEditEmploymentType = hasPermission(user, "employees.manage");
+  const canEditNoticePeriod = canManageNoticePeriod(user);
+  /** Project managers without employees.manage may only change the notice-period flag. */
+  const noticeOnlyEditor = Boolean(
+    !isSelf && canEditNoticePeriod && !hasPermission(user, "employees.manage"),
+  );
 
   const selfQuery = trpc.auth.getPersonalInfo.useQuery(undefined, { enabled: isSelf });
   const adminQuery = trpc.user.getPersonalInfo.useQuery(
@@ -307,32 +320,41 @@ export function PersonalInformationPanel({
       return;
     }
 
-    const payload = {
-      firstName: form.firstName.trim() || null,
-      lastName: form.lastName.trim() || null,
-      secondName: form.secondName.trim() || null,
-      email: data.email?.trim() ? undefined : form.email.trim() || undefined,
-      position: form.position.trim() || null,
-      department: form.department.trim() || null,
-      phone: form.phone.trim() || null,
-      city: form.city.trim() || null,
-      address: form.address.trim() || null,
-      familyContactNumber: form.familyContactNumber.trim() || null,
-      personalEmail: form.personalEmail.trim() || null,
-      bloodGroup: form.bloodGroup.trim() || null,
-      aadhaarCard: form.aadhaarCard.trim() || null,
-      panCard: form.panCard.trim() || null,
-      dateOfBirth: form.dateOfBirth || null,
-      dateOfJoining: form.dateOfJoining || null,
-      sex: form.sex
-        ? (form.sex as "male" | "female" | "other" | "prefer_not_to_say")
-        : null,
-      ...(canManageHeadOfDepartment
-        ? { headOfDepartmentUserIds: form.headOfDepartmentUserIds }
-        : {}),
-      ...(canEditEmploymentType ? { employmentType: form.employmentType } : {}),
-      ...(isSelf ? { privateNotes: form.privateNotes.trim() || null } : {}),
-    };
+    const payload = compact
+      ? {
+          firstName: form.firstName.trim() || null,
+          lastName: form.lastName.trim() || null,
+          email: data.email?.trim() ? undefined : form.email.trim() || undefined,
+          position: form.position.trim() || null,
+          phone: form.phone.trim() || null,
+        }
+      : {
+          firstName: form.firstName.trim() || null,
+          lastName: form.lastName.trim() || null,
+          secondName: form.secondName.trim() || null,
+          email: data.email?.trim() ? undefined : form.email.trim() || undefined,
+          position: form.position.trim() || null,
+          department: form.department.trim() || null,
+          phone: form.phone.trim() || null,
+          city: form.city.trim() || null,
+          address: form.address.trim() || null,
+          familyContactNumber: form.familyContactNumber.trim() || null,
+          personalEmail: form.personalEmail.trim() || null,
+          bloodGroup: form.bloodGroup.trim() || null,
+          aadhaarCard: form.aadhaarCard.trim() || null,
+          panCard: form.panCard.trim() || null,
+          dateOfBirth: form.dateOfBirth || null,
+          dateOfJoining: form.dateOfJoining || null,
+          sex: form.sex
+            ? (form.sex as "male" | "female" | "other" | "prefer_not_to_say")
+            : null,
+          ...(canManageHeadOfDepartment
+            ? { headOfDepartmentUserIds: form.headOfDepartmentUserIds }
+            : {}),
+          ...(canEditEmploymentType ? { employmentType: form.employmentType } : {}),
+          ...(canEditNoticePeriod ? { onNoticePeriod: form.onNoticePeriod } : {}),
+          ...(isSelf ? { privateNotes: form.privateNotes.trim() || null } : {}),
+        };
 
     if (isSelf) {
       selfUpdateMutation.mutate(payload);
@@ -340,6 +362,10 @@ export function PersonalInformationPanel({
     }
 
     if (userId != null) {
+      if (noticeOnlyEditor) {
+        adminUpdateMutation.mutate({ id: userId, onNoticePeriod: form.onNoticePeriod });
+        return;
+      }
       adminUpdateMutation.mutate({ id: userId, ...payload });
     }
   };
@@ -392,7 +418,80 @@ export function PersonalInformationPanel({
         )}
       </div>
 
-      {!editing ? (
+      {compact ? (
+        !editing ? (
+          <div className="rounded-xl border border-gray-200 bg-white px-4 grid grid-cols-1 md:grid-cols-2 gap-x-4">
+            <FieldRow label="First name" value={data.firstName} className="border-b border-gray-100" />
+            <FieldRow label="Last name" value={data.lastName} className="border-b border-gray-100" />
+            <FieldRow
+              label="Email"
+              value={data.email}
+              href={data.email ? `mailto:${data.email}` : undefined}
+              className="border-b border-gray-100"
+            />
+            <FieldRow
+              label="Mobile number"
+              value={data.phone}
+              href={data.phone ? `tel:${data.phone}` : undefined}
+              trailing={data.phone ? <Phone size={14} className="text-gray-400" /> : null}
+              className="border-b border-gray-100"
+            />
+            <FieldRow label="Position" value={data.position} className="md:col-span-2" />
+          </div>
+        ) : (
+          <div className="rounded-xl border border-gray-200 bg-white p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <FormField label="First name">
+              <input
+                type="text"
+                value={form.firstName}
+                onChange={(e) => setForm((prev) => ({ ...prev, firstName: e.target.value }))}
+                className={inputClass}
+              />
+            </FormField>
+            <FormField label="Last name">
+              <input
+                type="text"
+                value={form.lastName}
+                onChange={(e) => setForm((prev) => ({ ...prev, lastName: e.target.value }))}
+                className={inputClass}
+              />
+            </FormField>
+            <FormField label="Email">
+              <input
+                type="email"
+                value={form.email}
+                disabled={Boolean(data.email?.trim())}
+                readOnly={Boolean(data.email?.trim())}
+                onChange={(e) => setForm((prev) => ({ ...prev, email: e.target.value }))}
+                className={
+                  data.email?.trim()
+                    ? `${inputClass} bg-gray-50 text-gray-600 cursor-not-allowed`
+                    : inputClass
+                }
+              />
+              {data.email?.trim() ? (
+                <p className="text-xs text-gray-400 mt-1">Email cannot be changed after it is set.</p>
+              ) : null}
+            </FormField>
+            <FormField label="Mobile number">
+              <input
+                type="tel"
+                value={form.phone}
+                onChange={(e) => setForm((prev) => ({ ...prev, phone: e.target.value }))}
+                className={inputClass}
+              />
+            </FormField>
+            <FormField label="Position">
+              <input
+                type="text"
+                value={form.position}
+                onChange={(e) => setForm((prev) => ({ ...prev, position: e.target.value }))}
+                className={inputClass}
+              />
+            </FormField>
+          </div>
+        )
+      ) : !editing ? (
         <div className="rounded-xl border border-gray-200 bg-white px-4 grid grid-cols-1 md:grid-cols-2 gap-x-4">
           <FieldRow label="First name" value={data.firstName} className="border-b border-gray-100" />
           <FieldRow label="Last name" value={data.lastName} className="border-b border-gray-100" />
@@ -419,6 +518,13 @@ export function PersonalInformationPanel({
             value={data.employmentType === "intern" ? "Intern" : "Full-time"}
             className="border-b border-gray-100"
           />
+          {canEditNoticePeriod ? (
+            <FieldRow
+              label="Notice period"
+              value={data.onNoticePeriod ? "On notice period" : "Not on notice"}
+              className="border-b border-gray-100"
+            />
+          ) : null}
           <FieldRow label="Sex" value={sexLabel(data.sex)} className="border-b border-gray-100" />
           <FieldRow
             label="Mobile phone"
@@ -584,6 +690,28 @@ export function PersonalInformationPanel({
               </p>
             )}
           </FormField>
+          {canEditNoticePeriod ? (
+            <div className="md:col-span-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-3">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <Checkbox
+                  checked={form.onNoticePeriod}
+                  onCheckedChange={(checked) =>
+                    setForm((prev) => ({ ...prev, onNoticePeriod: checked === true }))
+                  }
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="block text-sm font-medium text-[#1F2937]">
+                    Employee is on notice period
+                  </span>
+                  <span className="block text-xs text-gray-500 mt-0.5">
+                    While enabled, paid leave is not provided for the current month (and later months
+                    until this is turned off). Visible to admin, HR, and project managers.
+                  </span>
+                </span>
+              </label>
+            </div>
+          ) : null}
           <FormField label="Sex">
             <select
               value={form.sex}
@@ -749,11 +877,13 @@ export function PersonalInformationPanel({
         </div>
       )}
 
-      <PersonalDocumentsSection
-        targetUserId={isSelf ? undefined : userId}
-        canManage={isSelf || canEditEmploymentType}
-        onError={onError}
-      />
+      {!compact ? (
+        <PersonalDocumentsSection
+          targetUserId={isSelf ? undefined : userId}
+          canManage={isSelf || canEditEmploymentType}
+          onError={onError}
+        />
+      ) : null}
     </motion.div>
   );
 }

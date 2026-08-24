@@ -1,3 +1,5 @@
+import { apiUrl } from "@/lib/api-base";
+
 export type StreamNotification = {
   id: number;
   title: string;
@@ -9,6 +11,7 @@ export type StreamNotification = {
   projectId?: number | null;
   activityId?: number | null;
   leaveRequestId?: number | null;
+  relatedOrganizationId?: number | null;
   link?: string | null;
 };
 
@@ -48,7 +51,10 @@ function handleMessage(event: MessageEvent<string>) {
 
 function ensureEventSource() {
   if (eventSource) return;
-  eventSource = new EventSource("/api/notifications/stream");
+  const base = apiUrl("/api/notifications/stream");
+  eventSource = new EventSource(base, {
+    withCredentials: true,
+  } as EventSourceInit);
   eventSource.onmessage = handleMessage;
   eventSource.onerror = () => {
     // EventSource reconnects automatically.

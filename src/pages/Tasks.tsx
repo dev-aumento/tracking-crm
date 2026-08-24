@@ -69,12 +69,17 @@ type TaskRow = {
 };
 
 export default function Tasks() {
+  return <TasksWebPage />;
+}
+
+function TasksWebPage() {
   const navigate = useNavigate();
   const { taskId: legacyTaskIdParam, taskKey } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
   const view = parseView(searchParams.get("view"));
   const userId = user?.id ?? 0;
+  const isInvitedClient = String(user?.role ?? "").toLowerCase() === "client";
 
   const [formData, setFormData] = useState<CreateTaskFormData>(() => createEmptyTaskForm());
   const [selectedTask, setSelectedTask] = useState<number | null>(null);
@@ -171,14 +176,14 @@ export default function Tasks() {
     setFormData(
       createEmptyTaskForm({
         ...prefill?.form,
-        assigneeId: prefill?.form.assigneeId ?? user.id,
+        assigneeId: prefill?.form.assigneeId ?? (isInvitedClient ? undefined : user.id),
         ownerId: prefill?.form.ownerId ?? user.id,
         stage: prefill?.form.stage ?? "new",
       }),
     );
     setShowCreateModal(true);
     clearCreateParams();
-  }, [searchParams, user?.id, setSearchParams]);
+  }, [searchParams, user, isInvitedClient, setSearchParams]);
 
   const setView = (next: TaskView) => {
     setSearchParams((prev) => {
@@ -217,7 +222,7 @@ export default function Tasks() {
       setCloneSourceTitle(null);
       setFormData(
         createEmptyTaskForm({
-          assigneeId: user?.id,
+          assigneeId: isInvitedClient ? undefined : user?.id,
           ownerId: user?.id,
           stage: stage ?? "new",
         }),
@@ -227,8 +232,11 @@ export default function Tasks() {
   };
 
   const listInput = useMemo(
-    () => ({ assigneeId: userId, limit: 200 }),
-    [userId],
+    () =>
+      isInvitedClient
+        ? { limit: 200 }
+        : { assigneeId: userId, limit: 200 },
+    [isInvitedClient, userId],
   );
 
   const { data: taskData, isLoading } = trpc.task.list.useQuery(listInput, {
@@ -354,10 +362,12 @@ export default function Tasks() {
         <div>
           <h1 className="text-2xl font-bold text-[#1F2937]">My Tasks</h1>
           <p className="text-sm text-gray-500 mt-0.5">
-            Tasks assigned to you
+            {isInvitedClient
+              ? "Tasks you created or that are assigned to you"
+              : "Tasks assigned to you"}
           </p>
         </div>
-        {/* {canCreate ? (
+        {canCreate ? (
           <button
             type="button"
             onClick={() => openCreateModal()}
@@ -366,7 +376,7 @@ export default function Tasks() {
             <Plus size={16} />
             Add Task
           </button>
-        ) : null} */}
+        ) : null}
       </div>
 
       {/* <TaskViewToolbar view={view} onViewChange={setView} /> */}
@@ -438,9 +448,10 @@ export default function Tasks() {
         tasks={myTasks.map((t) => ({ id: t.id, title: t.title }))}
         currentUser={
           user
-            ? { id: user.id, name: user.name, avatar: user.avatar }
+            ? { id: user.id, name: user.name, avatar: user.avatar, role: user.role }
             : null
         }
+        lockOwner={isInvitedClient}
       />
 
       <AnimatePresence>

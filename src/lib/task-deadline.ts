@@ -104,9 +104,17 @@ export function groupTasksByDeadline<T extends TaskLike>(tasks: T[]) {
   return groups;
 }
 
-/** Past due — show red border on task cards. */
+/**
+ * Due date/time has been reached or passed — show red styling.
+ * Uses the actual due datetime (not calendar-day bucketing), so a task
+ * due earlier today is red even while still in the "Due today" column.
+ * Never implies unassigning or stopping timers.
+ */
 export function isTaskOverdue(task: TaskLike) {
-  return getDeadlineColumn(task) === "overdue";
+  if (task.status === "done" || !task.dueDate) return false;
+  const due = new Date(task.dueDate);
+  if (Number.isNaN(due.getTime())) return false;
+  return due.getTime() <= Date.now();
 }
 
 /** Due today or within the next day — approaching deadline. */
@@ -131,14 +139,36 @@ export function isTaskDueAlert(task: TaskLike) {
   return isTaskOverdue(task);
 }
 
-export function formatDueLabel(dueDate: string | Date) {
-  return formatWorkZoneDateTime(dueDate, {
+/**
+ * Due-date display for task lists/cards.
+ * Today → "Today", tomorrow → "Tomorrow"; otherwise the formatted date
+ * (past dates and day-after-tomorrow+ keep the concrete date).
+ */
+export function formatDueLabel(
+  dueDate: string | Date,
+  options: Intl.DateTimeFormatOptions = {
     month: "long",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
-  });
+  },
+) {
+  const d = dueDate instanceof Date ? dueDate : new Date(dueDate);
+  if (Number.isNaN(d.getTime())) return "—";
+
+  const dueKey = workZoneDateKey(d);
+  const now = new Date();
+  const todayKey = workZoneDateKey(now);
+  if (dueKey === todayKey) return "Today";
+
+  const { year, month, day } = workZoneDateParts(now);
+  const tomorrowKey = workZoneDateKey(
+    workZoneWallTimeToUtc(year, month, day + 1, 12),
+  );
+  if (dueKey === tomorrowKey) return "Tomorrow";
+
+  return formatWorkZoneDateTime(d, options);
 }
 
 /** Default new-task deadline: same calendar day in IST at 7:00 PM. */
@@ -148,9 +178,21 @@ export function defaultTaskDeadlineIso(from: Date | string = new Date()): string
 }
 
 export function formatOverdueLabel(dueDate: string | Date) {
+  const dueMs = new Date(dueDate).getTime();
+  if (Number.isNaN(dueMs)) return "Overdue";
+  const diffMs = Date.now() - dueMs;
+  if (diffMs < 60_000) return "Due now";
+  const diffMinutes = Math.floor(diffMs / 60_000);
+  if (diffMinutes < 60) {
+    return `Overdue ${diffMinutes} minute${diffMinutes === 1 ? "" : "s"}`;
+  }
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) {
+    return `Overdue ${diffHours} hour${diffHours === 1 ? "" : "s"}`;
+  }
   const due = startOfDay(new Date(dueDate));
   const today = startOfDay(new Date());
-  const diffDays = Math.floor((today.getTime() - due.getTime()) / 86400000);
+  const diffDays = Math.max(1, Math.floor((today.getTime() - due.getTime()) / 86400000));
   if (diffDays < 7) {
     return `Overdue ${diffDays} day${diffDays === 1 ? "" : "s"}`;
   }
@@ -175,31 +217,36 @@ export function trackedSecondsFromHours(actualHours?: string | null) {
   return Math.round(h * 3600);
 }
 
-/** Map a deadline column drop target to task field updates. */
+/**
+ * Map a deadline column drop target to task field updates.
+ * Only the Completed column changes status (marks done). Other columns
+ * change dueDate only — never clear assignee or stop timers.
+ */
 export function deadlineColumnToTaskUpdate(columnKey: DeadlineColumnKey): {
   dueDate: string | null;
   status?: "todo" | "in_progress" | "review" | "done";
+  stage?: string;
 } {
   const now = new Date();
 
   if (columnKey === "completed") {
-    return { dueDate: null, status: "done" };
+    return { dueDate: null, status: "done", stage: "finished" };
   }
 
   if (columnKey === "no_deadline") {
-    return { dueDate: null, status: "todo" };
+    return { dueDate: null };
   }
 
   if (columnKey === "overdue") {
-    return { dueDate: istDateKeyOffset(now, -2), status: "todo" };
+    return { dueDate: istDateKeyOffset(now, -2) };
   }
 
   if (columnKey === "due_today") {
-    return { dueDate: istDateKeyOffset(now, 0), status: "todo" };
+    return { dueDate: istDateKeyOffset(now, 0) };
   }
 
   if (columnKey === "due_this_week") {
-    return { dueDate: istDateKeyOffset(now, 2), status: "todo" };
+    return { dueDate: istDateKeyOffset(now, 2) };
   }
 
   if (columnKey === "due_next_week") {
@@ -209,9 +256,8 @@ export function deadlineColumnToTaskUpdate(columnKey: DeadlineColumnKey): {
       dueDate: workZoneDateKey(
         workZoneWallTimeToUtc(parts.year, parts.month, parts.day + 3, 12),
       ),
-      status: "todo",
     };
   }
 
-  return { dueDate: istDateKeyOffset(now, 21), status: "todo" };
+  return { dueDate: istDateKeyOffset(now, 21) };
 }

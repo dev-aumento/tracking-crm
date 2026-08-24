@@ -1,6 +1,7 @@
 export const Collections = {
   counters: "counters",
   organizations: "organizations",
+  subscriptionPlans: "subscription_plans",
   users: "users",
   employees: "employees",
   employeeInvites: "employee_invites",
@@ -24,9 +25,20 @@ export const Collections = {
   leaveRequests: "leave_requests",
   leaveUsageOverrides: "leave_usage_overrides",
   publicHolidays: "public_holidays",
+  workLocations: "work_locations",
+  orgAttendanceQr: "org_attendance_qr",
+  orgAttendanceQrActivity: "org_attendance_qr_activity",
   appSettings: "app_settings",
   customers: "customers",
   invoices: "invoices",
+  bankAccounts: "bank_accounts",
+  ledgerAccounts: "ledger_accounts",
+  estimates: "estimates",
+  payments: "payments",
+  expenses: "expenses",
+  contracts: "contracts",
+  vendorBills: "vendor_bills",
+  dashboardReminders: "dashboard_reminders",
 } as const;
 
 export type CollectionName = (typeof Collections)[keyof typeof Collections];

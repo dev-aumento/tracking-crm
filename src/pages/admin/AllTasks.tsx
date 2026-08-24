@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import { trpc } from "@/providers/trpc";
 import { useAuth } from "@/hooks/useAuth";
+import { isClientPortalUser } from "@/lib/client-portal";
 import { TaskDetailPanel } from "@/components/tasks/TaskDetailPanel";
 import { TaskKanbanBoard } from "@/components/tasks/TaskKanbanBoard";
 import { TaskListView } from "@/components/tasks/TaskListView";
@@ -25,7 +26,7 @@ import { TaskBulkActionBar } from "@/components/tasks/TaskBulkActionBar";
 import { invalidateProjectStats } from "@/lib/project-stats";
 import { invalidateTaskQueries } from "@/lib/invalidate-on-notifications";
 import {
-  buildAllTasksViewPath,
+  buildAdminTaskListPath,
   parseActivityIdParam,
   parseTaskKeyParam,
 } from "@/lib/task-notification-link";
@@ -75,13 +76,27 @@ type AdminTaskRow = {
   creator?: { name: string | null; avatar?: string | null } | null;
 };
 
-export default function AdminAllTasks() {
+export default function AdminAllTasks({
+  variant = "all",
+}: {
+  variant?: "all" | "client";
+}) {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { taskKey } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const view = parseView(searchParams.get("view"));
-  const listInput = useMemo(() => ({ limit: 200 }), []);
+  const clientAssignedOnly = variant === "client";
+  const tasksBasePath: "/admin/tasks" | "/admin/client-tasks" = clientAssignedOnly
+    ? "/admin/client-tasks"
+    : "/admin/tasks";
+  const listInput = useMemo(
+    () => ({
+      limit: 200,
+      ...(clientAssignedOnly ? { clientAssignedToStaff: true as const } : {}),
+    }),
+    [clientAssignedOnly],
+  );
   const [search, setSearch] = useState("");
   const [taskFilters, setTaskFilters] = useState<TaskSearchFilters>(DEFAULT_TASK_SEARCH_FILTERS);
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
@@ -112,13 +127,13 @@ export default function AdminAllTasks() {
       const id = Number(taskParam);
       if (Number.isFinite(id) && id > 0) {
         const activity = parseActivityIdParam(searchParams.get("activity"));
-        navigate(buildAllTasksViewPath(id, activity), { replace: true });
+        navigate(buildAdminTaskListPath(tasksBasePath, id, activity), { replace: true });
         return;
       }
     }
 
     setSelectedTask(null);
-  }, [taskKey, searchParams, navigate]);
+  }, [taskKey, searchParams, navigate, tasksBasePath]);
 
   useEffect(() => {
     const legacyView = searchParams.get("view");
@@ -302,7 +317,7 @@ export default function AdminAllTasks() {
   };
 
   const openTask = (id: number) => {
-    navigate(buildAllTasksViewPath(id));
+    navigate(buildAdminTaskListPath(tasksBasePath, id));
   };
 
   const closeTask = () => {
@@ -310,7 +325,7 @@ export default function AdminAllTasks() {
     next.delete("task");
     next.delete("activity");
     const qs = next.toString();
-    navigate(`/admin/tasks${qs ? `?${qs}` : ""}`);
+    navigate(`${tasksBasePath}${qs ? `?${qs}` : ""}`);
   };
 
   const clearActivityHighlight = () => {
@@ -373,19 +388,31 @@ export default function AdminAllTasks() {
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-[#1F2937]">All Tasks</h1>
+          <h1 className="text-2xl font-bold text-[#1F2937] dark:text-white">
+            {clientAssignedOnly
+              ? "Client's Tasks"
+              : isClientPortalUser(user)
+                ? "My tasks"
+                : "All Tasks"}
+          </h1>
           <p className="text-sm text-gray-500 mt-0.5">
-            {filteredTasks.length} of {data?.total ?? allTasks.length} tasks across all projects
+            {clientAssignedOnly
+              ? `${filteredTasks.length} of ${data?.total ?? allTasks.length} tasks clients assigned to your team`
+              : `${filteredTasks.length} of ${data?.total ?? allTasks.length} tasks across all projects`}
             {view === "list" && filteredTasks.length > LIST_PAGE_SIZE
               ? ` · page ${taskPagination.page} of ${taskPagination.totalPages}`
               : ""}
           </p>
         </div>
-        {canCreate ? (
+        {canCreate && !clientAssignedOnly ? (
           <button
             type="button"
             onClick={() => openCreateModal()}
-            className="h-9 px-4 bg-[#2563EB] text-white rounded-lg text-sm font-semibold hover:bg-[#1D4ED8] flex items-center gap-2 shrink-0"
+            className={
+              isClientPortalUser(user)
+                ? "h-9 px-3.5 bg-[#F06A6A] text-white rounded-lg text-sm font-semibold hover:bg-[#E45C5C] flex items-center gap-2 shrink-0"
+                : "h-9 px-4 bg-[#2563EB] text-white rounded-lg text-sm font-semibold hover:bg-[#1D4ED8] flex items-center gap-2 shrink-0"
+            }
           >
             <Plus size={16} />
             Add Task
@@ -588,7 +615,7 @@ export default function AdminAllTasks() {
         tasks={allTasks.map((t) => ({ id: t.id, title: t.title }))}
         currentUser={
           user
-            ? { id: user.id, name: user.name, avatar: user.avatar }
+            ? { id: user.id, name: user.name, avatar: user.avatar, role: user.role }
             : null
         }
       />

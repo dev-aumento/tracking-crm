@@ -11,8 +11,12 @@ import {
 } from "./queries/connection";
 import { Collections } from "@db/mongo/collections";
 import type {
+  BankAccountDoc,
   EmployeeDoc,
+  ExpenseDoc,
+  InvoiceDoc,
   LeaveRequestDoc,
+  ProjectDoc,
   TaskDoc,
   TimeEntryDoc,
   UserDoc,
@@ -20,8 +24,13 @@ import type {
 } from "@db/mongo/types";
 import { ensureSchema } from "./lib/migrate";
 import { orgFilter } from "./lib/tenant";
-import { computeSessionWorkSeconds, startOfCalendarWeek } from "@/lib/work-hours-policy";
-import { leaveTypeShort, isHrRoleOnly, eachLeaveDateKey, isWeekdayDateKey, isWorkFromHomeLeave, isAdminOrManagement } from "@/lib/leave-policy";
+import {
+  computeSessionWorkSeconds,
+  REQUIRED_DAILY_HOURS,
+  startOfCalendarWeek,
+} from "@/lib/work-hours-policy";
+import { leaveTypeShort, isHrRoleOnly, eachLeaveDateKey, isWeekdayDateKey, isWorkFromHomeLeave, isAdminOrManagement, isFinanceRoleOnly } from "@/lib/leave-policy";
+import { isCountedInWorkforce } from "./queries/employees";
 import {
   HR_OVERVIEW_DEPARTMENT_LABELS,
   normalizeHrOverviewDepartment,
@@ -33,6 +42,79 @@ import {
   workZoneDateParts,
   workZoneWallTimeToUtc,
 } from "@/lib/timezone";
+import { invoiceTotal } from "@/lib/invoice-store";
+
+function roundHours(minutes: number) {
+  return Math.round((minutes / 60) * 10) / 10;
+}
+
+function hoursDeltaPct(current: number, previous: number) {
+  if (previous > 0) return Math.round(((current - previous) / previous) * 100);
+  return current > 0 ? 100 : 0;
+}
+
+function dateKeyToUtcRange(key: string, endOfDay: boolean) {
+  const [year, month, day] = key.split("-").map(Number);
+  return workZoneWallTimeToUtc(
+    year || 1970,
+    month || 1,
+    day || 1,
+    endOfDay ? 23 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 999 : 0,
+  );
+}
+
+function shiftDateKey(key: string, deltaDays: number) {
+  const [year, month, day] = key.split("-").map(Number);
+  const utc = workZoneWallTimeToUtc(year || 1970, month || 1, day || 1, 12, 0, 0, 0);
+  utc.setTime(utc.getTime() + deltaDays * 86400000);
+  return workZoneDateKey(utc);
+}
+
+function countWeekdayKeys(startKey: string, endKey: string) {
+  let count = 0;
+  let key = startKey;
+  while (key <= endKey) {
+    if (isWeekdayDateKey(key)) count += 1;
+    key = shiftDateKey(key, 1);
+  }
+  return Math.max(count, 0);
+}
+
+function resolveHrDashboardPeriod(
+  input: { startDate?: string; endDate?: string } | undefined,
+  now: Date,
+) {
+  const nowParts = workZoneDateParts(now);
+  const todayKey = workZoneDateKey(now);
+  const periodEndKey =
+    input?.endDate && input.endDate <= todayKey ? input.endDate : todayKey;
+  const monthStart = `${nowParts.year}-${String(nowParts.month).padStart(2, "0")}-01`;
+  const periodStartKey =
+    input?.startDate && input.startDate <= periodEndKey ? input.startDate : monthStart;
+  const periodDays = Math.max(
+    1,
+    Math.floor(
+      (dateKeyToUtcRange(periodEndKey, true).getTime() -
+        dateKeyToUtcRange(periodStartKey, false).getTime()) /
+        86400000,
+    ) + 1,
+  );
+  const prevPeriodEndKey = shiftDateKey(periodStartKey, -1);
+  const prevPeriodStartKey = shiftDateKey(prevPeriodEndKey, -(periodDays - 1));
+  return {
+    periodStartKey,
+    periodEndKey,
+    periodStart: dateKeyToUtcRange(periodStartKey, false),
+    periodEnd: dateKeyToUtcRange(periodEndKey, true),
+    prevPeriodStart: dateKeyToUtcRange(prevPeriodStartKey, false),
+    prevPeriodEnd: dateKeyToUtcRange(prevPeriodEndKey, true),
+    weekdaysElapsed: countWeekdayKeys(periodStartKey, periodEndKey),
+    prevWeekdays: countWeekdayKeys(prevPeriodStartKey, prevPeriodEndKey),
+  };
+}
 
 async function sumDuration(
   filter: Record<string, unknown>,
@@ -52,6 +134,15 @@ function assertHrOrAdmin(user: { role?: string | null; department?: string | nul
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "This dashboard is only available to HR, admin, and management users",
+    });
+  }
+}
+
+function assertFinanceOrAdmin(user: { role?: string | null }) {
+  if (!(isFinanceRoleOnly(user) || String(user.role ?? "").toLowerCase() === "admin")) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "This dashboard is only available to finance managers and admins",
     });
   }
 }
@@ -79,6 +170,139 @@ function daysUntilBirthday(
   const nowUtc = workZoneWallTimeToUtc(nowParts.year, nowParts.month, nowParts.day, 0, 0, 0, 0);
   const nextUtc = workZoneWallTimeToUtc(next.year, next.month, next.day, 0, 0, 0, 0);
   return Math.round((nextUtc.getTime() - nowUtc.getTime()) / 86400000);
+}
+
+/** True when the next birthday falls in the current calendar month or the following month. */
+function isNextBirthdayInCurrentOrNextMonth(
+  next: { year: number; month: number },
+  nowParts: { year: number; month: number },
+) {
+  const nextMonth = nowParts.month === 12 ? 1 : nowParts.month + 1;
+  const nextMonthYear = nowParts.month === 12 ? nowParts.year + 1 : nowParts.year;
+  return (
+    (next.year === nowParts.year && next.month === nowParts.month) ||
+    (next.year === nextMonthYear && next.month === nextMonth)
+  );
+}
+
+type BirthdayPerson = {
+  id: number;
+  name?: string | null;
+  avatar?: string | null;
+  position?: string | null;
+  department?: string | null;
+  dateOfBirth?: Date | null;
+};
+
+type BirthdayEmployee = {
+  userId: number;
+  name?: string | null;
+  avatar?: string | null;
+  position?: string | null;
+  department?: string | null;
+  dateOfBirth?: Date | null;
+};
+
+type UpcomingBirthdayItem = {
+  id: number;
+  name: string;
+  avatar: string | null;
+  position: string;
+  daysLeft: number;
+  dateLabel: string;
+  isToday: boolean;
+};
+
+function mapUpcomingBirthdays(
+  activeUsers: BirthdayPerson[],
+  employeeByUserId: {
+    get(userId: number): BirthdayEmployee | undefined;
+    values(): Iterable<BirthdayEmployee>;
+  },
+  nowParts: { year: number; month: number; day: number },
+): UpcomingBirthdayItem[] {
+  const dobByUserId = new Map<number, Date>();
+  for (const u of activeUsers) {
+    if (u.dateOfBirth) dobByUserId.set(u.id, u.dateOfBirth);
+  }
+  for (const emp of employeeByUserId.values()) {
+    if (emp.dateOfBirth && !dobByUserId.has(emp.userId)) {
+      dobByUserId.set(emp.userId, emp.dateOfBirth);
+    }
+  }
+
+  return activeUsers
+    .filter((u) => dobByUserId.has(u.id))
+    .flatMap((u) => {
+      const dob = dobByUserId.get(u.id)!;
+      const daysLeft = daysUntilBirthday(dob, nowParts);
+      const next = birthdayPartsThisYear(dob, nowParts);
+      if (!isNextBirthdayInCurrentOrNextMonth(next, nowParts)) return [];
+      const emp = employeeByUserId.get(u.id);
+      return [
+        {
+          id: u.id,
+          name: u.name || emp?.name || "Employee",
+          avatar: u.avatar ?? emp?.avatar ?? null,
+          position: (
+            emp?.position ||
+            u.position ||
+            emp?.department ||
+            u.department ||
+            "Team member"
+          ).trim(),
+          daysLeft,
+          dateLabel: formatInWorkZone(
+            workZoneWallTimeToUtc(next.year, next.month, next.day, 12, 0, 0, 0),
+            { day: "numeric", month: "short" },
+          ),
+          isToday: daysLeft === 0,
+        },
+      ];
+    })
+    .sort((a, b) => a.daysLeft - b.daysLeft || a.name.localeCompare(b.name));
+}
+
+async function buildUpcomingBirthdays(
+  organizationId: number,
+  now: Date = new Date(),
+) {
+  const tenant = { organizationId };
+  const userCol = await getCollection<UserDoc>(Collections.users);
+  const employeeCol = await getCollection<EmployeeDoc>(Collections.employees);
+  const nowParts = workZoneDateParts(now);
+
+  const [activeUsersRaw, employeeRows] = await Promise.all([
+    userCol
+      .find({ status: "active", ...tenant })
+      .project({
+        id: 1,
+        name: 1,
+        avatar: 1,
+        department: 1,
+        position: 1,
+        role: 1,
+        dateOfBirth: 1,
+      })
+      .toArray(),
+    employeeCol
+      .find({ ...tenant })
+      .project({
+        userId: 1,
+        dateOfBirth: 1,
+        department: 1,
+        position: 1,
+        name: 1,
+        avatar: 1,
+      })
+      .toArray(),
+  ]);
+
+  const activeUsers = activeUsersRaw.filter((u) => isCountedInWorkforce(u));
+  const employeeByUserId = new Map(
+    employeeRows.map((e) => [e.userId as number, e as BirthdayEmployee]),
+  );
+  return mapUpcomingBirthdays(activeUsers as BirthdayPerson[], employeeByUserId, nowParts);
 }
 
 function leaveTypeSummaryLabel(leaveType: string) {
@@ -198,7 +422,7 @@ export const dashboardRouter = createRouter({
       const userId = ctx.user.id;
       const tenant = orgFilter(ctx.user);
       const isAdminOrManager =
-        ctx.user.role === "admin" || ctx.user.role === "manager";
+        ctx.user.role === "admin" || ctx.user.role === "manager" || ctx.user.role === "client";
       const startOfToday = startOfWorkZoneDay(new Date());
       const taskCol = await getCollection<TaskDoc>(Collections.tasks);
 
@@ -354,14 +578,19 @@ export const dashboardRouter = createRouter({
       const sessionCol = await getCollection<WorkSessionDoc>(Collections.workSessions);
       const tenant = orgFilter(ctx.user);
 
-      const [totalEmployees, activeProjects, totalTasks, weeklyHoursTotal, activeClockInUserIds] =
+      const [activeStaffUsers, activeProjects, totalTasks, weeklyHoursTotal, activeClockInUserIds] =
         await Promise.all([
-          countDocs(Collections.users, { status: "active", ...tenant }),
+          (await getCollection<UserDoc>(Collections.users))
+            .find({ status: "active", ...tenant })
+            .project({ id: 1, role: 1 })
+            .toArray(),
           countDocs(Collections.projects, { status: "active", ...tenant }),
           countDocs(Collections.tasks, tenant),
           sumDuration({ clockIn: { $gte: weekAgo }, ...tenant }),
           sessionCol.distinct("userId", { active: true }),
         ]);
+
+      const totalEmployees = activeStaffUsers.filter((u) => isCountedInWorkforce(u)).length;
 
       // Only count active sessions for users in this organization.
       const userCol = await getCollection<UserDoc>(Collections.users);
@@ -483,7 +712,16 @@ export const dashboardRouter = createRouter({
   }),
 
   /** Workforce overview for the HR dashboard and admin dashboard detail cards. */
-  getHrDashboard: authedQuery.query(async ({ ctx }) => {
+  getHrDashboard: authedQuery
+    .input(
+      z
+        .object({
+          startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+        .optional(),
+    )
+    .query(async ({ ctx, input }) => {
     assertHrOrAdmin(ctx.user);
 
     if (isAuthDisabled() || !hasMongoConfigured()) {
@@ -500,32 +738,11 @@ export const dashboardRouter = createRouter({
     const now = new Date();
     const todayKey = workZoneDateKey(now);
     const nowParts = workZoneDateParts(now);
+    const period = resolveHrDashboardPeriod(input, now);
     const startToday = startOfWorkZoneDay(now);
     const startTomorrow = new Date(startToday.getTime() + 86400000);
-    const thisMonthStartDate = workZoneWallTimeToUtc(
-      nowParts.year,
-      nowParts.month,
-      1,
-      0,
-      0,
-      0,
-      0,
-    );
-    const lastMonthStartParts = {
-      year: nowParts.month === 1 ? nowParts.year - 1 : nowParts.year,
-      month: nowParts.month === 1 ? 12 : nowParts.month - 1,
-    };
-    const lastMonthStartDate = workZoneWallTimeToUtc(
-      lastMonthStartParts.year,
-      lastMonthStartParts.month,
-      1,
-      0,
-      0,
-      0,
-      0,
-    );
 
-    const [activeUsers, employeeRows] = await Promise.all([
+    const [activeUsersRaw, employeeRows] = await Promise.all([
       userCol
         .find({ status: "active", ...tenant })
         .project({
@@ -553,6 +770,8 @@ export const dashboardRouter = createRouter({
         .toArray(),
     ]);
 
+    // Account managers / clients are staff directory users but not workforce headcount.
+    const activeUsers = activeUsersRaw.filter((u) => isCountedInWorkforce(u));
     const employeeByUserId = new Map(employeeRows.map((e) => [e.userId, e]));
     const orgUserIds = new Set(activeUsers.map((u) => u.id));
     const totalEmployees = activeUsers.length;
@@ -609,12 +828,13 @@ export const dashboardRouter = createRouter({
       return emp?.joinedAt ?? user.createdAt;
     };
 
-    const newJoinersThisMonth = activeUsers.filter(
-      (u) => joinDateFor(u) >= thisMonthStartDate,
-    ).length;
+    const newJoinersThisMonth = activeUsers.filter((u) => {
+      const joined = joinDateFor(u);
+      return joined >= period.periodStart && joined <= period.periodEnd;
+    }).length;
     const newJoinersLastMonth = activeUsers.filter((u) => {
       const joined = joinDateFor(u);
-      return joined >= lastMonthStartDate && joined < thisMonthStartDate;
+      return joined >= period.prevPeriodStart && joined <= period.prevPeriodEnd;
     }).length;
 
     const deptCounts = new Map<string, number>();
@@ -669,39 +889,11 @@ export const dashboardRouter = createRouter({
         };
       });
 
-    const dobByUserId = new Map<number, Date>();
-    for (const u of activeUsers) {
-      if (u.dateOfBirth) dobByUserId.set(u.id, u.dateOfBirth);
-    }
-    for (const emp of employeeRows) {
-      if (emp.dateOfBirth && !dobByUserId.has(emp.userId)) {
-        dobByUserId.set(emp.userId, emp.dateOfBirth);
-      }
-    }
-
-    const upcomingBirthdays = activeUsers
-      .filter((u) => dobByUserId.has(u.id))
-      .map((u) => {
-        const dob = dobByUserId.get(u.id)!;
-        const daysLeft = daysUntilBirthday(dob, nowParts);
-        const next = birthdayPartsThisYear(dob, nowParts);
-        const emp = employeeByUserId.get(u.id);
-        return {
-          id: u.id,
-          name: u.name || emp?.name || "Employee",
-          avatar: u.avatar ?? emp?.avatar ?? null,
-          position:
-            (emp?.position || u.position || emp?.department || u.department || "Team member").trim(),
-          daysLeft,
-          dateLabel: formatInWorkZone(
-            workZoneWallTimeToUtc(next.year, next.month, next.day, 12, 0, 0, 0),
-            { day: "numeric", month: "short" },
-          ),
-        };
-      })
-      .filter((b) => b.daysLeft <= 90)
-      .sort((a, b) => a.daysLeft - b.daysLeft)
-      .slice(0, 6);
+    const upcomingBirthdays = mapUpcomingBirthdays(
+      activeUsers as BirthdayPerson[],
+      employeeByUserId,
+      nowParts,
+    );
 
     const presentPct =
       totalEmployees > 0 ? Math.round((presentToday / totalEmployees) * 100) : 0;
@@ -722,6 +914,169 @@ export const dashboardRouter = createRouter({
           : 0;
     const joinersDelta = newJoinersThisMonth - newJoinersLastMonth;
 
+    // —— Project overview + month hours / finance metrics ——
+    const projectCol = await getCollection<ProjectDoc>(Collections.projects);
+    const taskCol = await getCollection<TaskDoc>(Collections.tasks);
+    const [projects, overdueTaskProjectIds] = await Promise.all([
+      projectCol
+        .find({ ...tenant })
+        .project({ id: 1, status: 1 })
+        .toArray(),
+      taskCol.distinct("projectId", {
+        ...tenant,
+        status: { $ne: "done" },
+        dueDate: { $lt: now },
+        projectId: { $ne: null },
+      }),
+    ]);
+    const overdueProjectIdSet = new Set(
+      (overdueTaskProjectIds as Array<number | null>)
+        .filter((id): id is number => typeof id === "number" && id > 0),
+    );
+
+    let completedProjects = 0;
+    let inProgressProjects = 0;
+    let onHoldProjects = 0;
+    let overdueProjects = 0;
+    for (const project of projects) {
+      const status = String(project.status ?? "").toLowerCase();
+      if (status === "completed") {
+        completedProjects += 1;
+        continue;
+      }
+      if (status === "archived") {
+        onHoldProjects += 1;
+        continue;
+      }
+      // active (and any other open status)
+      if (overdueProjectIdSet.has(project.id)) {
+        overdueProjects += 1;
+      } else {
+        inProgressProjects += 1;
+      }
+    }
+    const projectTotal =
+      completedProjects + inProgressProjects + onHoldProjects + overdueProjects;
+    const projectOverview = {
+      total: projectTotal,
+      byStatus: [
+        { name: "Completed", count: completedProjects, color: "#2563EB" },
+        { name: "In Progress", count: inProgressProjects, color: "#3B82F6" },
+        { name: "On Hold", count: onHoldProjects, color: "#F59E0B" },
+        { name: "Overdue", count: overdueProjects, color: "#EF4444" },
+      ]
+        .map((row) => ({
+          ...row,
+          percent:
+            projectTotal > 0 ? Math.round((row.count / projectTotal) * 100) : 0,
+        }))
+        .filter((row) => row.count > 0),
+    };
+
+    const [
+      totalMinutesThisMonth,
+      trackedMinutesThisMonth,
+      totalMinutesLastMonth,
+      trackedMinutesLastMonth,
+    ] = await Promise.all([
+      sumDuration({
+        ...tenant,
+        taskId: null,
+        clockIn: { $gte: period.periodStart, $lte: period.periodEnd },
+      }),
+      sumDuration({
+        ...tenant,
+        taskId: { $ne: null },
+        clockIn: { $gte: period.periodStart, $lte: period.periodEnd },
+      }),
+      sumDuration({
+        ...tenant,
+        taskId: null,
+        clockIn: { $gte: period.prevPeriodStart, $lte: period.prevPeriodEnd },
+      }),
+      sumDuration({
+        ...tenant,
+        taskId: { $ne: null },
+        clockIn: { $gte: period.prevPeriodStart, $lte: period.prevPeriodEnd },
+      }),
+    ]);
+
+    const totalHoursLogged = roundHours(totalMinutesThisMonth);
+    const trackedHours = roundHours(trackedMinutesThisMonth);
+    const billableHours = trackedHours;
+    const totalHoursLastMonth = roundHours(totalMinutesLastMonth);
+    const trackedHoursLastMonth = roundHours(trackedMinutesLastMonth);
+
+    const trackableHeadcount = activeUsers.filter(
+      (u) => !isAdminOrManagement(u) && !isHrRoleOnly(u),
+    ).length;
+    const capacityHours =
+      Math.max(trackableHeadcount, 1) * period.weekdaysElapsed * REQUIRED_DAILY_HOURS;
+    const teamUtilizationPct =
+      capacityHours > 0
+        ? Math.min(100, Math.round((totalHoursLogged / capacityHours) * 100))
+        : 0;
+
+    const lastCapacity =
+      Math.max(trackableHeadcount, 1) * period.prevWeekdays * REQUIRED_DAILY_HOURS;
+    const lastUtilization =
+      lastCapacity > 0
+        ? Math.min(100, Math.round((totalHoursLastMonth / lastCapacity) * 100))
+        : 0;
+
+    let pendingInvoicesAmount = 0;
+    let pendingInvoicesCount = 0;
+    let revenueThisMonth = 0;
+    let revenueLastMonth = 0;
+    let metricsCurrency = "INR";
+    try {
+      const invoiceCol = await getCollection<InvoiceDoc>(Collections.invoices);
+      const invoices = await invoiceCol.find({ ...tenant }).toArray();
+      for (const inv of invoices) {
+        const total = invoiceTotal(inv);
+        const currency = inv.currency || "INR";
+        if (inv.status === "draft" || inv.status === "sent") {
+          pendingInvoicesAmount += total;
+          pendingInvoicesCount += 1;
+          metricsCurrency = currency;
+        }
+        if (inv.status === "paid") {
+          const paidAt = inv.updatedAt instanceof Date ? inv.updatedAt : new Date(inv.updatedAt);
+          if (paidAt >= period.periodStart && paidAt <= period.periodEnd) {
+            revenueThisMonth += total;
+            metricsCurrency = currency;
+          } else if (paidAt >= period.prevPeriodStart && paidAt <= period.prevPeriodEnd) {
+            revenueLastMonth += total;
+          }
+        }
+      }
+    } catch {
+      // Invoices collection may be unavailable in some envs — metrics stay zero.
+    }
+
+    const monthMetrics = {
+      totalHoursLogged,
+      totalHoursDeltaPct: hoursDeltaPct(totalHoursLogged, totalHoursLastMonth),
+      trackedHours,
+      trackedHoursPct:
+        totalHoursLogged > 0
+          ? Math.round((trackedHours / totalHoursLogged) * 100)
+          : 0,
+      trackedHoursDeltaPct: hoursDeltaPct(trackedHours, trackedHoursLastMonth),
+      billableHours,
+      billablePct:
+        totalHoursLogged > 0
+          ? Math.round((billableHours / totalHoursLogged) * 100)
+          : 0,
+      teamUtilizationPct,
+      utilizationDeltaPct: teamUtilizationPct - lastUtilization,
+      pendingInvoicesAmount: Math.round(pendingInvoicesAmount),
+      pendingInvoicesCount,
+      revenueThisMonth: Math.round(revenueThisMonth),
+      revenueDeltaPct: hoursDeltaPct(revenueThisMonth, revenueLastMonth),
+      currency: metricsCurrency,
+    };
+
     return {
       totalEmployees,
       presentToday,
@@ -735,6 +1090,8 @@ export const dashboardRouter = createRouter({
       departmentsCount,
       overviewStaffTotal: staffInOverview,
       byDepartment,
+      projectOverview,
+      monthMetrics,
       leaveMonthLabel: leaveSummary.leaveMonthLabel,
       upcomingLeaves: leaveSummary.upcomingLeaves,
       upcomingWfh: leaveSummary.upcomingWfh,
@@ -743,12 +1100,472 @@ export const dashboardRouter = createRouter({
     };
   }),
 
-  /** Upcoming leave summary (Today / Tomorrow / Upcoming) for any signed-in user. */
+  /** Upcoming leave summary + birthdays (this month & next) for any signed-in user. */
   getLeaveSummary: authedQuery.query(async ({ ctx }) => {
     if (isAuthDisabled() || !hasMongoConfigured()) {
       return mock.mockLeaveSummary();
     }
     await ensureSchema();
-    return buildLeaveSummary(orgFilter(ctx.user).organizationId, new Date());
+    const organizationId = orgFilter(ctx.user).organizationId;
+    const now = new Date();
+    const [summary, upcomingBirthdays] = await Promise.all([
+      buildLeaveSummary(organizationId, now),
+      buildUpcomingBirthdays(organizationId, now),
+    ]);
+    return { ...summary, upcomingBirthdays };
+  }),
+
+  /** Finance overview: invoices + accounts dashboard widgets. */
+  getFinanceDashboard: authedQuery
+    .input(
+      z
+        .object({
+          startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+        .optional(),
+    )
+    .query(async ({ ctx, input }) => {
+    assertFinanceOrAdmin(ctx.user);
+    assertPermission(ctx.user, "invoices.manage");
+
+    if (isAuthDisabled() || !hasMongoConfigured()) {
+      return mock.mockFinanceDashboard();
+    }
+
+    await ensureSchema();
+    const tenant = orgFilter(ctx.user);
+    const invoiceCol = await getCollection<InvoiceDoc>(Collections.invoices);
+    const expenseCol = await getCollection<ExpenseDoc>(Collections.expenses);
+    const [invoices, expenseDocs] = await Promise.all([
+      invoiceCol.find({ ...tenant }).sort({ createdAt: -1 }).toArray(),
+      expenseCol.find({ ...tenant }).toArray(),
+    ]);
+
+    const now = new Date();
+    const nowParts = workZoneDateParts(now);
+    const todayKey = workZoneDateKey(now);
+    const periodEndKey = input?.endDate && input.endDate <= todayKey ? input.endDate : todayKey;
+    const periodStartKey =
+      input?.startDate && input.startDate <= periodEndKey
+        ? input.startDate
+        : `${nowParts.year}-01-01`;
+    const periodStartParts = (() => {
+      const [y, m, d] = periodStartKey.split("-").map(Number);
+      return { year: y || nowParts.year, month: m || 1, day: d || 1 };
+    })();
+    const periodEndParts = (() => {
+      const [y, m, d] = periodEndKey.split("-").map(Number);
+      return { year: y || nowParts.year, month: m || nowParts.month, day: d || nowParts.day };
+    })();
+    const periodStart = workZoneWallTimeToUtc(
+      periodStartParts.year,
+      periodStartParts.month,
+      periodStartParts.day,
+      0,
+      0,
+      0,
+      0,
+    );
+    const periodEnd = workZoneWallTimeToUtc(
+      periodEndParts.year,
+      periodEndParts.month,
+      periodEndParts.day,
+      23,
+      59,
+      59,
+      999,
+    );
+    const periodDays = Math.max(
+      1,
+      Math.floor((periodEnd.getTime() - periodStart.getTime()) / 86400000) + 1,
+    );
+    const prevPeriodEnd = new Date(periodStart.getTime() - 1);
+    const prevPeriodStart = new Date(prevPeriodEnd.getTime() - (periodDays - 1) * 86400000);
+    const thisMonthStartDate = workZoneWallTimeToUtc(
+      nowParts.year,
+      nowParts.month,
+      1,
+      0,
+      0,
+      0,
+      0,
+    );
+    const lastMonthStartParts = {
+      year: nowParts.month === 1 ? nowParts.year - 1 : nowParts.year,
+      month: nowParts.month === 1 ? 12 : nowParts.month - 1,
+    };
+    const lastMonthStartDate = workZoneWallTimeToUtc(
+      lastMonthStartParts.year,
+      lastMonthStartParts.month,
+      1,
+      0,
+      0,
+      0,
+      0,
+    );
+
+    let currency = "INR";
+    let revenueYtd = 0;
+    let receivedYtd = 0;
+    let outstandingAmount = 0;
+    let revenueLastYearYtd = 0;
+    let receivedLastYearYtd = 0;
+    let outstandingLastMonth = 0;
+
+    const thisYearMonthly = Array.from({ length: 12 }, () => 0);
+    const lastYearMonthly = Array.from({ length: 12 }, () => 0);
+
+    const aging = { d0_30: 0, d31_60: 0, d61_90: 0, d90_plus: 0 };
+    const outstandingRows: Array<{
+      id: number;
+      invoiceNumber: string;
+      customerName: string;
+      dueDate: string;
+      amount: number;
+      daysOverdue: number;
+      currency: string;
+    }> = [];
+    const upcomingInvoices: Array<{
+      id: number;
+      invoiceNumber: string;
+      customerName: string;
+      dueDate: string;
+      amount: number;
+      currency: string;
+    }> = [];
+    const recentTransactions: Array<{
+      id: string;
+      date: string;
+      type: string;
+      description: string;
+      amount: number;
+      status: string;
+      statusTone: "received" | "paid" | "sent" | "draft";
+      href?: string;
+    }> = [];
+
+    const daysBetweenKeys = (fromKey: string, toKey: string) => {
+      const a = Date.parse(`${fromKey}T12:00:00Z`);
+      const b = Date.parse(`${toKey}T12:00:00Z`);
+      if (Number.isNaN(a) || Number.isNaN(b)) return 0;
+      return Math.floor((b - a) / 86400000);
+    };
+
+    const inSelectedPeriod = (dateKey: string) =>
+      dateKey >= periodStartKey && dateKey <= periodEndKey;
+
+    const thisMonthPrefix = `${nowParts.year}-${String(nowParts.month).padStart(2, "0")}-`;
+    const cashInflowByDay = new Map<string, number>();
+    const cashOutflowByDay = new Map<string, number>();
+    const addCashDay = (map: Map<string, number>, dateKey: string, amount: number) => {
+      if (!dateKey.startsWith(thisMonthPrefix) || dateKey > todayKey) return;
+      map.set(dateKey, (map.get(dateKey) ?? 0) + amount);
+    };
+
+    for (const inv of invoices) {
+      const total = invoiceTotal(inv);
+      currency = inv.currency || currency;
+      const invoiceDate = inv.invoiceDate || todayKey;
+      const invParts = (() => {
+        const [y, m] = invoiceDate.split("-").map(Number);
+        return { year: y || nowParts.year, month: m || nowParts.month };
+      })();
+
+      if (inv.status === "paid" || inv.status === "sent") {
+        if (inSelectedPeriod(invoiceDate)) {
+          revenueYtd += total;
+        }
+        // Keep calendar-year monthly overview for the chart (current/previous year).
+        if (invParts.year === nowParts.year) {
+          if (invParts.month >= 1 && invParts.month <= 12) {
+            thisYearMonthly[invParts.month - 1] += total;
+          }
+        } else if (invParts.year === nowParts.year - 1) {
+          if (invParts.month >= 1 && invParts.month <= 12) {
+            lastYearMonthly[invParts.month - 1] += total;
+          }
+        }
+        // Previous equal-length period for trend chips.
+        if (invoiceDate < periodStartKey) {
+          const invTs = Date.parse(`${invoiceDate}T12:00:00Z`);
+          if (
+            !Number.isNaN(invTs) &&
+            invTs >= prevPeriodStart.getTime() &&
+            invTs <= prevPeriodEnd.getTime()
+          ) {
+            revenueLastYearYtd += total;
+          }
+        }
+      }
+
+      if (inv.status === "paid") {
+        const paidAt =
+          inv.updatedAt instanceof Date ? inv.updatedAt : new Date(inv.updatedAt);
+        const paidKey = workZoneDateKey(paidAt);
+        if (inSelectedPeriod(paidKey)) receivedYtd += total;
+        if (paidAt >= prevPeriodStart && paidAt <= prevPeriodEnd) {
+          receivedLastYearYtd += total;
+        }
+        addCashDay(cashInflowByDay, paidKey, total);
+
+        if (inSelectedPeriod(paidKey)) {
+          recentTransactions.push({
+            id: `paid-${inv.id}`,
+            date: formatInWorkZone(paidAt, { day: "2-digit", month: "short", year: "numeric" }),
+            type: "Payment Received",
+            description: `${inv.invoiceNumber} · ${inv.customerName}`,
+            amount: Math.round(total),
+            status: "Received",
+            statusTone: "received",
+            href: `/admin/invoices/${inv.id}`,
+          });
+        }
+      }
+
+      if (inv.status === "sent") {
+        outstandingAmount += total;
+        const due = inv.dueDate || invoiceDate;
+        const daysOverdue = Math.max(0, daysBetweenKeys(due, todayKey));
+        if (due < todayKey) {
+          if (daysOverdue <= 30) aging.d0_30 += total;
+          else if (daysOverdue <= 60) aging.d31_60 += total;
+          else if (daysOverdue <= 90) aging.d61_90 += total;
+          else aging.d90_plus += total;
+        } else {
+          aging.d0_30 += total;
+          upcomingInvoices.push({
+            id: inv.id,
+            invoiceNumber: inv.invoiceNumber,
+            customerName: inv.customerName,
+            dueDate: due,
+            amount: Math.round(total),
+            currency: inv.currency || currency,
+          });
+        }
+        outstandingRows.push({
+          id: inv.id,
+          invoiceNumber: inv.invoiceNumber,
+          customerName: inv.customerName,
+          dueDate: due,
+          amount: Math.round(total),
+          daysOverdue,
+          currency: inv.currency || currency,
+        });
+
+        const created =
+          inv.createdAt instanceof Date ? inv.createdAt : new Date(inv.createdAt);
+        if (created >= lastMonthStartDate && created < thisMonthStartDate) {
+          outstandingLastMonth += total;
+        }
+
+        if (inSelectedPeriod(workZoneDateKey(created))) {
+          recentTransactions.push({
+            id: `sent-${inv.id}`,
+            date: formatInWorkZone(created, { day: "2-digit", month: "short", year: "numeric" }),
+            type: "Invoice Sent",
+            description: `${inv.invoiceNumber} · ${inv.customerName}`,
+            amount: Math.round(total),
+            status: "Sent",
+            statusTone: "sent",
+            href: `/admin/invoices/${inv.id}`,
+          });
+        }
+      }
+    }
+
+    const EXPENSE_COLORS = ["#2563EB", "#0EA5E9", "#F59E0B", "#8B5CF6", "#EC4899", "#94A3B8"];
+    let expensesYtd = 0;
+    let expensesLastYear = 0;
+    const expensesByCategory = new Map<string, number>();
+
+    for (const expense of expenseDocs) {
+      if (expense.status !== "recorded") continue;
+      const dateKey = expense.expenseDate;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey ?? "")) continue;
+      const amount = (expense.amount ?? 0) + (expense.taxAmount ?? 0);
+      if (amount <= 0) continue;
+
+      if (inSelectedPeriod(dateKey)) {
+        expensesYtd += amount;
+        const category = (expense.category || "General").trim() || "General";
+        expensesByCategory.set(category, (expensesByCategory.get(category) ?? 0) + amount);
+        addCashDay(cashOutflowByDay, dateKey, amount);
+        recentTransactions.push({
+          id: `exp-${expense.id}`,
+          date: formatInWorkZone(
+            workZoneWallTimeToUtc(
+              Number(dateKey.slice(0, 4)),
+              Number(dateKey.slice(5, 7)),
+              Number(dateKey.slice(8, 10)),
+              12,
+              0,
+              0,
+              0,
+            ),
+            { day: "2-digit", month: "short", year: "numeric" },
+          ),
+          type: "Expense",
+          description: expense.vendorName
+            ? `${category} · ${expense.vendorName}`
+            : category,
+          amount: -Math.round(amount),
+          status: "Paid",
+          statusTone: "paid",
+          href: "/finance/expenses",
+        });
+      }
+
+      if (dateKey < periodStartKey) {
+        const expenseTs = Date.parse(`${dateKey}T12:00:00Z`);
+        if (
+          !Number.isNaN(expenseTs) &&
+          expenseTs >= prevPeriodStart.getTime() &&
+          expenseTs <= prevPeriodEnd.getTime()
+        ) {
+          expensesLastYear += amount;
+        }
+      }
+    }
+
+    expensesYtd = Math.round(expensesYtd);
+    expensesLastYear = Math.round(expensesLastYear);
+    const netProfitYtd = Math.round(receivedYtd - expensesYtd);
+    const netProfitLastYear = Math.round(receivedLastYearYtd - expensesLastYear);
+    const bankCol = await getCollection<BankAccountDoc>(Collections.bankAccounts);
+    const bankDocs = await bankCol
+      .find({ ...tenant, isActive: { $ne: false } })
+      .sort({ createdAt: -1 })
+      .toArray();
+    const bankAccounts = bankDocs.map((bank) => {
+      const digits = String(bank.accountNumber ?? "").replace(/\D/g, "");
+      const mask = digits.length >= 4 ? `•••• ${digits.slice(-4)}` : digits ? `•••• ${digits}` : "—";
+      const label =
+        bank.bankName && bank.name
+          ? `${bank.bankName} — ${bank.name}`
+          : bank.name || bank.bankName || "Bank account";
+      return {
+        id: bank.id,
+        name: label,
+        mask,
+        balance: Math.round(bank.currentBalance ?? 0),
+      };
+    });
+    const cashInBank = bankAccounts.reduce((sum, bank) => sum + bank.balance, 0);
+
+    const expenseBreakdown = [...expensesByCategory.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, amount], i) => ({
+        name,
+        amount: Math.round(amount),
+        percent:
+          expensesYtd > 0 ? Math.round((amount / expensesYtd) * 1000) / 10 : 0,
+        color: EXPENSE_COLORS[i % EXPENSE_COLORS.length],
+      }));
+
+    const monthLabels = Array.from({ length: 12 }, (_, i) =>
+      formatInWorkZone(workZoneWallTimeToUtc(nowParts.year, i + 1, 1, 12, 0, 0, 0), {
+        month: "short",
+      }),
+    );
+    const revenueOverview = monthLabels.map((label, i) => ({
+      label,
+      thisYear: Math.round(thisYearMonthly[i]),
+      lastYear: Math.round(lastYearMonthly[i]),
+    }));
+
+    const daysInMonth = new Date(nowParts.year, nowParts.month, 0).getDate();
+    const cashFlowDaily = Array.from({ length: daysInMonth }, (_, i) => {
+      const day = i + 1;
+      const dateKey = `${thisMonthPrefix}${String(day).padStart(2, "0")}`;
+      const inflow = Math.round(cashInflowByDay.get(dateKey) ?? 0);
+      const outflow = Math.round(cashOutflowByDay.get(dateKey) ?? 0);
+      return {
+        label: String(day),
+        net: inflow - outflow,
+        inflow,
+        outflow,
+      };
+    }).filter((row) => Number(row.label) <= nowParts.day);
+    const cashInflows = cashFlowDaily.reduce((s, d) => s + d.inflow, 0);
+    const cashOutflows = cashFlowDaily.reduce((s, d) => s + d.outflow, 0);
+
+    upcomingInvoices.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    outstandingRows.sort((a, b) => b.daysOverdue - a.daysOverdue);
+    recentTransactions.sort((a, b) => b.date.localeCompare(a.date));
+
+    const agingTotal =
+      aging.d0_30 + aging.d31_60 + aging.d61_90 + aging.d90_plus || outstandingAmount || 1;
+
+    return {
+      currency,
+      period: {
+        startDate: periodStartKey,
+        endDate: periodEndKey,
+      },
+      totalRevenueYtd: Math.round(revenueYtd),
+      revenueYoYPct: hoursDeltaPct(revenueYtd, revenueLastYearYtd),
+      totalReceivedYtd: Math.round(receivedYtd),
+      receivedYoYPct: hoursDeltaPct(receivedYtd, receivedLastYearYtd),
+      outstandingReceivable: Math.round(outstandingAmount),
+      outstandingMoMPct: hoursDeltaPct(outstandingAmount, outstandingLastMonth),
+      totalExpensesYtd: expensesYtd,
+      expensesYoYPct: hoursDeltaPct(expensesYtd, expensesLastYear),
+      netProfitYtd,
+      netProfitYoYPct: hoursDeltaPct(netProfitYtd, netProfitLastYear),
+      cashInBank,
+      revenueOverview,
+      incomeVsExpense: {
+        income: Math.round(revenueYtd),
+        expense: expensesYtd,
+        incomePct:
+          revenueYtd + expensesYtd > 0
+            ? Math.round((revenueYtd / (revenueYtd + expensesYtd)) * 1000) / 10
+            : 0,
+        expensePct:
+          revenueYtd + expensesYtd > 0
+            ? Math.round((expensesYtd / (revenueYtd + expensesYtd)) * 1000) / 10
+            : 0,
+      },
+      cashFlow: {
+        daily: cashFlowDaily,
+        net: cashInflows - cashOutflows,
+        inflows: cashInflows,
+        outflows: cashOutflows,
+      },
+      outstandingSummary: {
+        total: Math.round(outstandingAmount),
+        d0_30: Math.round(aging.d0_30),
+        d31_60: Math.round(aging.d31_60),
+        d61_plus: Math.round(aging.d61_90 + aging.d90_plus),
+      },
+      outstandingInvoices: outstandingRows.slice(0, 8),
+      recentTransactions: recentTransactions.slice(0, 8),
+      expenseBreakdown,
+      receivableAging: [
+        {
+          label: "0-30 days",
+          amount: Math.round(aging.d0_30),
+          percent: Math.round((aging.d0_30 / agingTotal) * 1000) / 10,
+        },
+        {
+          label: "31-60 days",
+          amount: Math.round(aging.d31_60),
+          percent: Math.round((aging.d31_60 / agingTotal) * 1000) / 10,
+        },
+        {
+          label: "61-90 days",
+          amount: Math.round(aging.d61_90),
+          percent: Math.round((aging.d61_90 / agingTotal) * 1000) / 10,
+        },
+        {
+          label: "90+ days",
+          amount: Math.round(aging.d90_plus),
+          percent: Math.round((aging.d90_plus / agingTotal) * 1000) / 10,
+        },
+      ],
+      upcomingInvoices: upcomingInvoices.slice(0, 5),
+      bankAccounts,
+    };
   }),
 });

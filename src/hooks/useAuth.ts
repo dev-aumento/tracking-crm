@@ -4,7 +4,9 @@ import { AUTH_DISABLED, LOGIN_PATH } from "@/const";
 import { trpc } from "@/providers/trpc";
 import { clearAuthCache, readAuthCache, writeAuthCache } from "@/lib/auth-cache";
 import { mergeProfilePrefs } from "@/lib/profile-prefs";
-import { getDefaultHomePath } from "@/lib/permissions";
+import { getDefaultHomePath, getLoginPathForUser } from "@/lib/permissions";
+import { isPlanEndedMessage, writePlanEndedNotice } from "@/lib/plan-ended";
+import { ALL_PLAN_FEATURE_KEYS } from "@/lib/plan-features";
 
 type AuthUser = {
   id: number;
@@ -12,7 +14,7 @@ type AuthUser = {
   name: string | null;
   email: string | null;
   avatar: string | null;
-  role: "admin" | "manager" | "employee" | "hr" | "client";
+  role: "admin" | "manager" | "employee" | "hr" | "client" | "finance" | "platform";
   status: "active" | "inactive" | "suspended";
   department: string | null;
   position: string | null;
@@ -21,6 +23,11 @@ type AuthUser = {
   createdAt: Date;
   updatedAt: Date;
   lastSignInAt: Date;
+  clientWorkspace?: boolean;
+  plan?: string | null;
+  planName?: string | null;
+  planStatus?: string | null;
+  planFeatures?: string[] | null;
 };
 
 const DEV_USER: AuthUser = {
@@ -38,6 +45,10 @@ const DEV_USER: AuthUser = {
   createdAt: new Date(),
   updatedAt: new Date(),
   lastSignInAt: new Date(),
+  plan: "enterprise",
+  planName: "Enterprise",
+  planStatus: "paid",
+  planFeatures: ALL_PLAN_FEATURE_KEYS,
 };
 
 type UseAuthOptions = {
@@ -57,21 +68,36 @@ export function useAuth(_options?: UseAuthOptions) {
     error,
     refetch,
   } = trpc.auth.me.useQuery(undefined, {
-    staleTime: 5 * 60_000,
+    staleTime: 30_000,
     gcTime: 30 * 60_000,
     retry: false,
-    refetchOnWindowFocus: false,
-    // Instant shell on reload while fresh auth.me resolves in the background.
-    placeholderData: cachedUser,
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+    placeholderData: cachedUser as never,
   });
 
+  const planEnded = isPlanEndedMessage(error?.message);
+
   useEffect(() => {
+    if (planEnded) {
+      writePlanEndedNotice(error?.message);
+      clearAuthCache();
+      if (window.location.pathname !== "/plan-ended") {
+        navigate("/plan-ended", { replace: true });
+      }
+    }
+  }, [planEnded, error?.message, navigate]);
+
+  useEffect(() => {
+    if (planEnded) return;
     if (user) {
       writeAuthCache(user);
       return;
     }
-    if (!isPending) clearAuthCache();
-  }, [user, isPending]);
+    if (!isPending) {
+      clearAuthCache();
+    }
+  }, [user, isPending, planEnded]);
 
   const loginMutation = trpc.auth.login.useMutation({
     onSuccess: async (result) => {
@@ -100,29 +126,41 @@ export function useAuth(_options?: UseAuthOptions) {
     },
   });
 
-  const logoutMutation = trpc.auth.logout.useMutation({
-    onSuccess: async () => {
-      clearAuthCache();
-      utils.auth.me.setData(undefined, undefined);
+  const registerFinanceMutation = trpc.auth.registerFinance.useMutation({
+    onSuccess: async (result) => {
+      writeAuthCache(result.user);
+      utils.auth.me.setData(undefined, result.user);
       await utils.invalidate();
-      navigate(LOGIN_PATH, { replace: true });
-    },
-    onError: async () => {
-      clearAuthCache();
-      utils.auth.me.setData(undefined, undefined);
-      await utils.invalidate();
-      navigate(LOGIN_PATH, { replace: true });
+      navigate(getDefaultHomePath(result.user));
     },
   });
 
+  const registerPlatformMutation = trpc.auth.registerPlatform.useMutation({
+    onSuccess: async (result) => {
+      writeAuthCache(result.user);
+      utils.auth.me.setData(undefined, result.user);
+      await utils.invalidate();
+      navigate(getDefaultHomePath(result.user));
+    },
+  });
+
+  const logoutMutation = trpc.auth.logout.useMutation();
   const resetPasswordMutation = trpc.auth.resetPassword.useMutation();
 
   const login = useCallback(
-    (email: string, password: string) => {
+    (
+      email: string,
+      password: string,
+      options?: { portal?: "finance" | "client" | "platform" },
+    ) => {
       if (AUTH_DISABLED) {
         return Promise.resolve({ user: DEV_USER });
       }
-      return loginMutation.mutateAsync({ email, password });
+      return loginMutation.mutateAsync({
+        email,
+        password,
+        portal: options?.portal,
+      });
     },
     [loginMutation],
   );
@@ -160,15 +198,41 @@ export function useAuth(_options?: UseAuthOptions) {
     [registerClientMutation],
   );
 
-  const logout = useCallback(() => {
-    if (AUTH_DISABLED) {
-      clearAuthCache();
-      utils.auth.me.setData(undefined, undefined);
-      navigate(LOGIN_PATH, { replace: true });
-      return;
-    }
-    logoutMutation.mutate();
-  }, [logoutMutation, navigate, utils.auth.me]);
+  const registerFinance = useCallback(
+    (input: {
+      name: string;
+      email: string;
+      password: string;
+      organizationName: string;
+    }) => {
+      if (AUTH_DISABLED) {
+        return Promise.resolve({
+          user: { ...DEV_USER, role: "finance" as const },
+          organizationName: input.organizationName,
+        });
+      }
+      return registerFinanceMutation.mutateAsync(input);
+    },
+    [registerFinanceMutation],
+  );
+
+  const registerPlatform = useCallback(
+    (input: {
+      name: string;
+      email: string;
+      password: string;
+      organizationName?: string;
+    }) => {
+      if (AUTH_DISABLED) {
+        return Promise.resolve({
+          user: { ...DEV_USER, role: "platform" as const, department: "Platform", position: "Master Admin" },
+          organizationName: input.organizationName ?? "FlowTicX",
+        });
+      }
+      return registerPlatformMutation.mutateAsync(input);
+    },
+    [registerPlatformMutation],
+  );
 
   const resetPassword = useCallback(
     (email: string, newPassword: string) => {
@@ -180,7 +244,7 @@ export function useAuth(_options?: UseAuthOptions) {
     [resetPasswordMutation],
   );
 
-  const baseUser = AUTH_DISABLED ? (user ?? DEV_USER) : (user ?? null);
+  const baseUser = AUTH_DISABLED ? (user ?? DEV_USER) : planEnded ? null : (user ?? null);
   // With placeholderData, isPending is false immediately on reload so the shell
   // can mount and fire page queries in parallel with the background auth refresh.
   const authResolved = !isPending || !!baseUser;
@@ -195,6 +259,30 @@ export function useAuth(_options?: UseAuthOptions) {
     [baseUser],
   );
 
+  const logout = useCallback(() => {
+    const loginPath = getLoginPathForUser(effectiveUser ?? readAuthCache()) || LOGIN_PATH;
+    if (AUTH_DISABLED) {
+      clearAuthCache();
+      utils.auth.me.setData(undefined, undefined);
+      navigate(loginPath, { replace: true });
+      return;
+    }
+    logoutMutation.mutate(undefined, {
+      onSuccess: async () => {
+        clearAuthCache();
+        utils.auth.me.setData(undefined, undefined);
+        await utils.invalidate();
+        navigate(loginPath, { replace: true });
+      },
+      onError: async () => {
+        clearAuthCache();
+        utils.auth.me.setData(undefined, undefined);
+        await utils.invalidate();
+        navigate(loginPath, { replace: true });
+      },
+    });
+  }, [effectiveUser, logoutMutation, navigate, utils]);
+
   return useMemo(
     () => ({
       user: effectiveUser,
@@ -202,13 +290,18 @@ export function useAuth(_options?: UseAuthOptions) {
       isLoading: !authResolved || logoutMutation.isPending,
       isLoggingIn: loginMutation.isPending,
       isRegistering:
-        registerAdminMutation.isPending || registerClientMutation.isPending,
+        registerAdminMutation.isPending ||
+        registerClientMutation.isPending ||
+        registerFinanceMutation.isPending ||
+        registerPlatformMutation.isPending,
       isResettingPassword: resetPasswordMutation.isPending,
       loginError: loginMutation.error,
       error,
       login,
       registerAdmin,
       registerClient,
+      registerFinance,
+      registerPlatform,
       resetPassword,
       logout,
       refresh: refetch,
@@ -220,12 +313,16 @@ export function useAuth(_options?: UseAuthOptions) {
       loginMutation.isPending,
       registerAdminMutation.isPending,
       registerClientMutation.isPending,
+      registerFinanceMutation.isPending,
+      registerPlatformMutation.isPending,
       resetPasswordMutation.isPending,
       loginMutation.error,
       error,
       login,
       registerAdmin,
       registerClient,
+      registerFinance,
+      registerPlatform,
       resetPassword,
       logout,
       refetch,

@@ -19,6 +19,7 @@ type ProjectFormFieldsProps = {
   onChange: (value: ProjectFormValues) => void;
   clientNameSuggestions?: string[];
   idPrefix?: string;
+  hideClientAgency?: boolean;
 };
 
 export function ProjectFormFields({
@@ -26,6 +27,7 @@ export function ProjectFormFields({
   onChange,
   clientNameSuggestions = [],
   idPrefix = "project",
+  hideClientAgency = false,
 }: ProjectFormFieldsProps) {
   const clientListId = `${idPrefix}-client-suggestions`;
   const SelectedIcon = resolveProjectIcon(value.icon);
@@ -52,6 +54,7 @@ export function ProjectFormFields({
         />
       </div>
 
+      {!hideClientAgency ? (
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor={`${idPrefix}-client`}>
           Client / Agency
@@ -71,6 +74,7 @@ export function ProjectFormFields({
           ))}
         </datalist>
       </div>
+      ) : null}
 
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor={`${idPrefix}-description`}>

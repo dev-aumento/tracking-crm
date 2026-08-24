@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, memo } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Copy, Loader2, MoreHorizontal, Pencil, Smile, Trash2, X } from "lucide-react";
 import { UserAvatar } from "@/components/shared/UserAvatar";
@@ -61,7 +61,7 @@ function isEdited(activity: CommentActivity) {
   return Boolean(activity.metadata?.editedAt);
 }
 
-export const TaskCommentBubble = memo(function TaskCommentBubble({
+export function TaskCommentBubble({
   activity,
   taskId,
   isOwn,
@@ -208,7 +208,7 @@ export const TaskCommentBubble = memo(function TaskCommentBubble({
     onDelete(activity.id);
   };
 
-  const handleCopyComment = async () => {
+  const copyComment = async () => {
     setMenuOpen(false);
     const payload = getCommentClipboardPayload(activity.newValue ?? "");
     const text = payload.text.trim();
@@ -217,7 +217,19 @@ export const TaskCommentBubble = memo(function TaskCommentBubble({
       return;
     }
     try {
-      await navigator.clipboard.writeText(text);
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
       toast.success("Comment copied");
     } catch {
       toast.error("Could not copy comment");
@@ -316,13 +328,13 @@ export const TaskCommentBubble = memo(function TaskCommentBubble({
 
       <div
         className={cn(
-          "min-w-0 flex-1 rounded-xl border px-4 py-3 text-sm shadow-sm",
+          "min-w-0 flex-1 rounded-xl border px-4 py-3 text-sm shadow-sm select-text [-webkit-user-select:text] [-webkit-touch-callout:default]",
           isOwn
             ? "bg-[#DCFCE7] border-[#BBF7D0] text-gray-800 dark:text-gray-100 dark:shadow-none"
             : "bg-white border-gray-200 text-gray-800 dark:bg-[#151c2c] dark:border-white/10 dark:text-gray-100 dark:shadow-none",
         )}
       >
-        <div className="flex items-start justify-between gap-3 mb-1">
+        <div className="flex items-start justify-between gap-3 mb-1 select-none">
           <p className="font-semibold text-xs text-[#2563EB] dark:text-[#38BDF8]">
             {activity.user?.name ?? "Unknown"}
           </p>
@@ -355,7 +367,9 @@ export const TaskCommentBubble = memo(function TaskCommentBubble({
               >
                 <button
                   type="button"
-                  onClick={() => void handleCopyComment()}
+                  onClick={() => {
+                    void copyComment();
+                  }}
                   className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100"
                 >
                   <Copy size={14} />
@@ -439,7 +453,7 @@ export const TaskCommentBubble = memo(function TaskCommentBubble({
                 type="button"
                 onClick={cancelEdit}
                 disabled={isSaving}
-                className="h-8 px-3 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray/70 disabled:opacity-50"
+                className="h-8 px-3 rounded-lg text-xs font-medium text-gray-600 hover:bg-white/70 disabled:opacity-50"
               >
                 Cancel
               </button>
@@ -584,4 +598,4 @@ export const TaskCommentBubble = memo(function TaskCommentBubble({
       </div>
     </div>
   );
-});
+}

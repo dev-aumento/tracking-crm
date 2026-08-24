@@ -3,7 +3,8 @@ import { amountInCurrencyWords } from "@/lib/amount-in-words";
 import {
   formatCustomerBillingAddress,
   formatOrganizationAddress,
-  loadOrganizationProfile,
+  resolveOrganizationProfileForInvoice,
+  type OrganizationProfileForm,
 } from "@/lib/organization-profile";
 import {
   currencyPdfPrefix,
@@ -53,6 +54,11 @@ export type InvoiceExportOptions = {
   customer?: InvoiceCustomerLike | null;
   /** When true, invoice date on the document is today's date. */
   useCurrentDate?: boolean;
+  /**
+   * Organization billing profile from the server (shared admin/finance tenant data).
+   * Falls back to the local cache when omitted.
+   */
+  organization?: OrganizationProfileForm | null;
 };
 
 function formatInvoiceDate(value: string, useCurrentDate = false) {
@@ -172,28 +178,44 @@ function customerDisplayName(
   return `${name} (${currency})`;
 }
 
-function detectImageFormat(dataUrl: string): "PNG" | "JPEG" | null {
+function detectImageFormat(dataUrl: string): "PNG" | "JPEG" | "WEBP" | null {
   if (dataUrl.startsWith("data:image/png")) return "PNG";
   if (dataUrl.startsWith("data:image/jpeg") || dataUrl.startsWith("data:image/jpg")) {
     return "JPEG";
   }
-  // Treat unknown/webp as JPEG attempt after stripping; prefer PNG/JPEG uploads.
-  if (dataUrl.startsWith("data:image/")) return "JPEG";
+  if (dataUrl.startsWith("data:image/webp")) return "WEBP";
   return null;
 }
 
-function loadImageSize(dataUrl: string): Promise<{ width: number; height: number }> {
+function loadImageElement(dataUrl: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => {
-      resolve({
-        width: img.naturalWidth || img.width || 1,
-        height: img.naturalHeight || img.height || 1,
-      });
-    };
+    img.onload = () => resolve(img);
     img.onerror = () => reject(new Error("Failed to load logo image"));
     img.src = dataUrl;
   });
+}
+
+function loadImageSize(dataUrl: string): Promise<{ width: number; height: number }> {
+  return loadImageElement(dataUrl).then((img) => ({
+    width: img.naturalWidth || img.width || 1,
+    height: img.naturalHeight || img.height || 1,
+  }));
+}
+
+/** Convert any browser-decodable image (PNG/JPEG/WebP/SVG) to a PNG data URL for jsPDF. */
+async function toPdfCompatiblePngDataUrl(dataUrl: string): Promise<string> {
+  const img = await loadImageElement(dataUrl);
+  const width = Math.max(1, img.naturalWidth || img.width || 1);
+  const height = Math.max(1, img.naturalHeight || img.height || 1);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Could not prepare logo for PDF");
+  ctx.clearRect(0, 0, width, height);
+  ctx.drawImage(img, 0, 0, width, height);
+  return canvas.toDataURL("image/png");
 }
 
 /** Fit image into a max box while preserving aspect ratio (object-fit: contain). */
@@ -226,7 +248,7 @@ const FONT = {
 } as const;
 
 export function buildInvoiceHtml(invoice: InvoiceRecord, options: InvoiceExportOptions = {}) {
-  const org = loadOrganizationProfile();
+  const org = resolveOrganizationProfileForInvoice(options.organization);
   const customer = options.customer;
   const useCurrentDate = options.useCurrentDate !== false;
   const totals = computeTotals(invoice);
@@ -304,7 +326,11 @@ export function buildInvoiceHtml(invoice: InvoiceRecord, options: InvoiceExportO
 <body>
   <div class="sheet">
     <div class="top">
-      <div class="logo-wrap">${org.logoDataUrl ? `<img class="logo" src="${org.logoDataUrl}" alt="Logo" />` : ""}</div>
+      <div class="logo-wrap">${
+        org.logoDataUrl?.trim().startsWith("data:image/")
+          ? `<img class="logo" src="${org.logoDataUrl.replace(/"/g, "%22")}" alt="Logo" />`
+          : ""
+      }</div>
       <div>
         <div class="org-name">${escapeHtml(org.name || "Organization")}</div>
         <div class="org-meta">
@@ -402,7 +428,7 @@ export async function downloadInvoiceAsPdf(
   invoice: InvoiceRecord,
   options: InvoiceExportOptions = {},
 ) {
-  const org = loadOrganizationProfile();
+  const org = resolveOrganizationProfileForInvoice(options.organization);
   const customer = options.customer;
   const useCurrentDate = options.useCurrentDate !== false;
   const totals = computeTotals(invoice);
@@ -424,19 +450,24 @@ export async function downloadInvoiceAsPdf(
   const logoMaxH = 20;
   let logoDrawn = false;
   let logoDrawW = 0;
-  if (org.logoDataUrl) {
-    const format = detectImageFormat(org.logoDataUrl);
-    if (format) {
-      try {
-        const { width: nw, height: nh } = await loadImageSize(org.logoDataUrl);
-        const fitted = fitWithinBox(nw, nh, logoMaxW, logoMaxH);
-        logoDrawW = fitted.width;
-        const logoY = y + Math.max(0, (logoMaxH - fitted.height) / 2);
-        doc.addImage(org.logoDataUrl, format, margin, logoY, fitted.width, fitted.height);
-        logoDrawn = true;
-      } catch {
-        logoDrawn = false;
-      }
+  const logoSrc = org.logoDataUrl?.trim() ?? "";
+  if (logoSrc.startsWith("data:image/")) {
+    try {
+      const format = detectImageFormat(logoSrc);
+      // Native PNG/JPEG when possible; otherwise rasterize (SVG/WebP/etc.) to PNG.
+      const pdfImage =
+        format === "PNG" || format === "JPEG"
+          ? logoSrc
+          : await toPdfCompatiblePngDataUrl(logoSrc);
+      const pdfFormat = format === "JPEG" ? "JPEG" : "PNG";
+      const { width: nw, height: nh } = await loadImageSize(pdfImage);
+      const fitted = fitWithinBox(nw, nh, logoMaxW, logoMaxH);
+      logoDrawW = fitted.width;
+      const logoY = y + Math.max(0, (logoMaxH - fitted.height) / 2);
+      doc.addImage(pdfImage, pdfFormat, margin, logoY, fitted.width, fitted.height);
+      logoDrawn = true;
+    } catch {
+      logoDrawn = false;
     }
   }
 

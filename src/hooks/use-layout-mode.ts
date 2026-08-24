@@ -9,7 +9,7 @@ export const LAYOUT_COMPACT_MAX = 1279;
 export type LayoutMode = "drawer" | "compact" | "wide";
 
 export const SIDEBAR_WIDTH = {
-  wide: { expanded: 250, collapsed: 64 },
+  wide: { expanded: 260, collapsed: 64 },
   compact: { expanded: 220, collapsed: 56 },
   drawer: 280,
 } as const;

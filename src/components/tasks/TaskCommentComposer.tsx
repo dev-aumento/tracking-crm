@@ -374,8 +374,57 @@ export function TaskCommentComposer({
         </div>
       ) : null}
 
-      <div className="flex items-end gap-2">
-        <div className="relative" ref={attachRef}>
+      {/* Mobile: editor full-width, then attach/emoji/send below. Desktop: attach | editor | emoji | send */}
+      <div className="flex flex-col gap-2 lg:flex-row lg:items-end">
+        <div className="order-1 w-full min-w-0 flex-1 rounded-xl border border-gray-200 bg-white focus-within:ring-2 focus-within:ring-[#2563EB]/20 lg:order-2">
+          {mentionChips.length > 0 ? (
+            <div className="flex flex-wrap gap-2 px-3 pt-3">
+              {mentionChips.map((user) => (
+                <span
+                  key={user.id}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-blue-50 px-2 py-1 text-sm font-medium text-[#2563EB] underline underline-offset-2"
+                >
+                  {user.name}
+                  <button
+                    type="button"
+                    onClick={() => removeMentionChip(user.id)}
+                    className="text-blue-400 hover:text-blue-700"
+                    aria-label={`Remove ${user.name ?? "user"}`}
+                  >
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
+
+          <div
+            ref={editorHostRef}
+            onKeyUp={syncCaret}
+            onClick={syncCaret}
+          >
+            <RichTextCommentEditor
+              ref={editorRef}
+              key={editorResetKey}
+              initialHtml={editorResetKey === 0 ? initialHtml : ""}
+              initialMedia={editorResetKey === 0 ? initialMedia : []}
+              editorHeight={editorHeight}
+              onChange={(html, media) => {
+                setRichHtml(html);
+                setRichMedia(media);
+                syncCaret();
+              }}
+              onUploadingChange={setEditorUploading}
+              onUploadMedia={onUploadMedia}
+              resolveMediaPreviewUrl={resolveMediaPreviewUrl}
+              disabled={isSending}
+              placeholder="Type @ to mention someone..."
+            />
+          </div>
+        </div>
+
+        <div className="order-2 flex items-center gap-2 max-lg:w-full max-lg:justify-between lg:contents">
+        <div className="relative shrink-0 lg:order-1" ref={attachRef}>
           <button
             type="button"
             onClick={() => setAttachMenu((prev) => (prev ? null : "main"))}
@@ -537,98 +586,54 @@ export function TaskCommentComposer({
           />
         </div>
 
-        <div className="flex-1 rounded-xl border border-gray-200 bg-white focus-within:ring-2 focus-within:ring-[#2563EB]/20">
-          {mentionChips.length > 0 ? (
-            <div className="flex flex-wrap gap-2 px-3 pt-3">
-              {mentionChips.map((user) => (
-                <span
-                  key={user.id}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-blue-50 px-2 py-1 text-sm font-medium text-[#2563EB] underline underline-offset-2"
-                >
-                  {user.name}
-                  <button
-                    type="button"
-                    onClick={() => removeMentionChip(user.id)}
-                    className="text-blue-400 hover:text-blue-700"
-                    aria-label={`Remove ${user.name ?? "user"}`}
-                  >
-                    <X size={12} />
-                  </button>
-                </span>
-              ))}
-            </div>
-          ) : null}
-
-          <div
-            ref={editorHostRef}
-            onKeyUp={syncCaret}
-            onClick={syncCaret}
-          >
-            <RichTextCommentEditor
-              ref={editorRef}
-              key={editorResetKey}
-              initialHtml={editorResetKey === 0 ? initialHtml : ""}
-              initialMedia={editorResetKey === 0 ? initialMedia : []}
-              editorHeight={editorHeight}
-              onChange={(html, media) => {
-                setRichHtml(html);
-                setRichMedia(media);
-                syncCaret();
-              }}
-              onUploadingChange={setEditorUploading}
-              onUploadMedia={onUploadMedia}
-              resolveMediaPreviewUrl={resolveMediaPreviewUrl}
-              disabled={isSending}
-              placeholder="Type @ to mention someone..."
-            />
-          </div>
-        </div>
-
-        <Popover modal open={showEmoji} onOpenChange={setShowEmoji}>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              className="w-9 h-9 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100"
-              aria-label="Emoji"
+        <div className="flex items-center gap-2 shrink-0 lg:contents">
+          <Popover modal open={showEmoji} onOpenChange={setShowEmoji}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="w-9 h-9 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 lg:order-3"
+                aria-label="Emoji"
+              >
+                <Smile size={18} />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              side="top"
+              sideOffset={8}
+              className="z-[160] w-auto p-0 border-0 bg-transparent shadow-none"
+              onOpenAutoFocus={(event) => event.preventDefault()}
+              onInteractOutside={() => setShowEmoji(false)}
+              onPointerDownOutside={() => setShowEmoji(false)}
+              onFocusOutside={() => setShowEmoji(false)}
+              onEscapeKeyDown={() => setShowEmoji(false)}
             >
-              <Smile size={18} />
-            </button>
-          </PopoverTrigger>
-          <PopoverContent
-            align="end"
-            side="top"
-            sideOffset={8}
-            className="z-[160] w-auto p-0 border-0 bg-transparent shadow-none"
-            onOpenAutoFocus={(event) => event.preventDefault()}
-            onInteractOutside={() => setShowEmoji(false)}
-            onPointerDownOutside={() => setShowEmoji(false)}
-            onFocusOutside={() => setShowEmoji(false)}
-            onEscapeKeyDown={() => setShowEmoji(false)}
-          >
-            <EmojiPickerPanel
-              onSelect={(emoji) => {
-                const editor = editorElement();
-                if (editor) {
-                  editor.focus();
-                  document.execCommand("insertText", false, emoji);
-                  setRichHtml(editor.innerHTML);
-                  setPlainText(getPlainText(editor));
-                }
-                setShowEmoji(false);
-              }}
-            />
-          </PopoverContent>
-        </Popover>
+              <EmojiPickerPanel
+                onSelect={(emoji) => {
+                  const editor = editorElement();
+                  if (editor) {
+                    editor.focus();
+                    document.execCommand("insertText", false, emoji);
+                    setRichHtml(editor.innerHTML);
+                    setPlainText(getPlainText(editor));
+                  }
+                  setShowEmoji(false);
+                }}
+              />
+            </PopoverContent>
+          </Popover>
 
-        <button
-          type="button"
-          onClick={submitMessage}
-          disabled={!canSend || isSending || isUploadingMedia || editorUploading}
-          className="w-10 h-10 flex items-center justify-center rounded-full bg-[#2563EB] text-white hover:bg-[#1D4ED8] disabled:opacity-50"
-          aria-label="Send"
-        >
-          {isSending || isUploadingMedia || editorUploading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
-        </button>
+          <button
+            type="button"
+            onClick={submitMessage}
+            disabled={!canSend || isSending || isUploadingMedia || editorUploading}
+            className="w-10 h-10 flex items-center justify-center rounded-full bg-[#2563EB] text-white hover:bg-[#1D4ED8] disabled:opacity-50 lg:order-4"
+            aria-label="Send"
+          >
+            {isSending || isUploadingMedia || editorUploading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+          </button>
+        </div>
+        </div>
       </div>
       </div>
     </div>

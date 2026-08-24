@@ -1,13 +1,22 @@
-import { useMemo, useState, useCallback, useEffect, type ComponentProps } from "react";
+import {
+  useMemo,
+  useState,
+  useCallback,
+  useEffect,
+  useRef,
+  type ComponentProps,
+  type TouchEvent,
+} from "react";
 import { trpc } from "@/providers/trpc";
 import { Calendar } from "@/components/ui/calendar";
 import type { DateRange, DayButton } from "react-day-picker";
 import {
-  TOTAL_SICK_LEAVES,
   HALF_DAY_REQUIRED_WORK_HOURS,
   LEAVE_TYPE_OPTIONS,
   LEAVE_DURATION_OPTIONS,
   accruedPaidLeavesForYear,
+  annualSickLeaveEntitlement,
+  annualWfhEntitlement,
   allowsHalfDayLeave,
   alreadyAppliedLeaveMessage,
   canCancelLeaveRequest,
@@ -34,6 +43,7 @@ import {
   CalendarDays,
   HeartPulse,
   CheckCircle2,
+  Home,
   Loader2,
   Umbrella,
   ChevronDown,
@@ -107,6 +117,8 @@ export default function Leaves() {
 
   const [range, setRange] = useState<DateRange | undefined>();
   const [singleDate, setSingleDate] = useState<Date | undefined>();
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date());
+  const calendarSwipeStartX = useRef<number | null>(null);
   const [recentRequestsExpanded, setRecentRequestsExpanded] = useState(false);
   const [holidaysExpanded, setHolidaysExpanded] = useState(false);
   const [leaveType, setLeaveType] = useState<LeaveType>("paid");
@@ -116,6 +128,34 @@ export default function Leaves() {
   const [selectedRequestId, setSelectedRequestId] = useState<number | null>(null);
 
   const isHalfLeave = duration === "half";
+
+  const shiftCalendarMonth = useCallback((delta: number) => {
+    setCalendarMonth((current) => {
+      const next = new Date(current);
+      next.setDate(1);
+      next.setMonth(next.getMonth() + delta);
+      return next;
+    });
+  }, []);
+
+  const handleCalendarTouchStart = useCallback((event: TouchEvent<HTMLDivElement>) => {
+    calendarSwipeStartX.current = event.changedTouches[0]?.clientX ?? null;
+  }, []);
+
+  const handleCalendarTouchEnd = useCallback(
+    (event: TouchEvent<HTMLDivElement>) => {
+      const startX = calendarSwipeStartX.current;
+      calendarSwipeStartX.current = null;
+      if (startX == null) return;
+      const endX = event.changedTouches[0]?.clientX;
+      if (endX == null) return;
+      const deltaX = endX - startX;
+      // Ignore taps / small moves so day selection still works.
+      if (Math.abs(deltaX) < 56) return;
+      shiftCalendarMonth(deltaX < 0 ? 1 : -1);
+    },
+    [shiftCalendarMonth],
+  );
 
   const selectedRequest = useMemo(() => {
     if (selectedRequestId == null) return null;
@@ -212,6 +252,7 @@ export default function Leaves() {
 
   const paidUsed = balance?.paidUsed ?? 0;
   const sickUsed = balance?.sickUsed ?? 0;
+  const wfhUsed = balance?.wfhUsed ?? 0;
   const paidTotal =
     balance?.paidTotal ??
     accruedPaidLeavesForYear(
@@ -219,9 +260,20 @@ export default function Leaves() {
       new Date(),
       balance?.dateOfJoining ?? null,
       balance?.employmentType ?? null,
+      balance?.onNoticePeriod ?? false,
     );
   const paidRemaining =
     balance?.paidRemaining ?? Math.max(0, paidTotal - (paidUsed + (balance?.paidPending ?? 0)));
+  const sickTotal =
+    balance?.sickTotal ??
+    annualSickLeaveEntitlement(balanceYear, balance?.dateOfJoining ?? null);
+  const sickRemaining =
+    balance?.sickRemaining ?? Math.max(0, sickTotal - (sickUsed + (balance?.sickPending ?? 0)));
+  const wfhTotal =
+    balance?.wfhTotal ??
+    annualWfhEntitlement(balanceYear, balance?.dateOfJoining ?? null);
+  const wfhRemaining =
+    balance?.wfhRemaining ?? Math.max(0, wfhTotal - (wfhUsed + (balance?.wfhPending ?? 0)));
 
   const cards = useMemo(
     () => [
@@ -231,20 +283,42 @@ export default function Leaves() {
         icon: Umbrella,
         iconColor: "#2563EB",
         badge: { text: "Remaining", bg: "#DBEAFE", color: "#2563EB" },
-        subtext: balance?.inProbation
+        subtext: balance?.onNoticePeriod
+          ? `No PL during notice period · ${paidUsed} used of ${paidTotal}`
+          : balance?.inProbation
           ? `No PL during ${balance.paidLeaveLockLabel ?? "probation"} · ${paidUsed} used of ${paidTotal}`
           : `${paidUsed} used · ${balance?.paidPending ?? 0} pending · of ${paidTotal} accrued (${balanceYear})`,
       },
       {
         title: "Sick leaves (SL)",
-        value: balance?.sickRemaining ?? TOTAL_SICK_LEAVES,
+        value: sickRemaining,
         icon: HeartPulse,
         iconColor: "#DC2626",
         badge: { text: "Remaining", bg: "#FEE2E2", color: "#DC2626" },
-        subtext: `${sickUsed} used · ${balance?.sickPending ?? 0} pending · of ${TOTAL_SICK_LEAVES} in ${balanceYear}`,
+        subtext: `${sickUsed} used · ${balance?.sickPending ?? 0} pending · of ${sickTotal} in ${balanceYear}`,
+      },
+      {
+        title: "Work from home (WFH)",
+        value: wfhRemaining,
+        icon: Home,
+        iconColor: "#0D9488",
+        badge: { text: "Remaining", bg: "#CCFBF1", color: "#0F766E" },
+        subtext: `${wfhUsed} used · ${balance?.wfhPending ?? 0} pending · of ${wfhTotal} in ${balanceYear}`,
       },
     ],
-    [balance, paidUsed, sickUsed, paidTotal, paidRemaining, balanceYear],
+    [
+      balance,
+      paidUsed,
+      sickUsed,
+      wfhUsed,
+      paidTotal,
+      paidRemaining,
+      sickTotal,
+      sickRemaining,
+      wfhTotal,
+      wfhRemaining,
+      balanceYear,
+    ],
   );
 
   const handleSubmit = () => {
@@ -295,7 +369,7 @@ export default function Leaves() {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
         {cards.map((card) => (
           <div
             key={card.title}
@@ -333,7 +407,7 @@ export default function Leaves() {
           {balanceLoading ? (
             <div className="text-3xl font-bold text-[#1F2937] mb-1">—</div>
           ) : (
-            <div className="grid grid-cols-2 gap-3 mb-1">
+            <div className="grid grid-cols-3 gap-2 mb-1">
               <div>
                 <div className="text-3xl font-bold text-[#1F2937]">{paidUsed}</div>
                 <div className="text-xs font-medium text-blue-600 mt-0.5">Paid (PL)</div>
@@ -342,9 +416,13 @@ export default function Leaves() {
                 <div className="text-3xl font-bold text-[#1F2937]">{sickUsed}</div>
                 <div className="text-xs font-medium text-red-600 mt-0.5">Sick (SL)</div>
               </div>
+              <div>
+                <div className="text-3xl font-bold text-[#1F2937]">{wfhUsed}</div>
+                <div className="text-xs font-medium text-teal-600 mt-0.5">WFH</div>
+              </div>
             </div>
           )}
-          <div className="text-xs text-gray-500">Approved leave days by type</div>
+          <div className="text-xs text-gray-500">Approved leave &amp; WFH days by type</div>
         </div>
       </div>
 
@@ -352,43 +430,53 @@ export default function Leaves() {
         <h2 className="text-lg font-semibold text-[#1F2937]">Apply Leave</h2>
 
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(22rem,24rem)_1fr] gap-6 items-start">
-          <div className="rounded-xl border border-gray-200 overflow-hidden w-full self-start">
-            {isHalfLeave ? (
-              <Calendar
-                mode="single"
-                selected={singleDate}
-                onSelect={setSingleDate}
-                numberOfMonths={1}
-                disabled={[
-                  { before: new Date(new Date().setHours(0, 0, 0, 0)) },
-                  { dayOfWeek: [0, 6] },
-                ]}
-                modifiers={{ holiday: holidayDates }}
-                modifiersClassNames={{
-                  holiday: "font-medium",
-                }}
-                components={{ DayButton: renderHolidayDayButton }}
-                className="w-full"
-              />
-            ) : (
-              <Calendar
-                mode="range"
-                selected={range}
-                onSelect={setRange}
-                numberOfMonths={1}
-                disabled={[
-                  { before: new Date(new Date().setHours(0, 0, 0, 0)) },
-                  { dayOfWeek: [0, 6] },
-                ]}
-                modifiers={{ holiday: holidayDates }}
-                modifiersClassNames={{
-                  holiday: "font-medium",
-                }}
-                components={{ DayButton: renderHolidayDayButton }}
-                className="w-full"
-              />
-            )}
-            <div className="px-4 py-3 border-t border-gray-100 bg-gray-50 text-xs text-gray-500 min-h-[2.75rem]">
+          <div className="rounded-xl border border-gray-200 w-full self-start flex flex-col overflow-hidden">
+            <div
+              className="relative touch-manipulation"
+              onTouchStart={handleCalendarTouchStart}
+              onTouchEnd={handleCalendarTouchEnd}
+            >
+              {isHalfLeave ? (
+                <Calendar
+                  mode="single"
+                  month={calendarMonth}
+                  onMonthChange={setCalendarMonth}
+                  selected={singleDate}
+                  onSelect={setSingleDate}
+                  numberOfMonths={1}
+                  disabled={[
+                    { before: new Date(new Date().setHours(0, 0, 0, 0)) },
+                    { dayOfWeek: [0, 6] },
+                  ]}
+                  modifiers={{ holiday: holidayDates }}
+                  modifiersClassNames={{
+                    holiday: "font-medium",
+                  }}
+                  components={{ DayButton: renderHolidayDayButton }}
+                  className="w-full"
+                />
+              ) : (
+                <Calendar
+                  mode="range"
+                  month={calendarMonth}
+                  onMonthChange={setCalendarMonth}
+                  selected={range}
+                  onSelect={setRange}
+                  numberOfMonths={1}
+                  disabled={[
+                    { before: new Date(new Date().setHours(0, 0, 0, 0)) },
+                    { dayOfWeek: [0, 6] },
+                  ]}
+                  modifiers={{ holiday: holidayDates }}
+                  modifiersClassNames={{
+                    holiday: "font-medium",
+                  }}
+                  components={{ DayButton: renderHolidayDayButton }}
+                  className="w-full"
+                />
+              )}
+            </div>
+            <div className="relative z-10 px-4 py-3 border-t border-gray-100 bg-gray-50 text-xs text-gray-500 min-h-[2.75rem] leading-relaxed">
               {startDate ? (
                 isHalfLeave ? (
                   <>
@@ -444,6 +532,9 @@ export default function Leaves() {
                 "Select a weekday (Mon–Fri). Ranges can span weekends; Sat/Sun don’t count."
               )}
             </div>
+            <p className="relative z-10 px-4 pb-2 text-[11px] text-gray-400 lg:hidden">
+              Swipe left or right to change month
+            </p>
           </div>
 
           <div className="space-y-4 min-w-0">

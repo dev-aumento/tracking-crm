@@ -79,6 +79,7 @@ export async function ensureDefaultAdmin() {
       notificationLanguage: null,
       privateNotes: null,
       employmentType: "full_time",
+      onNoticePeriod: false,
       headOfDepartmentUserIds: [],
       permissions,
       createdAt: now,

@@ -2,9 +2,9 @@ import { useMemo, useState } from "react";
 import { trpc } from "@/providers/trpc";
 import { useAuth } from "@/hooks/useAuth";
 import { UserAvatar } from "@/components/shared/UserAvatar";
-import { Timer, Calendar, Loader2, Pencil } from "lucide-react";
-import { localDateKey, REQUIRED_DAILY_HOURS } from "@/lib/work-hours-policy";
-import { formatDuration } from "@/lib/utils";
+import { Timer, Calendar, Loader2, Pencil, ChevronDown, Coffee } from "lucide-react";
+import { localDateKey, REQUIRED_DAILY_HOURS, formatHoursMinutes, formatHoursMinutesFloored } from "@/lib/work-hours-policy";
+import { formatDuration, cn } from "@/lib/utils";
 import { hasPermission } from "@/lib/permissions";
 import { isAdminOrManagement } from "@/lib/leave-policy";
 import { BreaksPanel } from "@/components/time-tracking/BreaksPanel";
@@ -117,6 +117,7 @@ export function DayHoursSection({ embedded = true }: { embedded?: boolean }) {
 
   const [selectedDate, setSelectedDate] = useState(() => localDateKey(new Date()));
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<number | "">("");
+  const [expandedUserId, setExpandedUserId] = useState<number | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [editingEntry, setEditingEntry] = useState<AttendanceEntryRow | null>(null);
 
@@ -175,13 +176,18 @@ export function DayHoursSection({ embedded = true }: { embedded?: boolean }) {
         </p>
       </div>
 
-      <div className="flex flex-wrap items-center gap-4 p-4 bg-gray-50 rounded-xl border border-gray-100">
+      <div
+        className="flex flex-wrap items-center gap-3 p-4 bg-gray-50 rounded-xl border border-gray-100"
+      >
         <div className="flex items-center gap-2">
-          <Calendar size={16} className="text-gray-400" />
+          <Calendar size={16} className="text-gray-400 shrink-0" />
           <input
             type="date"
             value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
+            onChange={(e) => {
+              setSelectedDate(e.target.value);
+              setExpandedUserId(null);
+            }}
             className="h-9 px-3 border border-gray-200 rounded-lg text-sm bg-white"
           />
         </div>
@@ -206,7 +212,7 @@ export function DayHoursSection({ embedded = true }: { embedded?: boolean }) {
         ) : null}
 
         {!showTeamTable ? (
-          <div className="ml-auto text-right">
+          <div className="text-right ml-auto">
             <div className="text-xs text-gray-400">Total hours</div>
             <div className="text-lg font-bold text-[#1F2937]">{dayHoursTotal}h</div>
           </div>
@@ -246,62 +252,116 @@ export function DayHoursSection({ embedded = true }: { embedded?: boolean }) {
         </>
       ) : (
         <div className="border border-gray-200 rounded-xl overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 bg-gray-50/50">
+          <div className="flex items-center justify-between px-4 sm:px-5 py-4 border-b border-gray-100 bg-gray-50/50">
             <h3 className="font-semibold text-[#1F2937]">Employee Hours</h3>
             <span className="text-xs text-gray-400">{teamHours?.length || 0} employees</span>
           </div>
-          <div className="overflow-x-auto">
-            <div className="min-w-[640px]">
-              <div className="grid grid-cols-[minmax(140px,1fr)_80px_72px_88px_100px] sm:grid-cols-[1fr_100px_100px_100px_120px] gap-3 sm:gap-4 px-4 sm:px-5 py-3 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                <span>Employee</span>
-                <span>Role</span>
-                <span>Entries</span>
-                <span>Total Hours</span>
-                <span>Utilization</span>
-              </div>
           {teamLoading ? (
             <div className="flex items-center justify-center py-12">
               <Loader2 size={24} className="animate-spin text-gray-400" />
             </div>
           ) : teamHours && teamHours.length > 0 ? (
-            teamHours.map((member) => {
-              const utilization = Math.min(
-                Math.round((member.totalHours / REQUIRED_DAILY_HOURS) * 100),
-                100,
-              );
-              return (
-                <div
-                  key={member.userId}
-                  className="grid grid-cols-[minmax(140px,1fr)_80px_72px_88px_100px] sm:grid-cols-[1fr_100px_100px_100px_120px] gap-3 sm:gap-4 px-4 sm:px-5 py-3 border-b border-gray-50 hover:bg-gray-50 transition-colors items-center"
-                >
-                  <div className="flex items-center gap-3">
-                    <UserAvatar name={member.name} avatar={member.avatar} size={28} />
-                    <span className="text-sm text-gray-700">{member.name}</span>
-                  </div>
-                  <span className="text-xs text-gray-500 capitalize">{member.role}</span>
-                  <span className="text-sm text-gray-700">{member.entriesCount}</span>
-                  <span className="text-sm font-semibold text-[#1F2937]">{member.totalHours}h</span>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
-                      <div
-                        className="h-full rounded-full transition-all duration-500"
-                        style={{
-                          width: `${utilization}%`,
-                          backgroundColor:
-                            utilization > 80 ? "#10B981" : utilization > 50 ? "#F59E0B" : "#DC2626",
-                        }}
-                      />
-                    </div>
-                    <span className="text-xs text-gray-500 w-8">{utilization}%</span>
-                  </div>
+
+              <>
+                <div className="grid grid-cols-[1fr_100px_100px_100px_120px] gap-4 px-5 py-3 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                  <span>Employee</span>
+                  <span>Role</span>
+                  <span>Entries</span>
+                  <span>Total Hours</span>
+                  <span>Utilization</span>
                 </div>
-              );
-            })
+                {teamHours.map((member) => {
+                  const utilization = Math.min(
+                    Math.round((member.totalHours / REQUIRED_DAILY_HOURS) * 100),
+                    100,
+                  );
+                  const expanded = expandedUserId === member.userId;
+                  const breakSeconds =
+                    member.breakSeconds ?? Math.round((member.breakHours ?? 0) * 3600);
+                  return (
+                    <div key={member.userId} className="border-b border-gray-50">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedUserId(expanded ? null : member.userId)
+                        }
+                        aria-expanded={expanded}
+                        className="w-full grid grid-cols-[1fr_100px_100px_100px_120px] gap-4 px-5 py-3 hover:bg-gray-50 transition-colors items-center text-left"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <ChevronDown
+                            size={16}
+                            className={cn(
+                              "shrink-0 text-gray-400 transition-transform",
+                              expanded && "rotate-180",
+                            )}
+                          />
+                          <UserAvatar name={member.name} avatar={member.avatar} size={28} />
+                          <span className="text-sm text-gray-700 truncate">{member.name}</span>
+                        </div>
+                        <span className="text-xs text-gray-500 capitalize">{member.role}</span>
+                        <span className="text-sm text-gray-700">{member.entriesCount}</span>
+                        <span className="text-sm font-semibold text-[#1F2937]">
+                          {member.totalHours}h
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+                            <div
+                              className="h-full rounded-full transition-all duration-500"
+                              style={{
+                                width: `${utilization}%`,
+                                backgroundColor:
+                                  utilization > 80
+                                    ? "#10B981"
+                                    : utilization > 50
+                                      ? "#F59E0B"
+                                      : "#DC2626",
+                              }}
+                            />
+                          </div>
+                          <span className="text-xs text-gray-500 w-8">{utilization}%</span>
+                        </div>
+                      </button>
+                      {expanded ? (
+                        <div className="px-5 pb-3 pt-0 bg-gray-50/70">
+                          <div className="ml-8 grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-lg border border-gray-200 bg-white p-3">
+                            <div className="flex items-center gap-2.5">
+                              <div className="h-8 w-8 rounded-lg bg-blue-50 text-[#2563EB] flex items-center justify-center shrink-0">
+                                <Timer size={15} />
+                              </div>
+                              <div>
+                                <div className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">
+                                  Working time
+                                </div>
+                                <div className="text-sm font-semibold text-[#1F2937]">
+                                  {formatHoursMinutes(member.totalHours)}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2.5">
+                              <div className="h-8 w-8 rounded-lg bg-amber-50 text-amber-700 flex items-center justify-center shrink-0">
+                                <Coffee size={15} />
+                              </div>
+                              <div>
+                                <div className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">
+                                  Break time
+                                </div>
+                                <div className="text-sm font-semibold text-[#1F2937]">
+                                  {formatHoursMinutesFloored(breakSeconds)}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </>
+
           ) : (
-                <div className="py-12 text-center text-gray-400 text-sm">No data for this date</div>
+            <div className="py-12 text-center text-gray-400 text-sm">No data for this date</div>
           )}
-            </div>
-          </div>
         </div>
       )}
     </div>

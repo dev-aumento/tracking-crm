@@ -1,6 +1,8 @@
 import { Collections } from "@db/mongo/collections";
 import { Workspace } from "@contracts/constants";
 import { getCollection } from "../queries/connection";
+import { hasMongoConfigured } from "../queries/mongo";
+import * as mock from "./mock-store";
 
 const SETTINGS_KEY = "organization";
 
@@ -11,6 +13,9 @@ type OrganizationSettingsDoc = {
 };
 
 export async function getOrganizationName(): Promise<string> {
+  if (!hasMongoConfigured()) {
+    return mock.mockGetOrganizationName();
+  }
   try {
     const col = await getCollection<OrganizationSettingsDoc>(Collections.appSettings);
     const doc = await col.findOne({ key: SETTINGS_KEY });
@@ -24,6 +29,9 @@ export async function getOrganizationName(): Promise<string> {
 export async function setOrganizationName(name: string): Promise<string> {
   const trimmed = name.trim();
   if (!trimmed) return getOrganizationName();
+  if (!hasMongoConfigured()) {
+    return mock.mockSetOrganizationName(trimmed);
+  }
 
   const col = await getCollection<OrganizationSettingsDoc>(Collections.appSettings);
   await col.updateOne(

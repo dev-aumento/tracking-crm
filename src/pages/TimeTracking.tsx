@@ -10,7 +10,9 @@ import { ManualClockInRequestForm } from "@/components/time-tracking/ManualClock
 import { CrossDayClockOutDialog } from "@/components/time-tracking/CrossDayClockOutDialog";
 import { useClockOutAction } from "@/hooks/useClockOutAction";
 import { invalidateActiveTaskTimers } from "@/lib/invalidate-task-timers";
+import { runClockInWithLocation } from "@/lib/clock-in-with-location";
 import { TimeApprovalPanel } from "@/components/time-tracking/TimeApprovalPanel";
+import { toast } from "sonner";
 import {
   fillBreakdownForPeriod,
   formatHoursMinutes,
@@ -131,6 +133,7 @@ export default function TimeTracking() {
       utils.dashboard.getStats.invalidate();
       setNote("");
     },
+    onError: (err) => toast.error(err.message || "Could not clock in"),
   });
 
   const pauseMutation = trpc.timeEntry.pauseSession.useMutation({
@@ -385,7 +388,15 @@ export default function TimeTracking() {
             )}
             {!isClockedIn && (
               <button
-                onClick={() => clockInMutation.mutate()}
+                onClick={() => {
+                  void runClockInWithLocation(
+                    (input) => clockInMutation.mutateAsync(input),
+                    {
+                      isLocationRequired: async () =>
+                        (await utils.location.clockInPolicy.fetch()).required,
+                    },
+                  );
+                }}
                 disabled={clockInMutation.isPending || clockOutAction.isPending}
                 className="w-full md:w-auto h-11 sm:h-12 px-6 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all bg-white/20 text-white hover:bg-white/30 border border-white/40 disabled:opacity-50"
               >

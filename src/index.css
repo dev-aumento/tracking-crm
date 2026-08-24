@@ -37,11 +37,11 @@
   }
 
   .dark {
-    --background: 222 47% 7%;
+    --background: 216 28% 7%;
     --foreground: 210 40% 98%;
-    --card: 220 30% 14%;
+    --card: 215 21% 11%;
     --card-foreground: 210 40% 98%;
-    --popover: 220 30% 14%;
+    --popover: 215 21% 11%;
     --popover-foreground: 210 40% 98%;
     --primary: 199 89% 48%;
     --primary-foreground: 0 0% 100%;
@@ -56,7 +56,7 @@
     --border: 217 22% 24%;
     --input: 217 22% 24%;
     --ring: 199 89% 48%;
-    --sidebar-background: 222 47% 7%;
+    --sidebar-background: 216 28% 6%;
     --sidebar-foreground: 220 14% 96%;
     --sidebar-primary: 199 89% 48%;
     --sidebar-primary-foreground: 0 0% 100%;
@@ -73,7 +73,7 @@
     @apply border-border;
   }
   html {
-    scrollbar-gutter: stable;
+    scrollbar-gutter: auto;
   }
   body {
     @apply bg-background text-foreground;
@@ -85,19 +85,36 @@
 }
 
 /*
+ * react-remove-scroll injects later with !important. Higher specificity keeps the
+ * scrollbar visible so a blank strip does not replace it.
+ */
+html body[data-scroll-locked] {
+  overflow: auto !important;
+  margin-right: 0 !important;
+  padding-right: 0 !important;
+  padding-left: 0 !important;
+  --removed-body-scroll-bar-size: 0px;
+}
+html.with-scroll-bars-hidden {
+  overflow: auto !important;
+  overflow-y: auto !important;
+  padding-right: 0 !important;
+}
+
+/*
  * Dark theme remaps for hardcoded light utilities used across feature pages.
  * Semantic token components (ui/*) already follow .dark CSS variables.
  */
 html.dark {
-  --dm-page: #0b1220;
-  --dm-panel: #151c2c;
-  --dm-panel-2: #1a2336;
-  --dm-elevated: #1e293b;
+  --dm-page: #0d1117;
+  --dm-panel: #161b22;
+  --dm-panel-2: #1c2330;
+  --dm-elevated: #21262d;
   --dm-muted: #243044;
-  --dm-border: #2d3a4f;
+  --dm-border: #30363d;
   --dm-text: #f3f4f6;
-  --dm-text-muted: #c4cdd8;
-  --dm-text-soft: #9aa6b8;
+  --dm-text-muted: #8b949e;
+  --dm-text-soft: #8b949e;
   --dm-tint: #1a2740;
   --dm-tint-border: #2a3f63;
 }
@@ -139,8 +156,15 @@ html.dark .bg-\[\#E8ECF1\] {
   background-color: var(--dm-page) !important;
 }
 
-html.dark .bg-\[\#E8F0FE\] {
-  background-color: var(--dm-tint) !important;
+html.dark .bg-\[\#E8F0FE\],
+html.dark .bg-\[\#EEF2FF\],
+html.dark .bg-\[\#E0E7FF\],
+html.dark .bg-\[\#EFF6FF\] {
+  background-color: var(--dm-elevated) !important;
+}
+
+html.dark .active\:bg-\[\#E0E7FF\]:active {
+  background-color: var(--dm-muted) !important;
 }
 
 html.dark .bg-\[\#DCFCE7\] {
@@ -180,6 +204,10 @@ html.dark .hover\:bg-blue-50\/80:hover,
 html.dark .hover\:bg-blue-50\/50:hover,
 html.dark .hover\:bg-blue-100:hover {
   background-color: var(--dm-tint) !important;
+}
+
+html.dark .active\:bg-blue-100:active {
+  background-color: var(--dm-muted) !important;
 }
 
 html.dark .border-gray-50,
@@ -257,6 +285,69 @@ html.dark .rich-comment-content {
   color: var(--dm-text);
 }
 
+/* Pasted / rendered tables in task descriptions and comments */
+.rich-comment-editor,
+.rich-comment-content,
+.rich-comment-html {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+}
+
+.rich-comment-editor table,
+.rich-comment-content table,
+.rich-comment-html table {
+  width: max-content;
+  max-width: none;
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 0.875rem;
+}
+
+.rich-comment-editor th,
+.rich-comment-editor td,
+.rich-comment-content th,
+.rich-comment-content td,
+.rich-comment-html th,
+.rich-comment-html td {
+  border: 1px solid #d1d5db;
+  padding: 0.375rem 0.625rem;
+  vertical-align: top;
+  text-align: left;
+  min-width: 2.5rem;
+}
+
+.rich-comment-editor th,
+.rich-comment-content th,
+.rich-comment-html th {
+  background: #f3f4f6;
+  font-weight: 600;
+}
+
+html.dark .rich-comment-editor th,
+html.dark .rich-comment-editor td,
+html.dark .rich-comment-content th,
+html.dark .rich-comment-content td,
+html.dark .rich-comment-html th,
+html.dark .rich-comment-html td {
+  border: 1px solid rgba(255, 255, 255, 0.85) !important;
+}
+
+html.dark .rich-comment-editor table,
+html.dark .rich-comment-content table,
+html.dark .rich-comment-html table {
+  border-color: rgba(255, 255, 255, 0.85);
+}
+
+html.dark .rich-comment-editor th,
+html.dark .rich-comment-content th,
+html.dark .rich-comment-html th {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f3f4f6;
+}
+
 html.dark .ProseMirror p.is-editor-empty:first-child::before {
   color: var(--dm-text-soft);
 }
@@ -291,9 +382,14 @@ html.dark textarea::placeholder {
 }
 
 /* Sidebar dark mode: match app shell charcoal, not bright blue gradient */
+html.dark .app-topbar {
+  background-color: #0d1117 !important;
+  border-color: #1e293b !important;
+}
+
 html.dark .sidebar-chrome {
   background-image: none !important;
-  background-color: #0b1220 !important;
+  background-color: #0a0e14 !important;
 }
 
 html.dark .sidebar-chrome .bg-white,

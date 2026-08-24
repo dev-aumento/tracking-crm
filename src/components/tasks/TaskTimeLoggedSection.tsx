@@ -2,7 +2,17 @@ import { useState } from "react";
 import { trpc } from "@/providers/trpc";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import { formatElapsedHMS, formatTimeEntryLogged, getTimeEntrySeconds } from "@/lib/utils";
-import { Check, Loader2, Pencil, Plus, X } from "lucide-react";
+import { Check, Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 type TimeEntry = NonNullable<
   ReturnType<typeof trpc.task.getTimeTracked.useQuery>["data"]
@@ -331,14 +341,27 @@ export function TaskTimeLoggedSection({
   canPickUser: boolean;
   users: Array<{ id: number; name: string | null }>;
 }) {
+  const utils = trpc.useUtils();
   const [editingEntryId, setEditingEntryId] = useState<number | null>(null);
   const [showAddManual, setShowAddManual] = useState(false);
+  const [entryPendingDelete, setEntryPendingDelete] = useState<TimeEntry | null>(null);
+
+  const deleteMutation = trpc.task.deleteTimeEntry.useMutation({
+    onSuccess: () => {
+      invalidateTaskTime(utils, taskId);
+      setEntryPendingDelete(null);
+      setEditingEntryId(null);
+    },
+  });
 
   const entries = timeData?.entries ?? [];
   const hasEntries = entries.length > 0;
 
   const canEditEntry = (entry: TimeEntry) =>
-    canManageTime || entry.userId === currentUserId;
+    canManageTime ||
+    (entry.userId != null &&
+      currentUserId != null &&
+      Number(entry.userId) === Number(currentUserId));
 
   return (
     <div className="space-y-2">
@@ -366,22 +389,38 @@ export function TaskTimeLoggedSection({
                         )}
                       </div>
                     </div>
-                    <div className="flex items-start gap-1 shrink-0 pt-0.5">
-                      <span className="font-mono text-xs font-semibold text-gray-600 tabular-nums">
+                    <div className="flex items-start gap-0.5 shrink-0 pt-0.5">
+                      <span className="font-mono text-xs font-semibold text-gray-600 tabular-nums mr-1">
                         {formatElapsedHMS(getTimeEntrySeconds(entry))}
                       </span>
                       {editable ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowAddManual(false);
-                            setEditingEntryId(isEditing ? null : entry.id);
-                          }}
-                          className="h-7 w-7 inline-flex items-center justify-center rounded-md text-gray-400 hover:text-[#2563EB] hover:bg-gray-50"
-                          aria-label={isEditing ? "Close edit" : "Edit time entry"}
-                        >
-                          {isEditing ? <X size={14} /> : <Pencil size={14} />}
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowAddManual(false);
+                              setEditingEntryId(isEditing ? null : entry.id);
+                            }}
+                            className="h-7 w-7 inline-flex items-center justify-center rounded-md text-gray-400 hover:text-[#2563EB] hover:bg-gray-50"
+                            aria-label={isEditing ? "Close edit" : "Edit time entry"}
+                            title={isEditing ? "Close edit" : "Edit time entry"}
+                          >
+                            {isEditing ? <X size={14} /> : <Pencil size={14} />}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowAddManual(false);
+                              setEditingEntryId(null);
+                              setEntryPendingDelete(entry);
+                            }}
+                            className="h-7 w-7 inline-flex items-center justify-center rounded-md text-gray-400 hover:text-red-600 hover:bg-red-50"
+                            aria-label="Delete time entry"
+                            title="Delete time entry"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </>
                       ) : null}
                     </div>
                   </div>
@@ -428,6 +467,50 @@ export function TaskTimeLoggedSection({
           )}
         </div>
       ) : null}
+
+      <AlertDialog
+        open={entryPendingDelete != null}
+        onOpenChange={(open) => {
+          if (!open && !deleteMutation.isPending) {
+            setEntryPendingDelete(null);
+          }
+        }}
+      >
+        <AlertDialogContent overlayClassName="z-[130]" className="z-[130]">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete time entry?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove{" "}
+              {entryPendingDelete
+                ? `${formatElapsedHMS(getTimeEntrySeconds(entryPendingDelete))} logged by ${
+                    entryPendingDelete.user?.name ?? "this user"
+                  }`
+                : "this time entry"}
+              . This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {deleteMutation.error ? (
+            <p className="text-sm text-red-600">{deleteMutation.error.message}</p>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              disabled={deleteMutation.isPending || entryPendingDelete == null}
+              onClick={(e) => {
+                e.preventDefault();
+                if (!entryPendingDelete) return;
+                deleteMutation.mutate({
+                  taskId,
+                  entryId: entryPendingDelete.id,
+                });
+              }}
+            >
+              {deleteMutation.isPending ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

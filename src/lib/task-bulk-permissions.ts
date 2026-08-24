@@ -1,7 +1,7 @@
-import { hasPermission } from "@/lib/permissions";
+import { hasPermission, type AppRole } from "@/lib/permissions";
 
 type BulkUser = {
-  role: "admin" | "manager" | "employee" | "hr" | "client";
+  role: AppRole;
   permissions?: string[];
 } | null | undefined;
 

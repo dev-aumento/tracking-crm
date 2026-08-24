@@ -7,8 +7,7 @@ import { PriorityBadge } from "@/components/shared/StatusBadge";
 import { TaskDetailPanel } from "@/components/tasks/TaskDetailPanel";
 import { GripVertical, Plus, Loader2 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
-import { formatWorkZoneDate } from "@/lib/timezone";
-import { defaultTaskDeadlineIso } from "@/lib/task-deadline";
+import { defaultTaskDeadlineIso, formatDueLabel } from "@/lib/task-deadline";
 
 const COLUMNS = [
   { key: "todo", label: "To Do", color: "#6B7280" },
@@ -161,7 +160,10 @@ export default function Kanban() {
                         )}
                         {task.dueDate && (
                           <span className="text-[10px] text-gray-400">
-                            {formatWorkZoneDate(task.dueDate, { month: "short", day: "numeric" })}
+                            {formatDueLabel(task.dueDate, {
+                              month: "short",
+                              day: "numeric",
+                            })}
                           </span>
                         )}
                       </div>

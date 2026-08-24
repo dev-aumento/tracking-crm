@@ -16,6 +16,7 @@ export default defineConfig(({ mode }) => {
   process.env.MONGODB_URI ??= env.MONGODB_URI;
   process.env.AUTH_DISABLED ??= env.AUTH_DISABLED;
   process.env.APP_SECRET ??= env.APP_SECRET;
+  process.env.USE_DATABASE ??= env.USE_DATABASE;
 
   return {
   plugins: [

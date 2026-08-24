@@ -1,4 +1,14 @@
-export type UserRole = "admin" | "manager" | "employee" | "hr" | "client";
+export type UserRole =
+  | "admin"
+  | "manager"
+  | "employee"
+  | "hr"
+  | "client"
+  | "finance"
+  | "platform";
+export type WorkspaceType = "client" | "standard" | "platform";
+export type SubscriptionPlan = string;
+export type SubscriptionStatus = "trial" | "paid" | "unpaid" | "cancelled";
 export type UserStatus = "active" | "inactive" | "suspended" | "Active" | "Inactive" | "Suspended";
 export type EmploymentType = "full_time" | "intern";
 export type SexOption = "male" | "female" | "other" | "prefer_not_to_say";
@@ -39,7 +49,10 @@ export type NotificationType =
   | "leave_approved"
   | "leave_rejected"
   | "leave_cancelled"
-  | "holiday_reminder";
+  | "holiday_reminder"
+  | "plan_joined"
+  | "plan_updated"
+  | "plan_cancelled";
 
 export type LeaveType = "paid" | "sick" | "unpaid" | "half" | "wfh";
 export type LeaveStatus = "pending" | "approved" | "rejected" | "cancelled";
@@ -47,11 +60,85 @@ export type LeaveStatus = "pending" | "approved" | "rejected" | "cancelled";
 export type TimeApprovalType = "clock_in" | "break";
 export type TimeApprovalStatus = "pending" | "approved" | "rejected";
 
+/** Billing / invoice company profile shared by admin and finance for the tenant. */
+export type OrganizationBillingProfile = {
+  logoDataUrl: string | null;
+  name: string;
+  industry: string;
+  businessType: string;
+  location: string;
+  addressLine1: string;
+  addressLine2: string;
+  city: string;
+  zip: string;
+  state: string;
+  phone: string;
+  fax: string;
+  website: string;
+  differentPaymentAddress: boolean;
+  paymentAddressLine1: string;
+  paymentAddressLine2: string;
+  paymentCity: string;
+  paymentZip: string;
+  paymentState: string;
+  paymentCountry: string;
+  paymentPhone: string;
+  primaryContactName: string;
+  primaryContactEmail: string;
+  baseCurrency: string;
+  fiscalYear: string;
+  language: string;
+  timeZone: string;
+  dateFormat: string;
+  companyIdType: string;
+  companyIdValue: string;
+  taxIdType: string;
+  taxIdValue: string;
+  additionalFields: Array<{ id: string; label: string; value: string }>;
+};
+
 /** Tenant / workspace that owns users, projects, tasks, and related data. */
 export type OrganizationDoc = {
   id: number;
   name: string;
+  /**
+   * Client workspaces use the Asana-style client portal for every member
+   * (owner and invited teammates). Staff CRM orgs stay "standard".
+   * Platform orgs belong to FlowTicX master admins and are excluded from the customer list.
+   */
+  workspaceType?: WorkspaceType;
+  /** Product plan assigned by the FlowTicX master admin. */
+  plan?: SubscriptionPlan;
+  planStatus?: SubscriptionStatus;
+  /** Recurring amount in INR. */
+  subscriptionAmount?: number;
+  purchasedAt?: Date | null;
+  /** Inclusive start of the current plan window. */
+  planStartsAt?: Date | null;
+  /** Inclusive end of the current plan window. */
+  planExpiresAt?: Date | null;
+  planCancelledAt?: Date | null;
+  planCancelReason?: string | null;
+  planNotes?: string | null;
+  /** Company details used on invoices (admin-maintained, shared with finance). */
+  billingProfile?: OrganizationBillingProfile | null;
+  /** Optional CRM logo for the platform console (data URL). */
+  logoDataUrl?: string | null;
   createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+/** Catalog plan sold by the FlowTicX platform. */
+export type SubscriptionPlanDoc = {
+  id: number;
+  slug: string;
+  name: string;
+  amount: number;
+  description: string;
+  durationDays: number;
+  featureKeys: string[];
+  sortOrder: number;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -94,6 +181,11 @@ export type UserDoc = {
    * `full_time` (default) → 3-month probation no-PL window.
    */
   employmentType: EmploymentType;
+  /**
+   * When true, employee is serving notice. Current + future months get no paid leave.
+   * Editable by admin, HR, and project managers (manager role).
+   */
+  onNoticePeriod: boolean;
   headOfDepartmentUserIds: number[];
   permissions: string[];
   /** Manual order on the Employees admin list (lower = higher). */
@@ -103,7 +195,12 @@ export type UserDoc = {
   lastSignInAt: Date;
 };
 
-export type SafeUser = Omit<UserDoc, "passwordHash" | "privateNotes">;
+export type SafeUser = Omit<UserDoc, "passwordHash" | "privateNotes"> & {
+  /** True when the user's organization is a client portal workspace. Not stored on the user document. */
+  clientWorkspace?: boolean;
+};
+
+export type InviteKind = "employee" | "client";
 
 export type EmployeeInviteDoc = {
   id: number;
@@ -113,6 +210,8 @@ export type EmployeeInviteDoc = {
   /** Invited email address (required for new invites). */
   email: string | null;
   department: string | null;
+  /** Who this invite creates. Older invites without this field are employees. */
+  inviteKind?: InviteKind;
   status: InviteStatus;
   acceptedUserId: number | null;
   expiresAt: Date;
@@ -148,6 +247,7 @@ export type EmployeeDoc = {
   panCard: string | null;
   notificationLanguage: string | null;
   employmentType: EmploymentType;
+  onNoticePeriod: boolean;
   headOfDepartmentUserIds: number[];
   status: UserStatus;
   permissions: string[];
@@ -347,6 +447,8 @@ export type NotificationDoc = {
   activityId?: number | null;
   leaveRequestId?: number | null;
   holidayId?: number | null;
+  /** Customer workspace this plan event refers to (for master-admin links). */
+  relatedOrganizationId?: number | null;
   read: boolean;
   createdAt: Date;
 };
@@ -379,6 +481,49 @@ export type PublicHolidayDoc = {
   createdBy: number | null;
   createdAt: Date;
   updatedAt: Date;
+};
+
+/** Office / site geofence used to restrict employee clock-in. */
+export type WorkLocationDoc = {
+  id: number;
+  organizationId: number | null;
+  name: string;
+  address: string | null;
+  latitude: number;
+  longitude: number;
+  /** Geofence radius in meters. */
+  radiusMeters: number;
+  archived: boolean;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+/** One attendance QR token per organization (printed / downloaded by HR/admin). */
+export type OrgAttendanceQrDoc = {
+  id: number;
+  organizationId: number;
+  /** High-entropy secret encoded in the QR. */
+  token: string;
+  updatedBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type OrgAttendanceQrActivityAction =
+  | "created"
+  | "regenerated"
+  | "downloaded";
+
+/** Audit trail for org attendance QR actions (HR/admin). */
+export type OrgAttendanceQrActivityDoc = {
+  id: number;
+  organizationId: number;
+  action: OrgAttendanceQrActivityAction;
+  userId: number;
+  /** Display name snapshot at the time of the action. */
+  userName: string;
+  createdAt: Date;
 };
 
 /**
@@ -470,6 +615,10 @@ export type CustomerDoc = {
   customFieldLabel: string;
   customFieldValue: string;
   remarks: string;
+  /** Linked client-role user in this CRM org. */
+  sourceUserId?: number | null;
+  /** Linked client-portal organization represented by this customer. */
+  sourceOrganizationId?: number | null;
   createdBy: number | null;
   createdAt: Date;
   updatedAt: Date;
@@ -504,6 +653,133 @@ export type InvoiceDoc = {
   roundOff: boolean;
   currency?: string;
   status: "draft" | "sent" | "paid";
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type BankAccountDoc = {
+  id: number;
+  organizationId: number;
+  name: string;
+  bankName: string;
+  accountNumber: string;
+  accountType: "current" | "savings" | "cash" | "other";
+  currency: string;
+  openingBalance: number;
+  currentBalance: number;
+  ifscOrSwift: string;
+  branch: string;
+  isActive: boolean;
+  notes: string;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type LedgerAccountType = "asset" | "liability" | "equity" | "income" | "expense";
+
+export type LedgerAccountDoc = {
+  id: number;
+  organizationId: number;
+  code: string;
+  name: string;
+  type: LedgerAccountType;
+  description: string;
+  isSystem: boolean;
+  isActive: boolean;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type EstimateDoc = {
+  id: number;
+  organizationId: number;
+  estimateNumber: string;
+  customerId: number | null;
+  customerName: string;
+  estimateDate: string;
+  validUntil: string;
+  currency: string;
+  items: InvoiceLineItemDoc[];
+  notes: string;
+  taxPercent: number;
+  adjustment: number;
+  status: "draft" | "sent" | "accepted" | "declined" | "converted";
+  convertedInvoiceId: number | null;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type PaymentDoc = {
+  id: number;
+  organizationId: number;
+  invoiceId: number | null;
+  customerId: number | null;
+  customerName: string;
+  amount: number;
+  paymentDate: string;
+  method: "bank_transfer" | "upi" | "cash" | "cheque" | "card" | "other";
+  bankAccountId: number | null;
+  reference: string;
+  notes: string;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type ExpenseDoc = {
+  id: number;
+  organizationId: number;
+  expenseDate: string;
+  vendorName: string;
+  category: string;
+  ledgerAccountId: number | null;
+  amount: number;
+  taxAmount: number;
+  currency: string;
+  paymentMethod: "bank_transfer" | "upi" | "cash" | "cheque" | "card" | "other";
+  bankAccountId: number | null;
+  status: "draft" | "recorded";
+  notes: string;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type ContractDoc = {
+  id: number;
+  organizationId: number;
+  customerId: number | null;
+  customerName: string;
+  title: string;
+  startDate: string;
+  endDate: string;
+  value: number;
+  currency: string;
+  billingTerms: string;
+  status: "draft" | "active" | "expired" | "cancelled";
+  notes: string;
+  createdBy: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type VendorBillDoc = {
+  id: number;
+  organizationId: number;
+  vendorName: string;
+  billNumber: string;
+  billDate: string;
+  dueDate: string;
+  amount: number;
+  currency: string;
+  category: string;
+  status: "open" | "paid" | "void";
+  paidAt: string | null;
+  notes: string;
   createdBy: number | null;
   createdAt: Date;
   updatedAt: Date;
@@ -581,11 +857,36 @@ export const DEFAULT_PERMISSIONS_BY_ROLE: Record<UserRole, string[]> = {
     "projects.view",
   ],
   client: [
+    "dashboard.view",
     "projects.view",
     "projects.manage",
     "tasks.view_all",
     "tasks.create",
     "tasks.edit_all",
     "tasks.change_assignee",
+    "employees.manage",
+    "invoices.manage",
   ],
+  finance: [
+    "dashboard.view",
+    "invoices.manage",
+    "customers.manage",
+  ],
+  platform: [],
+};
+
+/** Personal calendar notes / reminders on admin & project-manager dashboards. */
+export type DashboardReminderDoc = {
+  id: number;
+  organizationId: number;
+  userId: number;
+  title: string;
+  note: string | null;
+  /** YYYY-MM-DD in the work zone. */
+  dateKey: string;
+  /** Optional wall time HH:mm (24h). */
+  time: string | null;
+  color: string | null;
+  createdAt: Date;
+  updatedAt: Date;
 };

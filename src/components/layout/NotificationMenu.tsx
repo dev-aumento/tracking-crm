@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { trpc } from "@/providers/trpc";
 import { useAuth } from "@/hooks/useAuth";
 import {
@@ -8,11 +8,12 @@ import {
 } from "@/hooks/useNotificationStream";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { formatTimeAgo } from "@/lib/utils";
-import { buildTaskNotificationLink } from "@/lib/task-notification-link";
 import {
   filterNotificationsByPrefs,
   useNotificationPrefs,
 } from "@/lib/notification-prefs";
+import { notificationTarget } from "@/lib/notification-targets";
+import { isPlatformUser } from "@/lib/platform-admin";
 import {
   markNotificationReadInCache,
   NOTIFICATION_LIST_ALL,
@@ -31,40 +32,17 @@ type NotificationItem = {
   taskId?: number | null;
   projectId?: number | null;
   activityId?: number | null;
+  relatedOrganizationId?: number | null;
   link?: string | null;
 };
 
-function notificationTarget(notif: NotificationItem) {
-  if (notif.type === "employee_joined") return "/admin/employees";
-  if (
-    notif.type === "time_approval_pending" ||
-    notif.type === "time_approved" ||
-    notif.type === "time_rejected"
-  ) {
-    return "/time-tracking";
-  }
-  if (
-    notif.type === "leave_request_pending" ||
-    notif.type === "leave_approved" ||
-    notif.type === "leave_rejected" ||
-    notif.type === "leave_cancelled" ||
-    notif.type === "holiday_reminder"
-  ) {
-    return notif.type === "leave_request_pending" || notif.type === "leave_cancelled"
-      ? "/leave-management"
-      : "/leaves";
-  }
-  if (notif.type === "project_created" && notif.projectId) {
-    return `/projects/${notif.projectId}`;
-  }
-  if (notif.link?.includes("activity=")) return notif.link;
-  if (notif.taskId) return buildTaskNotificationLink(notif.taskId, notif.activityId);
-  if (notif.link) return notif.link;
-  return null;
-}
-
-export function NotificationMenu() {
+export function NotificationMenu({
+  variant = "default",
+}: {
+  variant?: "default" | "admin";
+}) {
   const { user } = useAuth();
+  const admin = variant === "admin";
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const utils = trpc.useUtils();
@@ -125,7 +103,7 @@ export function NotificationMenu() {
     if (!notif.read) {
       markReadMutation.mutate({ id: notif.id });
     }
-    const target = notificationTarget(notif);
+    const target = notificationTarget(notif, user);
     if (target) {
       setOpen(false);
       navigate(target);
@@ -144,21 +122,6 @@ export function NotificationMenu() {
 
   return (
     <Popover open={open} onOpenChange={handleOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="relative w-10 h-10 flex items-center justify-center rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-          aria-label="Notifications"
-        >
-          <Bell size={20} className="text-gray-500 dark:text-gray-400" />
-          {unreadCount > 0 && (
-            <span className="absolute top-1.5 right-1.5 bg-[#2563EB] text-white text-[9px] font-bold rounded-full min-w-[16px] h-4 flex items-center justify-center px-1">
-              {unreadCount > 9 ? "9+" : unreadCount}
-            </span>
-          )}
-        </button>
-      </PopoverTrigger>
-
       <PopoverContent align="end" className="w-[380px] p-0 rounded-xl border-gray-200 shadow-xl overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
           <div>
@@ -203,7 +166,7 @@ export function NotificationMenu() {
           {!isLoading &&
             notifications.map((notif) => {
               const isUnread = !notif.read;
-              const target = notificationTarget(notif as NotificationItem);
+              const target = notificationTarget(notif as NotificationItem, user);
               return (
                 <div
                   key={notif.id}
@@ -245,6 +208,15 @@ export function NotificationMenu() {
               );
             })}
         </div>
+        {isPlatformUser(user) ? (
+          <Link
+            to="/platform/notifications"
+            className="block border-t border-gray-100 px-4 py-2.5 text-center text-xs font-medium text-[#2563EB] hover:bg-gray-50"
+            onClick={() => setOpen(false)}
+          >
+            View all notifications
+          </Link>
+        ) : null}
       </PopoverContent>
     </Popover>
   );

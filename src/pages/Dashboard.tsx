@@ -12,10 +12,6 @@ import {
   Clock, CheckCircle2, Timer,
   Play, Square, Loader2,
 } from "lucide-react";
-import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer,
-} from "recharts";
 import { motion } from "framer-motion";
 import { useEffect, useMemo } from "react";
 import { CrossDayClockOutDialog } from "@/components/time-tracking/CrossDayClockOutDialog";
@@ -25,18 +21,38 @@ import {
   DASHBOARD_REFRESH_EVENT,
   refreshDashboardPage,
 } from "@/lib/dashboard-refresh";
-import { isHrRoleOnly, isAdminOrManagement } from "@/lib/leave-policy";
+import { isHrRoleOnly, isAdminOrManagement, isFinanceRoleOnly } from "@/lib/leave-policy";
+import { isClientPortalUser } from "@/lib/client-portal";
 import { HrDashboard } from "@/components/dashboard/HrDashboard";
-import { WorkforceOverviewPanels } from "@/components/dashboard/WorkforceOverviewPanels";
-import { WorkforceKpiCards } from "@/components/dashboard/WorkforceKpiCards";
+import { FinanceDashboard } from "@/components/dashboard/FinanceDashboard";
+import { AdminDashboard } from "@/components/dashboard/AdminDashboard";
+import { ClientDashboard } from "@/components/dashboard/ClientDashboard";
 import { LeaveSummaryPanel } from "@/components/dashboard/LeaveSummaryPanel";
-import { MonthAttendanceCard } from "@/components/dashboard/MonthAttendanceCard";
+import { UpcomingBirthdaysPanel, TodayBirthdaysBanner } from "@/components/dashboard/UpcomingBirthdaysPanel";
+import { DashboardMyTasksPanel } from "@/components/dashboard/DashboardMyTasksPanel";
+import { DashboardCurrentTimerCard } from "@/components/dashboard/DashboardCurrentTimerCard";
+import { DashboardInsightCards } from "@/components/dashboard/DashboardInsightCards";
+import { DashboardCalendarPanel } from "@/components/dashboard/DashboardCalendarPanel";
+import { runClockInWithLocation } from "@/lib/clock-in-with-location";
+import { toast } from "sonner";
 
 export default function Dashboard() {
   const { user } = useAuth();
 
+  if (isFinanceRoleOnly(user)) {
+    return <FinanceDashboard />;
+  }
+
+  if (isClientPortalUser(user)) {
+    return <ClientDashboard />;
+  }
+
   if (isHrRoleOnly(user)) {
     return <HrDashboard />;
+  }
+
+  if (isAdminOrManagement(user)) {
+    return <AdminDashboard />;
   }
 
   return <EmployeeDashboard />;
@@ -44,46 +60,30 @@ export default function Dashboard() {
 
 function EmployeeDashboard() {
   const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
-  const hidePersonalTimeAndTaskStats = isAdminOrManagement(user);
+  const isManager = String(user?.role ?? "").toLowerCase() === "manager";
 
   const { data: stats } = trpc.dashboard.getStats.useQuery(undefined, {
     ...dashboardQueryOptions,
-    enabled: !hidePersonalTimeAndTaskStats,
   });
   const { data: todayStats } = trpc.timeEntry.getStats.useQuery(
     { period: "today" },
-    {
-      ...dashboardQueryOptions,
-      enabled: !hidePersonalTimeAndTaskStats,
-    },
+    { ...dashboardQueryOptions },
   );
-  const { data: weeklyActivity } = trpc.dashboard.getWeeklyActivity.useQuery(
+  const { data: weekStats } = trpc.timeEntry.getStats.useQuery(
+    { period: "week" },
+    { ...dashboardQueryOptions },
+  );
+  const { data: leaveSummary } = trpc.dashboard.getLeaveSummary.useQuery(
     undefined,
-    {
-      ...dashboardQueryOptions,
-      enabled: !hidePersonalTimeAndTaskStats,
-    },
+    { ...dashboardQueryOptions },
   );
-  const { data: workforceOverview } = trpc.dashboard.getHrDashboard.useQuery(undefined, {
-    ...dashboardQueryOptions,
-    enabled: isAdmin || hidePersonalTimeAndTaskStats,
-  });
-  const { data: leaveSummary } = trpc.dashboard.getLeaveSummary.useQuery(undefined, {
-    ...dashboardQueryOptions,
-    enabled: !isAdmin && !hidePersonalTimeAndTaskStats,
-  });
   const { data: monthAttendance, isLoading: monthAttendanceLoading } =
     trpc.timeEntry.getMonthAttendance.useQuery(undefined, {
       ...dashboardQueryOptions,
-      enabled: !hidePersonalTimeAndTaskStats,
     });
   const { data: currentSession } = trpc.timeEntry.getCurrentSession.useQuery(
     undefined,
-    {
-      ...dashboardQueryOptions,
-      enabled: !hidePersonalTimeAndTaskStats,
-    },
+    { ...dashboardQueryOptions },
   );
   const utils = trpc.useUtils();
 
@@ -103,6 +103,7 @@ function EmployeeDashboard() {
 
   const clockInMutation = trpc.timeEntry.clockIn.useMutation({
     onSuccess: invalidateTimeStats,
+    onError: (err) => toast.error(err.message || "Could not clock in"),
   });
 
   const isClockedIn = !!currentSession?.active;
@@ -121,6 +122,23 @@ function EmployeeDashboard() {
     [todayStats, workSeconds, todayIncludeLive],
   );
 
+  const weekTrackedSeconds = useMemo(
+    () => workedSecondsFromStats(weekStats, workSeconds, isClockedIn),
+    [weekStats, workSeconds, isClockedIn],
+  );
+
+  const completedTasksCard = {
+    title: "Completed Tasks",
+    value: stats?.completedTasks ?? 0,
+    icon: CheckCircle2,
+    iconColor: "#10B981",
+    badge: { text: "Completed", bg: "#D1FAE5", color: "#059669" },
+    subtext: isManager
+      ? "Tasks finished across the org"
+      : "Tasks finished",
+    mono: false,
+  };
+
   const kpiCards = [
     {
       title: "Ongoing Tasks",
@@ -131,22 +149,23 @@ function EmployeeDashboard() {
       subtext: "Tasks awaiting action",
       mono: false,
     },
+    ...(isManager ? [completedTasksCard] : []),
     {
-      title: "Completed Tasks",
-      value: stats?.completedTasks ?? 0,
-      icon: CheckCircle2,
-      iconColor: "#10B981",
-      badge: { text: "Completed", bg: "#D1FAE5", color: "#059669" },
-      subtext: "Tasks finished",
-      mono: false,
-    },
-    {
-      title: "Hours Tracked",
+      title: "Hours Logged Today",
       value: formatPreciseWorkedClock(todayTrackedSeconds),
       icon: Timer,
       iconColor: "#3B82F6",
       badge: { text: "Today", bg: "#DBEAFE", color: "#2563EB" },
       subtext: "Time logged today",
+      mono: true,
+    },
+    {
+      title: "Hours Logged This Week",
+      value: formatPreciseWorkedClock(weekTrackedSeconds),
+      icon: Timer,
+      iconColor: "#0EA5E9",
+      badge: { text: "This week", bg: "#E0F2FE", color: "#0284C7" },
+      subtext: "Time logged this week",
       mono: true,
     },
   ];
@@ -174,14 +193,20 @@ function EmployeeDashboard() {
       animate="visible"
       className="space-y-6"
     >
-      {/* Welcome + Clock In/Out */}
       <motion.div
         variants={itemVariants}
         className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"
       >
         <div className="min-w-0">
           <h1 className="text-lg sm:text-2xl font-bold text-[#1F2937] whitespace-nowrap overflow-hidden text-ellipsis">
-            {greeting}, {firstName}!
+            {greeting}, {firstName}{" "}
+            <span
+              className="inline-block origin-[70%_70%] animate-wave"
+              role="img"
+              aria-label="waving hand"
+            >
+              👋
+            </span>
           </h1>
           <p className="text-sm text-gray-500 mt-1 w-full">
             {formatWorkZoneDate(new Date(), {
@@ -193,8 +218,6 @@ function EmployeeDashboard() {
           </p>
         </div>
 
-        {/* Clock In/Out Card — hidden for admin / management */}
-        {!hidePersonalTimeAndTaskStats ? (
         <div className="bg-white border border-gray-200 rounded-xl px-5 py-3 flex flex-col sm:flex-row items-start sm:items-center gap-3 shadow-sm w-full sm:w-auto">
           <div className="text-left sm:text-right w-full sm:w-auto">
             <div className="text-xs text-gray-500">
@@ -220,13 +243,19 @@ function EmployeeDashboard() {
             onClick={() =>
               isClockedIn
                 ? clockOutAction.requestClockOut(currentSession!.startTime)
-                : clockInMutation.mutate()
+                : void runClockInWithLocation(
+                    (input) => clockInMutation.mutateAsync(input),
+                    {
+                      isLocationRequired: async () =>
+                        (await utils.location.clockInPolicy.fetch()).required,
+                    },
+                  )
             }
             disabled={clockInMutation.isPending || clockOutAction.isPending}
             className={`h-10 px-5 rounded-lg font-semibold text-sm flex items-center gap-2 transition-all ${
               isClockedIn
-                ? "bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200"
-                : "bg-gradient-to-r from-[#2563EB] to-[#3B82F6] text-white hover:shadow-lg hover:shadow-blue-200"
+                ? "bg-blue-50 text-blue-600 border border-blue-200 hover:bg-blue-100 dark:!bg-transparent dark:text-[#58a6ff] dark:!border-[#58a6ff]/70 dark:hover:!bg-[#58a6ff]/10"
+                : "bg-gradient-to-r from-[#2563EB] to-[#3B82F6] text-white hover:shadow-lg hover:shadow-blue-200 dark:hover:shadow-none"
             }`}
           >
             {clockInMutation.isPending || clockOutAction.isPending ? (
@@ -242,12 +271,16 @@ function EmployeeDashboard() {
             )}
           </button>
         </div>
-        ) : null}
       </motion.div>
 
-      {/* KPI Cards — hidden for admin / management */}
-      {!hidePersonalTimeAndTaskStats ? (
-      <motion.div variants={itemVariants} className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
+      <TodayBirthdaysBanner birthdays={leaveSummary?.upcomingBirthdays ?? []} />
+
+      <motion.div
+        variants={itemVariants}
+        className={`grid grid-cols-1 sm:grid-cols-2 gap-5 ${
+          kpiCards.length >= 4 ? "xl:grid-cols-4" : "xl:grid-cols-3"
+        }`}
+      >
         {kpiCards.map((card) => (
           <div
             key={card.title}
@@ -276,89 +309,54 @@ function EmployeeDashboard() {
           </div>
         ))}
       </motion.div>
-      ) : null}
 
-      {/* Month attendance — employees only (hidden for admin / management) */}
-      {!hidePersonalTimeAndTaskStats ? (
-        <motion.div variants={itemVariants}>
-          <MonthAttendanceCard
-            data={monthAttendance}
-            isLoading={monthAttendanceLoading}
-          />
-        </motion.div>
-      ) : null}
-
-      {/* Weekly Activity Chart — hidden for admin / management */}
-      {!hidePersonalTimeAndTaskStats ? (
-      <motion.div variants={itemVariants} className="bg-white border border-gray-200 rounded-xl p-5">
-        <h2 className="font-semibold text-[#1F2937] mb-4">Weekly Activity</h2>
-        <div className="h-72">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={weeklyActivity || []}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#c2c2c2" strokeOpacity={1}  />
-              <XAxis dataKey="day" tick={{ fontSize: 12, fill: "#9CA3AF" }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 12, fill: "#9CA3AF" }} axisLine={false} tickLine={false} />
-              <Tooltip
-                contentStyle={{ borderRadius: 8, border: "1px solid #E5E7EB", fontSize: 12 }}
-              />
-              <Line
-                type="monotone"
-                dataKey="completed"
-                stroke="#0EA5E9"
-                strokeWidth={2}
-                dot={{ fill: "#fff", stroke: "#0EA5E9", r: 4 }}
-                activeDot={{ r: 6 }}
-                name="Completed"
-              />
-              <Line
-                type="monotone"
-                dataKey="created"
-                stroke="#2563EB"
-                strokeWidth={2}
-                dot={{ fill: "#fff", stroke: "#2563EB", r: 4 }}
-                activeDot={{ r: 6 }}
-                name="Created"
-              />
-            </LineChart>
-          </ResponsiveContainer>
+      <motion.div
+        variants={itemVariants}
+        className="grid grid-cols-1 xl:grid-cols-3 gap-5 items-stretch"
+      >
+        <div className="xl:col-span-2 min-w-0 h-full">
+          <DashboardMyTasksPanel />
         </div>
-        <div className="flex items-center justify-center gap-6 mt-3">
-          <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-[#0EA5E9]" />
-            <span className="text-xs text-gray-500">Completed</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-[#2563EB]" />
-            <span className="text-xs text-gray-500">Created</span>
-          </div>
+        <div className="min-w-0 h-full">
+          <DashboardCurrentTimerCard />
         </div>
       </motion.div>
-      ) : null}
 
-      {/* Same Leave Summary as HR/Admin — for employees only (admin gets it in workforce panels) */}
-      {!isAdmin && !hidePersonalTimeAndTaskStats ? (
-        <motion.div variants={itemVariants}>
+      <motion.div variants={itemVariants}>
+        <DashboardInsightCards
+          attendance={monthAttendance}
+          attendanceLoading={monthAttendanceLoading}
+        />
+      </motion.div>
+
+      <motion.div
+        variants={itemVariants}
+        className="grid grid-cols-1 xl:grid-cols-3 gap-5 items-stretch"
+      >
+        <div className="xl:col-span-2 min-w-0 h-full">
           <LeaveSummaryPanel
             leaveMonthLabel={leaveSummary?.leaveMonthLabel}
             upcomingLeaves={leaveSummary?.upcomingLeaves ?? []}
             upcomingWfh={leaveSummary?.upcomingWfh ?? []}
             employeeView
+            className="h-full"
           />
+        </div>
+        <div className="min-w-0 h-full">
+          <UpcomingBirthdaysPanel
+            birthdays={leaveSummary?.upcomingBirthdays ?? []}
+            showViewAll={false}
+          />
+        </div>
+      </motion.div>
+
+      {isManager ? (
+        <motion.div variants={itemVariants}>
+          <DashboardCalendarPanel />
         </motion.div>
       ) : null}
 
-      {isAdmin || hidePersonalTimeAndTaskStats ? (
-        <>
-          <motion.div variants={itemVariants}>
-            <WorkforceKpiCards data={workforceOverview} />
-          </motion.div>
-          <motion.div variants={itemVariants}>
-            <WorkforceOverviewPanels data={workforceOverview} />
-          </motion.div>
-        </>
-      ) : null}
-
-      {!hidePersonalTimeAndTaskStats && currentSession?.active ? (
+      {currentSession?.active ? (
         <CrossDayClockOutDialog
           open={clockOutAction.dialogOpen}
           onOpenChange={clockOutAction.setDialogOpen}

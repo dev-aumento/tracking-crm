@@ -33,6 +33,7 @@ export const DEV_USER: SafeUser = {
   panCard: null,
   notificationLanguage: "en",
   employmentType: "full_time",
+  onNoticePeriod: false,
   headOfDepartmentUserIds: [],
   permissions: [
     "dashboard.view",

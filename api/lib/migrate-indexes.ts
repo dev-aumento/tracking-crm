@@ -5,6 +5,12 @@ import type { UserDoc } from "@db/mongo/types";
 import { ensureDefaultOrganizationMigration } from "./tenant";
 
 const ALL_COLLECTIONS = Object.values(Collections);
+const GRIDFS_COLLECTIONS = [
+  "employee_files.files",
+  "employee_files.chunks",
+  "task_files.files",
+  "task_files.chunks",
+] as const;
 
 export async function ensureCollections() {
   const db = await getMongoDb();
@@ -12,7 +18,7 @@ export async function ensureCollections() {
     (await db.listCollections().toArray()).map((c) => c.name),
   );
 
-  for (const name of ALL_COLLECTIONS) {
+  for (const name of [...ALL_COLLECTIONS, ...GRIDFS_COLLECTIONS]) {
     if (!existing.has(name)) {
       await db.createCollection(name);
       console.log(`[mongo] Created collection: ${name}`);
@@ -32,6 +38,16 @@ export async function ensureIndexes() {
       indexes: [
         { key: { id: 1 }, unique: true },
         { key: { name: 1 } },
+        { key: { workspaceType: 1 } },
+        { key: { planStatus: 1 } },
+      ],
+    },
+    {
+      name: Collections.subscriptionPlans,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { slug: 1 }, unique: true },
+        { key: { sortOrder: 1 } },
       ],
     },
     {
@@ -40,6 +56,7 @@ export async function ensureIndexes() {
         { key: { id: 1 }, unique: true },
         { key: { email: 1 }, unique: true, sparse: true },
         { key: { unionId: 1 }, unique: true },
+        { key: { role: 1 } },
         { key: { organizationId: 1 } },
         { key: { organizationId: 1, email: 1 } },
       ],
@@ -161,6 +178,68 @@ export async function ensureIndexes() {
       ],
     },
     {
+      name: Collections.bankAccounts,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, name: 1 } },
+        { key: { organizationId: 1, createdAt: -1 } },
+      ],
+    },
+    {
+      name: Collections.ledgerAccounts,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, code: 1 }, unique: true },
+        { key: { organizationId: 1, type: 1 } },
+      ],
+    },
+    {
+      name: Collections.estimates,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, estimateNumber: 1 } },
+        { key: { organizationId: 1, createdAt: -1 } },
+      ],
+    },
+    {
+      name: Collections.payments,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, paymentDate: -1 } },
+        { key: { organizationId: 1, invoiceId: 1 } },
+      ],
+    },
+    {
+      name: Collections.expenses,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, expenseDate: -1 } },
+      ],
+    },
+    {
+      name: Collections.contracts,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, createdAt: -1 } },
+      ],
+    },
+    {
+      name: Collections.vendorBills,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, dueDate: 1 } },
+        { key: { organizationId: 1, status: 1 } },
+      ],
+    },
+    {
+      name: Collections.dashboardReminders,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, userId: 1, dateKey: 1 } },
+        { key: { userId: 1, dateKey: 1 } },
+      ],
+    },
+    {
       name: Collections.notifications,
       indexes: [{ key: { id: 1 }, unique: true }, { key: { userId: 1 } }],
     },
@@ -191,6 +270,21 @@ export async function ensureIndexes() {
         { key: { id: 1 }, unique: true },
         { key: { userId: 1, year: 1, month: 1 }, unique: true },
         { key: { year: 1 } },
+      ],
+    },
+    {
+      name: Collections.orgAttendanceQr,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1 }, unique: true },
+        { key: { token: 1 }, unique: true },
+      ],
+    },
+    {
+      name: Collections.orgAttendanceQrActivity,
+      indexes: [
+        { key: { id: 1 }, unique: true },
+        { key: { organizationId: 1, createdAt: -1 } },
       ],
     },
   ];

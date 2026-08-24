@@ -115,4 +115,11 @@ export function invalidateQueriesForNotifications(
       taskIds: taskIdsFromNotifications(notifications),
     });
   }
+
+  if (notifications.some((n) => String(n.type ?? "").startsWith("plan_"))) {
+    void utils.subscription.current.invalidate();
+    void utils.platform.listClients.invalidate();
+    void utils.platform.overview.invalidate();
+    void utils.auth.me.invalidate();
+  }
 }

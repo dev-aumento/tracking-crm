@@ -1,12 +1,22 @@
 import { ROUTE_PERMISSIONS } from "@contracts/permissions";
-import { isHrDepartmentUser, isHrRestrictedPath } from "@/lib/leave-policy";
+import { isClientPortalUser } from "@/lib/client-portal";
+import { isPlatformUser } from "@/lib/platform-admin";
+import { canAccessPlanRoute } from "@/lib/plan-features";
+import {
+  isFinanceRoleOnly,
+  isFinanceRestrictedPath,
+  isHrDepartmentUser,
+  isHrRestrictedPath,
+} from "@/lib/leave-policy";
 
-export type AppRole = "admin" | "manager" | "employee" | "hr" | "client";
+export type AppRole = "admin" | "manager" | "employee" | "hr" | "client" | "finance" | "platform";
 
 type PermissionUser = {
   role: AppRole;
   permissions?: string[];
   department?: string | null;
+  clientWorkspace?: boolean | null;
+  planFeatures?: string[] | null;
 };
 
 export function hasPermission(user: PermissionUser | null | undefined, permission: string) {
@@ -22,10 +32,13 @@ export function hasAnyPermission(
   return permissions.some((permission) => hasPermission(user, permission));
 }
 
-/** First route a user can open after login (clients have no dashboard). */
+/** First route a user can open after login. */
 export function getDefaultHomePath(user: PermissionUser | null | undefined): string {
   if (!user) return "/";
-  const candidates = ["/", "/projects", "/admin/tasks", "/tasks"];
+  if (isPlatformUser(user)) return "/platform";
+  if (isClientPortalUser(user)) return "/";
+
+  const candidates = ["/", "/admin/invoices", "/admin/customers", "/projects", "/admin/tasks", "/tasks"];
   for (const path of candidates) {
     if (canAccessRoute(user, path)) return path;
   }
@@ -33,27 +46,64 @@ export function getDefaultHomePath(user: PermissionUser | null | undefined): str
 }
 
 function isClientRestrictedPath(path: string): boolean {
-  if (path === "/" || path === "") return true;
   if (path === "/leaves" || path.startsWith("/leaves")) return true;
   if (path === "/leave-management" || path.startsWith("/leave-management")) return true;
   if (path === "/attendance-management" || path.startsWith("/attendance-management")) return true;
+  if (path === "/locations" || path.startsWith("/locations")) return true;
+  if (path === "/qr-code" || path.startsWith("/qr-code")) return true;
   if (path === "/recent-employees" || path.startsWith("/recent-employees")) return true;
   if (path === "/time-tracking" || path.startsWith("/time-tracking")) return true;
   if (path === "/analytics" || path.startsWith("/analytics")) return true;
-  if (path === "/admin/employees" || path.startsWith("/admin/employees")) return true;
   if (path === "/admin/permissions" || path.startsWith("/admin/permissions")) return true;
-  if (path === "/admin/invoices" || path.startsWith("/admin/invoices")) return true;
   if (path === "/admin/customers" || path.startsWith("/admin/customers")) return true;
+  if (path === "/admin/reports" || path.startsWith("/admin/reports")) return true;
+  if (path === "/admin/pricing" || path.startsWith("/admin/pricing")) return true;
+  if (path === "/admin/client-tasks" || path.startsWith("/admin/client-tasks")) return true;
   return false;
 }
 
 export function canAccessRoute(user: PermissionUser | null | undefined, path: string) {
+  if (isPlatformUser(user)) {
+    return path === "/platform" || path.startsWith("/platform/");
+  }
+
+  if (path === "/platform" || path.startsWith("/platform/")) {
+    return false;
+  }
+
+  if (path === "/admin/pricing" || path.startsWith("/admin/pricing")) {
+    return String(user?.role ?? "").toLowerCase() === "admin";
+  }
+
+  if (!canAccessPlanRoute(user, path)) {
+    return false;
+  }
+
   if (isHrDepartmentUser(user) && isHrRestrictedPath(path)) {
     return false;
   }
 
-  if (user?.role === "client" && isClientRestrictedPath(path)) {
+  if (isFinanceRoleOnly(user) && isFinanceRestrictedPath(path)) {
     return false;
+  }
+
+  if (isClientPortalUser(user) && isClientRestrictedPath(path)) {
+    return false;
+  }
+
+  if (path.startsWith("/client/") && path !== "/client/login") {
+    return isClientPortalUser(user);
+  }
+
+  // Project managers can open the employees directory (notice period + directory view).
+  if (
+    (path === "/admin/employees" ||
+      path.startsWith("/admin/employees") ||
+      path === "/admin/departments" ||
+      path.startsWith("/admin/departments")) &&
+    String(user?.role ?? "").toLowerCase() === "manager"
+  ) {
+    return true;
   }
 
   const exact = ROUTE_PERMISSIONS[path];
@@ -64,7 +114,7 @@ export function canAccessRoute(user: PermissionUser | null | undefined, path: st
   }
 
   if (path.startsWith("/projects/")) {
-    if (isHrDepartmentUser(user)) return false;
+    if (isHrDepartmentUser(user) || isFinanceRoleOnly(user)) return false;
     return hasAnyPermission(user, ["projects.view", "projects.manage"]);
   }
 
@@ -79,10 +129,40 @@ export function canAccessRoute(user: PermissionUser | null | undefined, path: st
     return canAccessRoute(user, "/admin/tasks");
   }
 
+  if (path.startsWith("/admin/client-tasks/")) {
+    return canAccessRoute(user, "/admin/client-tasks");
+  }
+
+  if (path === "/admin/reports" || path.startsWith("/admin/reports/")) {
+    return hasAnyPermission(user, ["invoices.manage", "customers.manage"]);
+  }
+
+  if (path.startsWith("/admin/invoices") || path.startsWith("/admin/customers")) {
+    const permission = path.startsWith("/admin/invoices")
+      ? "invoices.manage"
+      : "customers.manage";
+    return hasPermission(user, permission);
+  }
+
+  if (path.startsWith("/finance/") || path === "/finance") {
+    const role = String(user?.role ?? "").toLowerCase();
+    return role === "finance" || role === "admin";
+  }
+
   if (path.startsWith("/admin/")) {
     const role = String(user?.role ?? "").toLowerCase();
-    return role === "admin" || role === "manager" || role === "hr";
+    return role === "admin" || role === "manager" || role === "hr" || role === "finance";
   }
 
   return true;
+}
+
+/** Login path for the signed-in (or last-known) user. */
+export function getLoginPathForUser(
+  user: { role?: string | null; clientWorkspace?: boolean | null } | null | undefined,
+): string {
+  if (isPlatformUser(user)) return "/admin/login";
+  if (isFinanceRoleOnly(user)) return "/finance/login";
+  if (isClientPortalUser(user)) return "/client/login";
+  return "/login";
 }

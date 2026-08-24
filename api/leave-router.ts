@@ -12,9 +12,10 @@ import * as mock from "./lib/mock-store";
 import {
   MONTHLY_PAID_LEAVES,
   TOTAL_PAID_LEAVES,
-  TOTAL_SICK_LEAVES,
   accruedPaidLeavesForYear,
   annualPaidLeaveEntitlement,
+  annualSickLeaveEntitlement,
+  annualWfhEntitlement,
   canCancelLeaveRequest,
   canEditLeaveRequest,
   canManageLeaves,
@@ -91,10 +92,13 @@ async function computeUsage(
 
   let usedPaid = 0;
   let usedSick = 0;
+  let usedWfh = 0;
   let pendingPaid = 0;
   let pendingSick = 0;
+  let pendingWfh = 0;
   let approvedPaid = 0;
   let approvedSick = 0;
+  let approvedWfh = 0;
 
   for (const req of requests) {
     if (options?.excludeRequestId != null && req.id === options.excludeRequestId) continue;
@@ -126,6 +130,14 @@ async function computeUsage(
         pendingSick += units;
         usedSick += units;
       }
+    } else if (isWorkFromHomeLeave(req.leaveType)) {
+      if (req.status === "approved") {
+        approvedWfh += units;
+        usedWfh += units;
+      } else {
+        pendingWfh += units;
+        usedWfh += units;
+      }
     }
   }
 
@@ -133,25 +145,44 @@ async function computeUsage(
   const dateOfJoining = user?.dateOfJoining ?? null;
   const joiningKey = toJoiningDateKey(dateOfJoining);
   const employmentType = resolveEmploymentType(user);
+  const onNoticePeriod = Boolean(user?.onNoticePeriod);
   // Employee Leaves balance: unlock 1 PL per eligible month so far (not full-year total).
   // Leave Management page computes annual entitlement separately on the client.
-  const paidAccrued = accruedPaidLeavesForYear(year, new Date(), joiningKey, employmentType);
-  const paidAnnual = annualPaidLeaveEntitlement(year, joiningKey, employmentType);
+  const paidAccrued = accruedPaidLeavesForYear(
+    year,
+    new Date(),
+    joiningKey,
+    employmentType,
+    onNoticePeriod,
+  );
+  const paidAnnual = annualPaidLeaveEntitlement(
+    year,
+    joiningKey,
+    employmentType,
+    onNoticePeriod,
+  );
+  const sickTotal = annualSickLeaveEntitlement(year, joiningKey);
+  const wfhTotal = annualWfhEntitlement(year, joiningKey);
 
   return {
     year,
     paidTotal: paidAccrued,
     paidAnnualTotal: paidAnnual,
-    sickTotal: TOTAL_SICK_LEAVES,
+    sickTotal,
+    wfhTotal,
     paidRemaining: roundLeaveUnits(Math.max(0, paidAccrued - usedPaid)),
-    sickRemaining: roundLeaveUnits(Math.max(0, TOTAL_SICK_LEAVES - usedSick)),
+    sickRemaining: roundLeaveUnits(Math.max(0, sickTotal - usedSick)),
+    wfhRemaining: roundLeaveUnits(Math.max(0, wfhTotal - usedWfh)),
     paidUsed: roundLeaveUnits(approvedPaid),
     sickUsed: roundLeaveUnits(approvedSick),
+    wfhUsed: roundLeaveUnits(approvedWfh),
     paidPending: roundLeaveUnits(pendingPaid),
     sickPending: roundLeaveUnits(pendingSick),
+    wfhPending: roundLeaveUnits(pendingWfh),
     usedLeaves: roundLeaveUnits(approvedPaid + approvedSick),
     dateOfJoining: joiningKey ?? dateOfJoining,
     employmentType,
+    onNoticePeriod,
     inProbation: isInProbationPeriod(joiningKey, new Date(), employmentType),
     paidLeaveLockLabel: paidLeaveLockPeriodLabel(employmentType),
   };
@@ -187,7 +218,7 @@ async function assertNoOverlappingLeave(params: {
   }
 }
 
-/** Ensure PL/SL for each calendar year touched by the leave have enough remaining. */
+/** Ensure PL/SL/WFH for each calendar year touched by the leave have enough remaining. */
 async function assertYearScopedBalance(params: {
   userId: number;
   leaveType: string;
@@ -197,7 +228,11 @@ async function assertYearScopedBalance(params: {
   excludeRequestId?: number;
   forEmployee?: boolean;
 }) {
-  if (!consumesPaidBalance(params.leaveType) && !consumesSickBalance(params.leaveType)) {
+  const tracksBalance =
+    consumesPaidBalance(params.leaveType) ||
+    consumesSickBalance(params.leaveType) ||
+    isWorkFromHomeLeave(params.leaveType);
+  if (!tracksBalance) {
     return;
   }
 
@@ -220,7 +255,9 @@ async function assertYearScopedBalance(params: {
     });
     const remaining = consumesPaidBalance(params.leaveType)
       ? usage.paidRemaining
-      : usage.sickRemaining;
+      : consumesSickBalance(params.leaveType)
+        ? usage.sickRemaining
+        : usage.wfhRemaining;
 
     if (needed > remaining) {
       throw new TRPCError({
@@ -245,6 +282,23 @@ const reviewSchema = z.object({
   status: z.enum(["approved", "rejected", "cancelled", "pending"]),
   reviewNote: z.string().trim().max(500).optional(),
 });
+
+const updateDetailsSchema = z
+  .object({
+    id: z.number(),
+    reason: z.string().trim().max(1000),
+    reviewNote: z.string().trim().max(500).optional().nullable(),
+  })
+  .superRefine((data, ctx) => {
+    // Validated against leave type after load; keep schema flexible for WFH.
+    if (data.reason.length > 0 && data.reason.length < 3) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Please enter a reason (at least 3 characters)",
+        path: ["reason"],
+      });
+    }
+  });
 
 const updateMyRequestSchema = applySchema.extend({
   id: z.number(),
@@ -789,6 +843,45 @@ export const leaveRouter = createRouter({
       read: false,
       createdAt: now,
     });
+
+    return { request: updated };
+  }),
+
+  /** HR edits leave reason / review note without changing status. */
+  updateDetails: authedQuery.input(updateDetailsSchema).mutation(async ({ ctx, input }) => {
+    assertLeaveManager(ctx.user);
+    if (useMock()) return mock.mockUpdateLeaveDetails(ctx.user.id, input);
+
+    await ensureSchema();
+    const existing = await findById<LeaveRequestDoc>(
+      Collections.leaveRequests,
+      input.id,
+    );
+    if (!existing || !belongsToUserOrg(ctx.user, existing.organizationId)) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "Leave request not found" });
+    }
+
+    const isWfh = isWorkFromHomeLeave(existing.leaveType);
+    const nextReason = input.reason.trim();
+    if (!isWfh && nextReason.length < 3) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "Please enter a reason (at least 3 characters)",
+      });
+    }
+
+    const nextNote =
+      input.reviewNote == null ? existing.reviewNote : input.reviewNote.trim() || null;
+
+    const updated = await updateById<LeaveRequestDoc>(
+      Collections.leaveRequests,
+      input.id,
+      {
+        reason: isWfh ? nextReason || existing.reason || "Work from home" : nextReason,
+        reviewNote: nextNote,
+        updatedAt: new Date(),
+      },
+    );
 
     return { request: updated };
   }),

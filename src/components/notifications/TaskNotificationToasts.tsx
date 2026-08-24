@@ -11,41 +11,12 @@ import {
   dismissNotificationToast,
   readDismissedNotificationIds,
 } from "@/lib/notification-toast-prefs";
-import { buildTaskNotificationLink } from "@/lib/task-notification-link";
 import { invalidateQueriesForNotifications } from "@/lib/invalidate-on-notifications";
 import {
   isNotificationAllowedByPrefs,
   useNotificationPrefs,
 } from "@/lib/notification-prefs";
-
-function notificationTarget(notif: StreamNotification) {
-  if (notif.type === "employee_joined") return "/admin/employees";
-  if (
-    notif.type === "time_approval_pending" ||
-    notif.type === "time_approved" ||
-    notif.type === "time_rejected"
-  ) {
-    return "/time-tracking";
-  }
-  if (
-    notif.type === "leave_request_pending" ||
-    notif.type === "leave_approved" ||
-    notif.type === "leave_rejected" ||
-    notif.type === "leave_cancelled" ||
-    notif.type === "holiday_reminder"
-  ) {
-    return notif.type === "leave_request_pending" || notif.type === "leave_cancelled"
-      ? "/leave-management"
-      : "/leaves";
-  }
-  if (notif.type === "project_created" && notif.projectId) {
-    return `/projects/${notif.projectId}`;
-  }
-  if (notif.link?.includes("activity=")) return notif.link;
-  if (notif.taskId) return buildTaskNotificationLink(notif.taskId, notif.activityId);
-  if (notif.link) return notif.link;
-  return null;
-}
+import { notificationTarget } from "@/lib/notification-targets";
 
 export function TaskNotificationToasts() {
   const { user } = useAuth();
@@ -81,7 +52,7 @@ export function TaskNotificationToasts() {
     (notif: StreamNotification) => {
       if (!user) return;
 
-      const target = notificationTarget(notif);
+      const target = notificationTarget(notif, user);
       const openTarget = () => {
         markNotificationSeen(notif);
         if (target) navigate(target);

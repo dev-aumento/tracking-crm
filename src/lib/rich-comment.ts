@@ -9,11 +9,37 @@ export const RICH_MEDIA_NAME_ATTR = "data-rich-media-name";
 export const RICH_MEDIA_MIME_ATTR = "data-rich-media-mime";
 
 const ALLOWED_TAGS = new Set([
-  "P", "BR", "STRONG", "B", "EM", "I", "U", "UL", "OL", "LI", "A", "DIV", "SPAN",
+  "P",
+  "BR",
+  "STRONG",
+  "B",
+  "EM",
+  "I",
+  "U",
+  "UL",
+  "OL",
+  "LI",
+  "A",
+  "DIV",
+  "SPAN",
+  "TABLE",
+  "THEAD",
+  "TBODY",
+  "TFOOT",
+  "TR",
+  "TH",
+  "TD",
+  "CAPTION",
+  "COLGROUP",
+  "COL",
 ]);
 
 const ALLOWED_ATTRS: Record<string, Set<string>> = {
   A: new Set(["href", "target", "rel"]),
+  TD: new Set(["colspan", "rowspan"]),
+  TH: new Set(["colspan", "rowspan"]),
+  COL: new Set(["span"]),
+  COLGROUP: new Set(["span"]),
 };
 
 /** Matches http(s) URLs and www.* hosts in plain text. */
@@ -65,6 +91,43 @@ export function linkifyPlainTextToHtml(text: string) {
     if (!/^https?:\/\//i.test(href)) return match;
     return `<a href="${escapeHtmlText(href)}" target="_blank" rel="noopener noreferrer">${match}</a>`;
   });
+}
+
+/** True when plain text looks like a spreadsheet / TSV table paste. */
+export function plainTextLooksLikeTable(text: string) {
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (!normalized.includes("\t")) return false;
+  const lines = normalized.split("\n").filter((line) => line.trim().length > 0);
+  if (lines.length < 2) return false;
+  const tabbed = lines.filter((line) => line.includes("\t"));
+  return tabbed.length >= 2;
+}
+
+/** Build a simple HTML table from tab-separated plain text (Excel / Sheets paste). */
+export function plainTextTableToHtml(text: string) {
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const lines = normalized.split("\n");
+  while (lines.length > 0 && lines[lines.length - 1].trim() === "") {
+    lines.pop();
+  }
+  if (lines.length === 0) return "";
+
+  const rows = lines
+    .map((line) => {
+      const cells = line.split("\t").map((cell) => {
+        const html = linkifyPlainTextToHtml(cell);
+        return `<td>${html || "<br>"}</td>`;
+      });
+      return `<tr>${cells.join("")}</tr>`;
+    })
+    .join("");
+
+  return `<table><tbody>${rows}</tbody></table>`;
+}
+
+/** True when sanitized HTML still contains a table structure. */
+export function htmlContainsTable(html: string) {
+  return /<table\b/i.test(html);
 }
 
 export type CommentMediaRef = {
@@ -220,20 +283,59 @@ export function sanitizeRichCommentHtml(html: string) {
   const template = document.createElement("template");
   template.innerHTML = html;
 
+  const sanitizeSpanAttrs = (element: HTMLElement, tag: string) => {
+    for (const attr of [...element.attributes]) {
+      const allowed = ALLOWED_ATTRS[tag];
+      if (!allowed?.has(attr.name.toLowerCase())) {
+        element.removeAttribute(attr.name);
+      }
+    }
+
+    if (tag === "A") {
+      const href = element.getAttribute("href") ?? "";
+      const normalized = normalizeExternalUrl(href);
+      if (!/^https?:\/\//i.test(normalized) && !/^mailto:/i.test(normalized)) {
+        element.removeAttribute("href");
+      } else {
+        element.setAttribute("href", normalized);
+        element.setAttribute("target", "_blank");
+        element.setAttribute("rel", "noopener noreferrer");
+      }
+    }
+
+    if (tag === "TD" || tag === "TH") {
+      for (const name of ["colspan", "rowspan"] as const) {
+        const raw = element.getAttribute(name);
+        if (raw == null) continue;
+        const n = Number.parseInt(raw, 10);
+        if (!Number.isFinite(n) || n < 1 || n > 100) {
+          element.removeAttribute(name);
+        } else {
+          element.setAttribute(name, String(n));
+        }
+      }
+    }
+  };
+
   const walk = (node: Node) => {
-    const children = [...node.childNodes];
-    for (const child of children) {
+    let child = node.firstChild;
+    while (child) {
+      const next = child.nextSibling;
+
       if (child.nodeType === Node.COMMENT_NODE) {
         child.remove();
+        child = next;
         continue;
       }
 
       if (child.nodeType === Node.TEXT_NODE) {
+        child = next;
         continue;
       }
 
       if (child.nodeType !== Node.ELEMENT_NODE) {
         child.remove();
+        child = next;
         continue;
       }
 
@@ -241,34 +343,20 @@ export function sanitizeRichCommentHtml(html: string) {
       const tag = element.tagName.toUpperCase();
 
       if (!ALLOWED_TAGS.has(tag)) {
-        const fragment = document.createDocumentFragment();
+        // Unwrap: move children before this node, then remove it and keep scanning
+        // from the first moved child so nested tables/lists are still sanitized.
+        const firstMoved = element.firstChild;
         while (element.firstChild) {
-          fragment.appendChild(element.firstChild);
+          node.insertBefore(element.firstChild, element);
         }
-        element.replaceWith(fragment);
+        element.remove();
+        child = firstMoved ?? next;
         continue;
       }
 
-      for (const attr of [...element.attributes]) {
-        const allowed = ALLOWED_ATTRS[tag];
-        if (!allowed?.has(attr.name.toLowerCase())) {
-          element.removeAttribute(attr.name);
-        }
-      }
-
-      if (tag === "A") {
-        const href = element.getAttribute("href") ?? "";
-        const normalized = normalizeExternalUrl(href);
-        if (!/^https?:\/\//i.test(normalized) && !/^mailto:/i.test(normalized)) {
-          element.removeAttribute("href");
-        } else {
-          element.setAttribute("href", normalized);
-          element.setAttribute("target", "_blank");
-          element.setAttribute("rel", "noopener noreferrer");
-        }
-      }
-
+      sanitizeSpanAttrs(element, tag);
       walk(element);
+      child = next;
     }
   };
 
@@ -323,8 +411,8 @@ export function splitRichBodySegments(body: string) {
 
 export function isEditorContentEmpty(html: string) {
   if (extractMediaIdsFromBody(html).size > 0) return false;
-  // Empty list items still count as content so the placeholder hides.
-  if (/<(ul|ol|li)\b/i.test(html)) return false;
+  // Empty list items / tables still count as content so the placeholder hides.
+  if (/<(ul|ol|li|table|tr|td|th)\b/i.test(html)) return false;
   const text = html
     .replace(/<br\s*\/?>/gi, "")
     .replace(/&nbsp;/gi, " ")
@@ -403,6 +491,29 @@ function serializeRichEditorNode(node: Node, media: CommentMediaRef[], seenIds: 
   if (tag === "UL") return `<ul>${children}</ul>`;
   if (tag === "OL") return `<ol>${children}</ol>`;
   if (tag === "LI") return `<li>${children}</li>`;
+  if (tag === "TABLE") return `<table>${children}</table>`;
+  if (tag === "THEAD") return `<thead>${children}</thead>`;
+  if (tag === "TBODY") return `<tbody>${children}</tbody>`;
+  if (tag === "TFOOT") return `<tfoot>${children}</tfoot>`;
+  if (tag === "TR") return `<tr>${children}</tr>`;
+  if (tag === "CAPTION") return `<caption>${children}</caption>`;
+  if (tag === "COLGROUP") {
+    const span = element.getAttribute("span");
+    return span ? `<colgroup span="${span}">${children}</colgroup>` : `<colgroup>${children}</colgroup>`;
+  }
+  if (tag === "COL") {
+    const span = element.getAttribute("span");
+    return span ? `<col span="${span}">` : "<col>";
+  }
+  if (tag === "TH" || tag === "TD") {
+    const parts: string[] = [];
+    const colspan = element.getAttribute("colspan");
+    const rowspan = element.getAttribute("rowspan");
+    if (colspan) parts.push(`colspan="${colspan}"`);
+    if (rowspan) parts.push(`rowspan="${rowspan}"`);
+    const open = parts.length ? `<${tag.toLowerCase()} ${parts.join(" ")}>` : `<${tag.toLowerCase()}>`;
+    return `${open}${children}</${tag.toLowerCase()}>`;
+  }
   if (tag === "P" || tag === "DIV") return `<div>${children}</div>`;
   if (tag === "SPAN") return children ? `<span>${children}</span>` : "";
 
@@ -738,6 +849,37 @@ export function htmlToFormattedPlainText(html: string) {
       if (!content) return "";
       if (listContext?.type === "ol") return `${listContext.index}. ${content}`;
       return `• ${content}`;
+    }
+
+    if (tag === "TABLE") {
+      return Array.from(element.querySelectorAll("tr"))
+        .map((row) => {
+          const cells = Array.from(row.querySelectorAll("th,td")).map((cell) =>
+            Array.from(cell.childNodes)
+              .map((child) => walk(child))
+              .join("")
+              .replace(/\s+/g, " ")
+              .trim(),
+          );
+          return cells.join("\t");
+        })
+        .filter((row) => row.length > 0)
+        .join("\n");
+    }
+
+    if (tag === "THEAD" || tag === "TBODY" || tag === "TFOOT" || tag === "TR") {
+      return Array.from(element.childNodes)
+        .map((child) => walk(child, listContext))
+        .filter((part) => part.trim().length > 0)
+        .join(tag === "TR" ? "\t" : "\n");
+    }
+
+    if (tag === "TH" || tag === "TD" || tag === "CAPTION") {
+      return Array.from(element.childNodes)
+        .map((child) => walk(child, listContext))
+        .join("")
+        .replace(/\s+/g, " ")
+        .trim();
     }
 
     if (tag === "P" || tag === "DIV") {

@@ -12,12 +12,10 @@ export function buildMentionToken(user: MentionUser) {
 
 export function buildCommentMessage(mentions: MentionUser[], body: string) {
   const trimmedBody = body.trim();
-  const mentionTokens = mentions.map((user) => buildMentionToken(user));
-  if (mentionTokens.length === 0) return trimmedBody;
-  // Keep multiple mentions on one line so they render side by side.
-  const mentionLine = mentionTokens.join(" ");
-  if (!trimmedBody) return mentionLine;
-  return `${mentionLine}\n${trimmedBody}`;
+  const mentionLines = mentions.map((user) => buildMentionToken(user));
+  if (mentionLines.length === 0) return trimmedBody;
+  if (!trimmedBody) return mentionLines.join("\n");
+  return `${mentionLines.join("\n")}\n${trimmedBody}`;
 }
 
 export function extractMentionedUserIds(message: string): number[] {
@@ -74,6 +72,17 @@ export function filterMentionUsers(users: MentionUser[], query: string) {
       );
     })
     .slice(0, 8);
+}
+
+/** Roles allowed in @-mention pickers (hide admin / HR / client). */
+export function isMentionableUserRole(role?: string | null) {
+  const normalized = String(role ?? "").toLowerCase();
+  if (!normalized) return true;
+  return normalized === "employee" || normalized === "manager";
+}
+
+export function filterMentionableUsers<T extends { role?: string | null }>(users: T[]): T[] {
+  return users.filter((user) => isMentionableUserRole(user.role));
 }
 
 export function removeMentionQuery(value: string, start: number, end: number) {

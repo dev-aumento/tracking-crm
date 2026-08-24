@@ -13,6 +13,7 @@ import {
   applyMediaEmbedPreview,
   buildEditorBodyFromDraft,
   extractMediaFromBody,
+  htmlContainsTable,
   hydrateRichEditorDom,
   insertMediaEmbedAtSelection,
   isPreviewableMedia,
@@ -21,6 +22,8 @@ import {
   linkifyPlainTextToHtml,
   escapeHtmlText,
   normalizeExternalUrl,
+  plainTextLooksLikeTable,
+  plainTextTableToHtml,
   RICH_MEDIA_ID_ATTR,
   RICH_MEDIA_NAME_ATTR,
   RICH_MEDIA_MIME_ATTR,
@@ -515,6 +518,7 @@ export const RichTextCommentEditor = forwardRef<
   };
 
   const htmlHasVisibleText = (value: string) => {
+    if (htmlContainsTable(value)) return true;
     const text = value
       .replace(/<br\s*\/?>/gi, " ")
       .replace(/&nbsp;/gi, " ")
@@ -528,10 +532,13 @@ export const RichTextCommentEditor = forwardRef<
     if (html.trim()) {
       const sanitized = sanitizeRichCommentHtml(html);
       if (sanitized && htmlHasVisibleText(sanitized)) {
-        // If pasted HTML has no anchors but plain text is a URL, still linkify.
-        if (!/<a\b/i.test(sanitized)) {
+        // Prefer real HTML structure (tables/lists). Only fall back to linkified
+        // plain text when the paste is essentially unstructured text with a URL.
+        const hasStructure =
+          htmlContainsTable(sanitized) || /<(ul|ol|li)\b/i.test(sanitized);
+        if (!hasStructure && !/<a\b/i.test(sanitized)) {
           const plain = clipboard.getData("text/plain");
-          if (plain && /(?:https?:\/\/|www\.)/i.test(plain)) {
+          if (plain && /(?:https?:\/\/|www\.)/i.test(plain) && !plainTextLooksLikeTable(plain)) {
             document.execCommand(
               "insertHTML",
               false,
@@ -549,6 +556,15 @@ export const RichTextCommentEditor = forwardRef<
 
     const text = clipboard.getData("text/plain");
     if (!text) return false;
+
+    if (plainTextLooksLikeTable(text)) {
+      const tableHtml = sanitizeRichCommentHtml(plainTextTableToHtml(text));
+      if (tableHtml) {
+        document.execCommand("insertHTML", false, tableHtml);
+        emitChange();
+        return true;
+      }
+    }
 
     if (isProbablyUrl(text.trim())) {
       const href = normalizeExternalUrl(text.trim());
@@ -750,7 +766,7 @@ export const RichTextCommentEditor = forwardRef<
         ) : null}
       </div>
 
-      <div className="relative px-3 pb-3">
+      <div className="relative min-w-0 max-w-full px-3 pb-3">
         {showPlaceholder ? (
           <div className="pointer-events-none absolute left-3 top-0 text-sm text-gray-400">
             {isDragOver ? "Drop file here..." : placeholder}
@@ -781,7 +797,7 @@ export const RichTextCommentEditor = forwardRef<
               : undefined
           }
           className={cn(
-            "overflow-y-auto text-sm text-gray-800 focus:outline-none",
+            "rich-comment-editor min-w-0 max-w-full overflow-x-auto overflow-y-auto text-sm text-gray-800 focus:outline-none",
             typeof editorHeight === "number"
               ? "max-h-none"
               : "min-h-[72px] max-h-48",

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { createRouter, adminQuery } from "./middleware";
+import { createRouter, authedQuery } from "./middleware";
 import { ensureSchema } from "./lib/migrate";
 import {
   getCollection,
@@ -11,9 +11,13 @@ import {
 } from "./queries/connection";
 import { isAuthDisabled } from "./lib/dev-mode";
 import { Collections } from "@db/mongo/collections";
-import type { CustomerDoc, InvoiceDoc } from "@db/mongo/types";
 import { orgFilter, requireOrganizationId } from "./lib/tenant";
 import { assertPermission } from "./lib/permissions";
+import {
+  customerActivityStatus,
+  syncCustomersFromClients,
+} from "./lib/sync-customers-from-clients";
+import type { CustomerDoc, InvoiceDoc, UserDoc } from "@db/mongo/types";
 
 const contactPersonSchema = z.object({
   salutation: z.string(),
@@ -82,7 +86,10 @@ function useMock() {
   return isAuthDisabled() || !hasMongoConfigured();
 }
 
-function toClient(doc: CustomerDoc) {
+function toClient(
+  doc: CustomerDoc,
+  status: "active" | "inactive" = "active",
+) {
   return {
     ...doc,
     gstTreatment:
@@ -90,6 +97,9 @@ function toClient(doc: CustomerDoc) {
       (doc.gstNumber?.trim() ? "registered_business" : "unregistered_business"),
     businessLegalName: doc.businessLegalName || "",
     businessTradeName: doc.businessTradeName || "",
+    sourceUserId: doc.sourceUserId ?? null,
+    sourceOrganizationId: doc.sourceOrganizationId ?? null,
+    status,
     createdAt:
       doc.createdAt instanceof Date ? doc.createdAt.toISOString() : String(doc.createdAt),
     updatedAt:
@@ -98,24 +108,47 @@ function toClient(doc: CustomerDoc) {
 }
 
 export const customerRouter = createRouter({
-  list: adminQuery.query(async ({ ctx }) => {
+  list: authedQuery.query(async ({ ctx }) => {
     assertPermission(ctx.user, "customers.manage");
     if (useMock()) {
       return mockCustomers
         .filter((c) => c.organizationId === (ctx.user.organizationId ?? 1))
-        .map(toClient);
+        .map((doc) => toClient(doc));
     }
 
     await ensureSchema();
+    const organizationId = requireOrganizationId(ctx.user);
+    await syncCustomersFromClients(organizationId, ctx.user.id);
+
     const col = await getCollection<CustomerDoc>(Collections.customers);
     const docs = await col
       .find(orgFilter(ctx.user))
       .sort({ createdAt: -1 })
       .toArray();
-    return docs.map(toClient);
+
+    const userIds = [
+      ...new Set(
+        docs
+          .map((doc) => doc.sourceUserId)
+          .filter((id): id is number => id != null),
+      ),
+    ];
+    const usersById = new Map<number, Pick<UserDoc, "status">>();
+    if (userIds.length > 0) {
+      const userCol = await getCollection<UserDoc>(Collections.users);
+      const users = await userCol
+        .find({ id: { $in: userIds } })
+        .project({ id: 1, status: 1 })
+        .toArray();
+      for (const user of users) {
+        usersById.set(user.id, user);
+      }
+    }
+
+    return docs.map((doc) => toClient(doc, customerActivityStatus(doc, usersById)));
   }),
 
-  get: adminQuery
+  get: authedQuery
     .input(z.object({ id: z.number() }))
     .query(async ({ ctx, input }) => {
       assertPermission(ctx.user, "customers.manage");
@@ -132,7 +165,7 @@ export const customerRouter = createRouter({
       return toClient(doc);
     }),
 
-  create: adminQuery
+  create: authedQuery
     .input(customerInputSchema)
     .mutation(async ({ ctx, input }) => {
       assertPermission(ctx.user, "customers.manage");
@@ -163,7 +196,7 @@ export const customerRouter = createRouter({
       return toClient(doc);
     }),
 
-  update: adminQuery
+  update: authedQuery
     .input(customerInputSchema.extend({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       assertPermission(ctx.user, "customers.manage");
@@ -199,7 +232,7 @@ export const customerRouter = createRouter({
       return toClient(updated!);
     }),
 
-  delete: adminQuery
+  delete: authedQuery
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       assertPermission(ctx.user, "customers.manage");
@@ -240,7 +273,7 @@ export const customerRouter = createRouter({
     }),
 
   /** One-time import of browser-local legacy records into the org database. */
-  importLegacy: adminQuery
+  importLegacy: authedQuery
     .input(
       z.object({
         customers: z.array(

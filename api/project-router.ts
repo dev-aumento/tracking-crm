@@ -52,23 +52,44 @@ export const projectRouter = createRouter({
       z.object({
         status: z.string().optional(),
         search: z.string().optional(),
+        /** When true, only projects the caller created or joined. */
+        joinedOnly: z.boolean().optional(),
       }).optional()
     )
     .query(async ({ input, ctx }) => {
-      if (useMock()) return mock.mockProjectList(ctx.user.id);
+      if (useMock()) {
+        return mock.mockProjectList(ctx.user.id, {
+          status: input?.status,
+          joinedOnly: input?.joinedOnly,
+        });
+      }
 
       await ensureSchema();
-      const { status, search } = input || {};
+      const { status, search, joinedOnly } = input || {};
 
       const filter: Record<string, unknown> = { ...orgFilter(ctx.user) };
       if (status) filter.status = status;
       if (search) filter.name = new RegExp(escapeRegex(search), "i");
 
       const projectCol = await getCollection<ProjectDoc>(Collections.projects);
-      const allProjects = await projectCol
+      let allProjects = await projectCol
         .find(filter)
         .sort({ createdAt: -1 })
         .toArray();
+
+      if (joinedOnly) {
+        const memberCol = await getCollection<{ projectId: number; userId: number }>(
+          Collections.projectMembers,
+        );
+        const memberships = await memberCol
+          .find({ userId: ctx.user.id })
+          .project({ projectId: 1 })
+          .toArray();
+        const joinedIds = new Set(memberships.map((m) => m.projectId));
+        allProjects = allProjects.filter(
+          (p) => p.createdBy === ctx.user.id || joinedIds.has(p.id),
+        );
+      }
 
       const projectIds = allProjects.map((p) => p.id);
       const taskCol = await getCollection<TaskDoc>(Collections.tasks);
