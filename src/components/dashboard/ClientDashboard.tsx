@@ -16,6 +16,7 @@ import {
 } from "@/lib/timezone";
 import { formatMoney, invoiceTotal } from "@/lib/invoice-store";
 import { buildAllTasksViewPath, buildMyTasksViewPath } from "@/lib/task-notification-link";
+import { canCreateProject as userCanCreateProject } from "@/lib/create-project-permission";
 import { hasPermission } from "@/lib/permissions";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import { motion } from "framer-motion";
@@ -115,7 +116,7 @@ export function ClientDashboard() {
   const myTasksPath = hasPermission(user, "tasks.view_all") ? "/admin/tasks" : "/tasks";
   const [taskTab, setTaskTab] = useState<TaskTab>("upcoming");
   const [peoplePeriod, setPeoplePeriod] = useState<PeoplePeriod>("week");
-  const canCreateProject = hasPermission(user, "projects.manage");
+  const canCreateProject = userCanCreateProject(user);
 
   const { data: projects, isLoading: projectsLoading } = trpc.project.list.useQuery(
     undefined,

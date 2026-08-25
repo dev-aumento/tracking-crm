@@ -226,7 +226,9 @@ export default function ProjectDetail() {
     [projectsData],
   );
 
-  const canManage = hasPermission(user, "projects.manage");
+  const canManage =
+    hasPermission(user, "projects.manage") ||
+    (isClientPortalUser(user) && project?.createdBy === user?.id);
   const canCreate = canCreateTask(user);
   const canAddSection =
     canViewTasks &&

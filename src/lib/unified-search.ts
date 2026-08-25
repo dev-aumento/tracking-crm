@@ -1,7 +1,7 @@
 import { isTaskRelatedToUser, type TaskForSearchFilter } from "@/lib/task-search-filter";
 
 export type SearchUser = { id: number; name: string | null; avatar?: string | null };
-export type SearchProject = { id: number; name: string };
+export type SearchProject = { id: number; name: string; clientName?: string | null };
 
 export type UnifiedSearchContext = {
   users: SearchUser[];
@@ -41,7 +41,11 @@ export function usersMatchingQuery(query: string, users: SearchUser[]) {
 export function projectsMatchingQuery(query: string, projects: SearchProject[]) {
   const q = normalizeQuery(query);
   if (!q) return [];
-  return projects.filter((p) => textMatchesQuery(p.name, q));
+  return projects.filter(
+    (p) =>
+      textMatchesQuery(p.name, q) ||
+      (p.clientName ? textMatchesQuery(p.clientName, q) : false),
+  );
 }
 
 export function tasksMatchingTitleQuery(query: string, tasks: TaskWithProject[]) {

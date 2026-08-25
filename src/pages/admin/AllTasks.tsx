@@ -18,6 +18,7 @@ import {
   DEFAULT_TASK_SEARCH_FILTERS,
   type TaskSearchFilters,
 } from "@/lib/task-search-filter";
+import { hasPermission } from "@/lib/permissions";
 import { canCreateTask, tryOpenCreateTask } from "@/lib/create-task-permission";
 import { getTaskBulkPermissions } from "@/lib/task-bulk-permissions";
 import { submitCreateTask } from "@/lib/submit-create-task";
@@ -36,6 +37,7 @@ import { FilterSelect } from "@/components/shared/FilterSelect";
 import { LIST_PAGE_SIZE, paginateItems } from "@/lib/list-pagination";
 import type { ProjectPipelineStageKey } from "@/lib/task-kanban";
 import { taskMatchesStatusFilter } from "@/lib/task-kanban";
+import { resolveClientAgencyName } from "@/lib/client-task-groups";
 import { Check, ChevronDown, Plus } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -71,7 +73,7 @@ type AdminTaskRow = {
   participantIds?: number[];
   observerIds?: number[];
   dueDate?: string | Date | null;
-  project?: { id: number; name: string } | null;
+  project?: { id: number; name: string; clientName?: string | null } | null;
   assignee?: { name: string | null; avatar?: string | null } | null;
   creator?: { name: string | null; avatar?: string | null } | null;
 };
@@ -104,6 +106,7 @@ export default function AdminAllTasks({
   const [priorityFilter, setPriorityFilter] = useState("");
   const [projectFilter, setProjectFilter] = useState("");
   const [projectFilterOpen, setProjectFilterOpen] = useState(false);
+  const [agencyFilter, setAgencyFilter] = useState("");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [formData, setFormData] = useState<CreateTaskFormData>(() => createEmptyTaskForm());
   const [isCreating, setIsCreating] = useState(false);
@@ -167,6 +170,10 @@ export default function AdminAllTasks({
   });
   const { data: usersData } = trpc.user.listForPicker.useQuery({ limit: 500 });
   const { data: projectsData } = trpc.project.listForPicker.useQuery();
+  const { data: customers } = trpc.customer.list.useQuery(undefined, {
+    enabled: clientAssignedOnly && hasPermission(user, "customers.manage"),
+    retry: false,
+  });
 
   const addParticipantMutation = trpc.task.addParticipant.useMutation();
   const addObserverMutation = trpc.task.addObserver.useMutation();
@@ -189,13 +196,51 @@ export default function AdminAllTasks({
 
   const allTasks = (data?.tasks ?? []) as AdminTaskRow[];
 
+  const projectClientNameById = useMemo(() => {
+    const map: Record<number, string> = {};
+    for (const project of projectsData ?? []) {
+      const name = project.clientName?.trim();
+      if (name) map[project.id] = name;
+    }
+    return map;
+  }, [projectsData]);
+
+  const clientNameByUserId = useMemo(() => {
+    const map: Record<number, string> = {};
+    for (const customer of customers ?? []) {
+      if (customer.sourceUserId == null) continue;
+      const name = (customer.displayName || customer.companyName || "").trim();
+      if (name) map[customer.sourceUserId] = name;
+    }
+    return map;
+  }, [customers]);
+
+  const groupingOptions = useMemo(
+    () => ({ clientNameByUserId, projectClientNameById }),
+    [clientNameByUserId, projectClientNameById],
+  );
+
   const searchContext = useMemo(
     () => ({
       users: usersData?.users ?? [],
-      projects: (projectsData ?? []).map((p) => ({ id: p.id, name: p.name })),
+      projects: (projectsData ?? []).map((p) => ({
+        id: p.id,
+        name: p.name,
+        clientName: p.clientName ?? null,
+      })),
     }),
     [usersData?.users, projectsData],
   );
+
+  const agencyOptions = useMemo(() => {
+    const names = new Map<string, string>();
+    for (const task of allTasks) {
+      const name = resolveClientAgencyName(task, groupingOptions);
+      const key = name.trim().toLowerCase();
+      if (!names.has(key)) names.set(key, name);
+    }
+    return [...names.values()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }, [allTasks, groupingOptions]);
 
   const filteredTasks = useMemo(() => {
     let result = applyTaskSearchFilters(
@@ -214,9 +259,28 @@ export default function AdminAllTasks({
       const projectId = Number(projectFilter);
       result = result.filter((t) => t.projectId === projectId || t.project?.id === projectId);
     }
+    if (clientAssignedOnly && agencyFilter) {
+      const selected = agencyFilter.trim().toLowerCase();
+      result = result.filter(
+        (t) => resolveClientAgencyName(t, groupingOptions).trim().toLowerCase() === selected,
+      );
+    }
 
     return result;
-  }, [allTasks, taskFilters, search, searchContext, statusFilter, priorityFilter, projectFilter]);
+  }, [
+    allTasks,
+    taskFilters,
+    search,
+    searchContext,
+    statusFilter,
+    priorityFilter,
+    projectFilter,
+    clientAssignedOnly,
+    agencyFilter,
+    groupingOptions,
+  ]);
+
+  const groupClientTasks = clientAssignedOnly && view === "list";
 
   const taskPagination = useMemo(
     () => paginateItems(filteredTasks, page, LIST_PAGE_SIZE),
@@ -225,7 +289,7 @@ export default function AdminAllTasks({
 
   useEffect(() => {
     setPage(1);
-  }, [search, taskFilters, statusFilter, priorityFilter, projectFilter, view]);
+  }, [search, taskFilters, statusFilter, priorityFilter, projectFilter, agencyFilter, view]);
 
   useEffect(() => {
     if (page > taskPagination.totalPages) {
@@ -233,7 +297,7 @@ export default function AdminAllTasks({
     }
   }, [page, taskPagination.totalPages]);
 
-  const paginatedTasks = taskPagination.items;
+  const listTasks = groupClientTasks ? filteredTasks : taskPagination.items;
 
   const { highlightedTaskId, locateTask } = useLocateTaskInView([
     view,
@@ -243,6 +307,7 @@ export default function AdminAllTasks({
     statusFilter,
     priorityFilter,
     projectFilter,
+    agencyFilter,
   ]);
 
   const handleTaskSearchSelect = useCallback(
@@ -277,7 +342,7 @@ export default function AdminAllTasks({
     );
   }, [projectFilter, projectOptions]);
 
-  const hasExtraFilters = statusFilter || priorityFilter || projectFilter;
+  const hasExtraFilters = statusFilter || priorityFilter || projectFilter || (clientAssignedOnly && agencyFilter);
 
   const toggleSelect = (id: number) => {
     setSelectedIds((prev) => {
@@ -289,7 +354,7 @@ export default function AdminAllTasks({
   };
 
   const toggleSelectAll = () => {
-    const visibleIds = paginatedTasks.map((t) => t.id);
+    const visibleIds = listTasks.map((t) => t.id);
     const allSelected =
       visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
 
@@ -397,9 +462,9 @@ export default function AdminAllTasks({
           </h1>
           <p className="text-sm text-gray-500 mt-0.5">
             {clientAssignedOnly
-              ? `${filteredTasks.length} of ${data?.total ?? allTasks.length} tasks clients assigned to your team`
+              ? `${filteredTasks.length} of ${data?.total ?? allTasks.length} tasks, grouped by client / agency and project`
               : `${filteredTasks.length} of ${data?.total ?? allTasks.length} tasks across all projects`}
-            {view === "list" && filteredTasks.length > LIST_PAGE_SIZE
+            {view === "list" && !groupClientTasks && filteredTasks.length > LIST_PAGE_SIZE
               ? ` · page ${taskPagination.page} of ${taskPagination.totalPages}`
               : ""}
           </p>
@@ -531,6 +596,18 @@ export default function AdminAllTasks({
             </Command>
           </PopoverContent>
         </Popover>
+        {clientAssignedOnly ? (
+          <FilterSelect
+            value={agencyFilter}
+            onChange={setAgencyFilter}
+            options={[
+              { value: "", label: "All Clients / Agencies" },
+              ...agencyOptions.map((name) => ({ value: name, label: name })),
+            ]}
+            aria-label="Filter by client or agency"
+            triggerClassName="h-9 bg-gray-50 min-w-[11.5rem]"
+          />
+        ) : null}
         {hasExtraFilters && (
           <button
             type="button"
@@ -538,6 +615,7 @@ export default function AdminAllTasks({
               setStatusFilter("");
               setPriorityFilter("");
               setProjectFilter("");
+              setAgencyFilter("");
             }}
             className="h-9 px-3 text-sm text-gray-500 hover:text-[#2563EB]"
           >
@@ -566,10 +644,14 @@ export default function AdminAllTasks({
           />
 
           <TaskListView
-            tasks={paginatedTasks}
+            tasks={listTasks}
             isLoading={isLoading}
             onTaskClick={openTask}
-            emptyMessage="No tasks found"
+            emptyMessage={
+              clientAssignedOnly
+                ? "No client tasks found. Tasks appear here when an invited client assigns work to your team."
+                : "No tasks found"
+            }
             selectable={taskSelectionEnabled}
             selectedIds={selectedIds}
             onToggleSelect={toggleSelect}
@@ -578,8 +660,11 @@ export default function AdminAllTasks({
             listQueryInput={listInput}
             allowProjectEdit
             projects={projectsData ?? []}
+            groupByClientProject={groupClientTasks}
+            clientNameByUserId={clientNameByUserId}
           />
 
+          {groupClientTasks ? null : (
           <ListPaginationControls
             page={taskPagination.page}
             totalPages={taskPagination.totalPages}
@@ -588,6 +673,7 @@ export default function AdminAllTasks({
             endIndex={taskPagination.endIndex}
             onPageChange={setPage}
           />
+          )}
         </>
       )}
 

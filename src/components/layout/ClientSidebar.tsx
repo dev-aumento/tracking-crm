@@ -191,7 +191,7 @@ export function ClientSidebarPanel({
               </p>
               <button
                 type="button"
-                onClick={() => onNavigate("/projects")}
+                onClick={() => onNavigate("/projects?create=1")}
                 className="h-5 w-5 flex items-center justify-center rounded text-[#6D6E6F] hover:bg-[#EDEAE6] hover:text-[#1E1F21] dark:text-[#A2A0A0] dark:hover:bg-[#2E2F32] dark:hover:text-[#F5F4F3]"
                 aria-label="New project"
               >

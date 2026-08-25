@@ -9,6 +9,7 @@ import { resolveOrgPlanAccess, type OrgPlanAccess } from "./subscription-access"
 export const CLIENT_WORKSPACE_MEMBER_PERMISSIONS = [
   "dashboard.view",
   "projects.view",
+  "projects.manage",
   "tasks.view_all",
   "tasks.create",
   "tasks.edit_all",

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { trpc } from "@/providers/trpc";
 import { useAuth } from "@/hooks/useAuth";
 import { hasPermission } from "@/lib/permissions";
+import { canCreateProject } from "@/lib/create-project-permission";
 import { isClientPortalUser } from "@/lib/client-portal";
 import { ProjectFunnelTable } from "@/components/projects/ProjectFunnelTable";
 import { ProjectFormFields } from "@/components/projects/ProjectFormFields";
@@ -63,11 +64,13 @@ function ProjectsWebPage() {
   const utils = trpc.useUtils();
 
   const createMutation = trpc.project.create.useMutation({
-    onSuccess: () => {
+    onSuccess: (project) => {
       utils.project.list.invalidate();
+      utils.project.listForPicker.invalidate();
       setShowCreate(false);
       setCreateError(null);
       setFormData(EMPTY_PROJECT_FORM);
+      if (project?.id) navigate(`/projects/${project.id}`);
     },
     onError: (error) => {
       setCreateError(error.message || "Could not create project.");
@@ -76,7 +79,7 @@ function ProjectsWebPage() {
 
   const deleteProjectMutation = trpc.project.delete.useMutation();
 
-  const canCreate = hasPermission(user, "projects.manage");
+  const canCreate = canCreateProject(user);
   const canDelete = hasPermission(user, "projects.manage");
 
   useEffect(() => {
@@ -207,7 +210,7 @@ function ProjectsWebPage() {
               }}
               className="h-9 px-3.5 bg-[#F06A6A] text-white rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-[#E45C5C]"
             >
-              <Plus size={16} /> Create
+              <Plus size={16} /> New project
             </button>
           ) : null}
         </div>

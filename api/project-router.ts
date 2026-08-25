@@ -20,11 +20,22 @@ import {
 } from "./queries/project-members";
 import { omitPasswordHash } from "./queries/users";
 import { notifyLeads } from "./lib/notify-leads";
-import { assertPermission, hasAnyPermission } from "./lib/permissions";
+import { assertPermission, hasAnyPermission, hasPermission } from "./lib/permissions";
+import { isClientWorkspaceUser } from "./lib/client-workspace";
 import { Collections } from "@db/mongo/collections";
 import type { ProjectDoc, TaskDoc, UserDoc } from "@db/mongo/types";
 import { ensureSchema } from "./lib/migrate";
-import { belongsToUserOrg, orgFilter, requireOrganizationId } from "./lib/tenant";
+import { belongsToUserOrg, orgFilter, requireOrganizationId, resolveClientWorkspace } from "./lib/tenant";
+import {
+  attachClientToMatchedProject,
+  filterClientDuplicateProjects,
+  filterProjectsForInvitedClient,
+  findCanonicalProjectByName,
+  isInvitedStaffClient,
+  listOrganizationProjects,
+  loadCreatorRoles,
+  loadJoinedProjectIds,
+} from "./lib/client-projects";
 import {
   projectPerformancePercent,
 } from "@/lib/project-funnel";
@@ -42,8 +53,47 @@ function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+async function applyProjectVisibility<
+  T extends Pick<ProjectDoc, "id" | "name" | "createdBy" | "status">,
+>(
+  user: { id: number; role?: string | null; organizationId?: number | null },
+  projects: T[],
+): Promise<T[]> {
+  if (await isInvitedStaffClient(user)) {
+    const joinedIds = await loadJoinedProjectIds(user.id);
+    return filterProjectsForInvitedClient(projects, user.id, joinedIds);
+  }
+  const roles = await loadCreatorRoles(projects.map((project) => project.createdBy ?? 0));
+  return filterClientDuplicateProjects(projects, roles);
+}
+
 function useMock() {
   return isAuthDisabled() || !hasMongoConfigured();
+}
+
+async function assertCanCreateProject(user: Parameters<typeof isClientWorkspaceUser>[0] & Parameters<typeof hasPermission>[0]) {
+  if (hasPermission(user, "projects.manage")) return;
+  if (await isClientWorkspaceUser(user)) return;
+  throw new TRPCError({
+    code: "FORBIDDEN",
+    message: "You do not have permission to create projects",
+  });
+}
+
+async function assertCanManageProject(
+  user: Parameters<typeof assertCanCreateProject>[0] & { id: number },
+  project: Pick<ProjectDoc, "organizationId" | "createdBy">,
+) {
+  if (!belongsToUserOrg({ ...user, organizationId: user.organizationId ?? null }, project.organizationId)) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+  }
+  if (hasPermission(user, "projects.manage")) return;
+  if (await resolveClientWorkspace(user.organizationId)) return;
+  if (await isClientWorkspaceUser(user) && project.createdBy === user.id) return;
+  throw new TRPCError({
+    code: "FORBIDDEN",
+    message: "You do not have permission to update this project",
+  });
 }
 
 export const projectRouter = createRouter({
@@ -90,6 +140,8 @@ export const projectRouter = createRouter({
           (p) => p.createdBy === ctx.user.id || joinedIds.has(p.id),
         );
       }
+
+      allProjects = await applyProjectVisibility(ctx.user, allProjects);
 
       const projectIds = allProjects.map((p) => p.id);
       const taskCol = await getCollection<TaskDoc>(Collections.tasks);
@@ -186,11 +238,13 @@ export const projectRouter = createRouter({
     const projectCol = await getCollection<ProjectDoc>(Collections.projects);
     const projects = await projectCol
       .find(orgFilter(ctx.user))
-      .project({ id: 1, name: 1, color: 1, clientName: 1, _id: 0 })
+      .project({ id: 1, name: 1, color: 1, clientName: 1, createdBy: 1, status: 1, _id: 0 })
       .sort({ name: 1 })
-      .toArray();
+      .toArray() as Array<Pick<ProjectDoc, "id" | "name" | "color" | "clientName" | "createdBy" | "status">>;
 
-    return projects.map((p) => ({
+    const visible = await applyProjectVisibility(ctx.user, projects);
+
+    return visible.map((p) => ({
       id: p.id,
       name: p.name,
       color: p.color ?? null,
@@ -205,18 +259,29 @@ export const projectRouter = createRouter({
 
       await ensureSchema();
       const project = await findById<ProjectDoc>(Collections.projects, input.id);
-      if (!project || !belongsToUserOrg(ctx.user, project.organizationId)) return null;
+      if (!project || project.organizationId == null || !belongsToUserOrg(ctx.user, project.organizationId)) return null;
 
-      const joined = await isProjectMember(project.id, ctx.user.id, project.createdBy);
-      const canViewTasks = canViewProjectTasks(ctx.user, project.createdBy, joined);
+      let resolved = project;
+      if (await isInvitedStaffClient(ctx.user)) {
+        const orgProjects = await listOrganizationProjects(project.organizationId);
+        const canonical = findCanonicalProjectByName(orgProjects, project.name, ctx.user.id);
+        if (canonical) resolved = orgProjects.find((row) => row.id === canonical.id) ?? project;
+        const joinedIds = await loadJoinedProjectIds(ctx.user.id);
+        const visible = filterProjectsForInvitedClient(orgProjects, ctx.user.id, joinedIds);
+        if (!visible.some((row) => row.id === resolved.id)) return null;
+        await joinProject(resolved.id, ctx.user.id);
+      }
+
+      const joined = await isProjectMember(resolved.id, ctx.user.id, resolved.createdBy);
+      const canViewTasks = canViewProjectTasks(ctx.user, resolved.createdBy, joined);
 
       const taskCol = await getCollection<TaskDoc>(Collections.tasks);
       const [joinedMemberIds, statusGroups, hoursAgg, dueAgg, creator] = await Promise.all([
-        getProjectMemberUserIds(project.id),
+        getProjectMemberUserIds(resolved.id),
         canViewTasks
           ? taskCol
               .aggregate<{ _id: string; count: number }>([
-                { $match: { projectId: project.id } },
+                { $match: { projectId: resolved.id } },
                 { $group: { _id: "$status", count: { $sum: 1 } } },
               ])
               .toArray()
@@ -224,7 +289,7 @@ export const projectRouter = createRouter({
         canViewTasks
           ? taskCol
               .aggregate<{ total: number }>([
-                { $match: { projectId: project.id } },
+                { $match: { projectId: resolved.id } },
                 {
                   $group: {
                     _id: null,
@@ -245,14 +310,14 @@ export const projectRouter = createRouter({
           : Promise.resolve([] as Array<{ total: number }>),
         canViewTasks
           ? taskCol
-              .find({ projectId: project.id, dueDate: { $ne: null } })
+              .find({ projectId: resolved.id, dueDate: { $ne: null } })
               .project({ dueDate: 1, _id: 0 })
               .sort({ dueDate: 1 })
               .limit(1)
               .toArray()
           : Promise.resolve([] as Array<{ dueDate?: Date | null }>),
-        project.createdBy
-          ? findById<UserDoc>(Collections.users, project.createdBy)
+        resolved.createdBy
+          ? findById<UserDoc>(Collections.users, resolved.createdBy)
           : Promise.resolve(null),
       ]);
 
@@ -268,15 +333,15 @@ export const projectRouter = createRouter({
       const dueDate = dueAgg[0]?.dueDate ?? null;
 
       const memberIds = new Set<number>(joinedMemberIds);
-      if (project.createdBy) memberIds.add(project.createdBy);
+      if (resolved.createdBy) memberIds.add(resolved.createdBy);
 
       return {
-        ...project,
-        customPipelineStages: project.customPipelineStages ?? [],
-        pipelineStageLabelOverrides: project.pipelineStageLabelOverrides ?? {},
-        hiddenPipelineStageKeys: project.hiddenPipelineStageKeys ?? [],
-        pipelineStageOrder: project.pipelineStageOrder ?? [],
-        pipelineStages: resolveProjectPipelineStages(project),
+        ...resolved,
+        customPipelineStages: resolved.customPipelineStages ?? [],
+        pipelineStageLabelOverrides: resolved.pipelineStageLabelOverrides ?? {},
+        hiddenPipelineStageKeys: resolved.hiddenPipelineStageKeys ?? [],
+        pipelineStageOrder: resolved.pipelineStageOrder ?? [],
+        pipelineStages: resolveProjectPipelineStages(resolved),
         creator: creator ? omitPasswordHash(creator) : null,
         stats: { total, todo, inProgress, review, done },
         hoursTracked: Math.round(hoursTracked * 10) / 10,
@@ -319,17 +384,32 @@ export const projectRouter = createRouter({
       icon: z.string().max(50).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      assertPermission(ctx.user, "projects.manage");
+      await assertCanCreateProject(ctx.user);
       await ensureSchema();
       const now = new Date();
+      const organizationId = requireOrganizationId(ctx.user);
+      const invitedClient = await isInvitedStaffClient(ctx.user);
+
+      if (invitedClient) {
+        const orgProjects = await listOrganizationProjects(organizationId);
+        const matched = findCanonicalProjectByName(orgProjects, input.name, ctx.user.id);
+        if (matched) {
+          const full = await findById<ProjectDoc>(Collections.projects, matched.id);
+          if (full) {
+            const attached = await attachClientToMatchedProject(full, ctx.user);
+            return { ...attached, creator: ctx.user, matchedExisting: true as const };
+          }
+        }
+      }
+
       const project = await insertDoc<ProjectDoc>(Collections.projects, {
         name: input.name,
         description: input.description ?? null,
-        clientName: input.clientName?.trim() || null,
+        clientName: input.clientName?.trim() || (invitedClient ? ctx.user.name?.trim() || null : null),
         status: "active",
         color: input.color ?? null,
         icon: input.icon ?? null,
-        organizationId: requireOrganizationId(ctx.user),
+        organizationId,
         createdBy: ctx.user.id,
         createdAt: now,
         updatedAt: now,
@@ -360,13 +440,13 @@ export const projectRouter = createRouter({
       icon: z.string().max(50).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      assertPermission(ctx.user, "projects.manage");
       await ensureSchema();
       const { id, ...data } = input;
       const existing = await findById<ProjectDoc>(Collections.projects, id);
       if (!existing || !belongsToUserOrg(ctx.user, existing.organizationId)) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
       }
+      await assertCanManageProject(ctx.user, existing);
       const patch: Partial<ProjectDoc> = { updatedAt: new Date() };
 
       if (data.name !== undefined) patch.name = data.name;

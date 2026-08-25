@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { UserAvatar } from "@/components/shared/UserAvatar";
 import { PriorityBadge } from "@/components/shared/StatusBadge";
@@ -17,7 +17,8 @@ import { applyOptimisticTaskUpdate, patchTaskInListCaches } from "@/lib/task-cac
 import { invalidateProjectStats } from "@/lib/project-stats";
 import { refreshDashboardStats } from "@/lib/dashboard-refresh";
 import { trpc } from "@/providers/trpc";
-import { Check, ChevronDown, ClipboardList, Clock, GripVertical, Loader2 } from "lucide-react";
+import { Check, ChevronDown, ClipboardList, Clock, FolderKanban, GripVertical, Handshake, Loader2 } from "lucide-react";
+import { groupTasksByClientAndProject } from "@/lib/client-task-groups";
 import { formatWorkZoneDate } from "@/lib/timezone";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -35,14 +36,16 @@ type ListTask = {
   status: string;
   stage?: string | null;
   priority: string;
+  createdBy?: number | null;
+  projectId?: number | null;
   createdAt?: string | Date | null;
   dueDate?: string | Date | null;
-  project?: { id: number; name: string; color?: string | null } | null;
+  project?: { id: number; name: string; color?: string | null; clientName?: string | null } | null;
   assignee?: { name: string | null; avatar?: string | null } | null;
   creator?: { name: string | null; avatar?: string | null } | null;
 };
 
-type ProjectOption = { id: number; name: string; color?: string | null };
+type ProjectOption = { id: number; name: string; color?: string | null; clientName?: string | null };
 
 type TaskListQueryInput = {
   limit: number;
@@ -83,6 +86,10 @@ interface TaskListViewProps {
   allowProjectEdit?: boolean;
   /** Optional preloaded projects for the project editor. */
   projects?: ProjectOption[];
+  /** Client's Tasks: nest rows under client/agency, then project. */
+  groupByClientProject?: boolean;
+  /** Invited-client company names keyed by user id (customer display name). */
+  clientNameByUserId?: Record<number, string>;
 }
 
 /** Full-width grid — task column gets more space; metadata columns are narrower */
@@ -90,6 +97,10 @@ const GRID_WITH_CHECKBOX =
   "grid-cols-[40px_minmax(0,2.5fr)_minmax(0,0.72fr)_minmax(0,0.72fr)_minmax(0,0.72fr)_minmax(5rem,0.62fr)_minmax(5rem,0.62fr)_minmax(4.25rem,0.48fr)]";
 const GRID_WITHOUT_CHECKBOX =
   "grid-cols-[minmax(0,2.5fr)_minmax(0,0.72fr)_minmax(0,0.72fr)_minmax(0,0.72fr)_minmax(5rem,0.62fr)_minmax(5rem,0.62fr)_minmax(4.25rem,0.48fr)]";
+const GRID_WITH_CHECKBOX_NO_PROJECT =
+  "grid-cols-[40px_minmax(0,2.5fr)_minmax(0,0.85fr)_minmax(0,0.85fr)_minmax(5rem,0.62fr)_minmax(5rem,0.62fr)_minmax(4.25rem,0.48fr)]";
+const GRID_WITHOUT_CHECKBOX_NO_PROJECT =
+  "grid-cols-[minmax(0,2.5fr)_minmax(0,0.85fr)_minmax(0,0.85fr)_minmax(5rem,0.62fr)_minmax(5rem,0.62fr)_minmax(4.25rem,0.48fr)]";
 
 function TaskProjectCell({
   task,
@@ -245,6 +256,7 @@ function TaskListRow({
   onProjectChange,
   isTimerRunning,
   timerElapsedSeconds,
+  hideProjectColumn = false,
 }: {
   task: ListTask;
   rowClass: string;
@@ -264,6 +276,7 @@ function TaskListRow({
   onProjectChange: (taskId: number, projectId: number | null) => void;
   isTimerRunning?: boolean;
   timerElapsedSeconds?: number;
+  hideProjectColumn?: boolean;
 }) {
   const overdue = isTaskOverdue(task);
   const isSelected = selectable && selectedIds?.has(task.id);
@@ -324,6 +337,7 @@ function TaskListRow({
         ) : null}
       </div>
 
+      {hideProjectColumn ? null : (
       <div className="min-w-0 pr-2">
         <TaskProjectCell
           task={task}
@@ -333,6 +347,7 @@ function TaskListRow({
           onChange={(nextProjectId) => onProjectChange(task.id, nextProjectId)}
         />
       </div>
+      )}
 
       <div className="flex items-center gap-2 min-w-0 pr-2">
         {task.assignee ? (
@@ -396,9 +411,13 @@ export function TaskListView({
   stages = PROJECT_PIPELINE_STAGES.map((s) => ({ ...s })),
   allowProjectEdit = false,
   projects: projectsProp,
+  groupByClientProject = false,
+  clientNameByUserId,
 }: TaskListViewProps) {
   const allowStageDrag = enableStageDrag ?? groupByStage;
   const [collapsedStages, setCollapsedStages] = useState<Set<string>>(() => new Set());
+  const [collapsedClients, setCollapsedClients] = useState<Set<string>>(() => new Set());
+  const [collapsedClientProjects, setCollapsedClientProjects] = useState<Set<string>>(() => new Set());
   const [draggedTask, setDraggedTask] = useState<number | null>(null);
   const [dragOverStage, setDragOverStage] = useState<string | null>(null);
   const didDragRef = useRef(false);
@@ -479,13 +498,51 @@ export function TaskListView({
   };
 
   const stageGroups = useMemo(() => {
-    if (!groupByStage) return [];
+    if (!groupByStage || groupByClientProject) return [];
     const resolved = withOrphanPipelineStages(stages, tasks);
     return resolved.map((stage) => ({
       ...stage,
       tasks: tasksForPipelineColumn(tasks, stage.key),
     }));
-  }, [tasks, stages, groupByStage]);
+  }, [tasks, stages, groupByStage, groupByClientProject]);
+
+  const clientProjectGroups = useMemo(() => {
+    if (!groupByClientProject) return [];
+    const projectClientNameById: Record<number, string> = {};
+    for (const project of projects) {
+      const name = project.clientName?.trim();
+      if (name) projectClientNameById[project.id] = name;
+    }
+    return groupTasksByClientAndProject(tasks, {
+      clientNameByUserId,
+      projectClientNameById,
+    });
+  }, [groupByClientProject, tasks, projects, clientNameByUserId]);
+
+  useEffect(() => {
+    if (!groupByClientProject || highlightedTaskId == null) return;
+    const clientGroup = clientProjectGroups.find((group) =>
+      group.projects.some((project) => project.tasks.some((task) => task.id === highlightedTaskId)),
+    );
+    if (!clientGroup) return;
+    const projectGroup = clientGroup.projects.find((project) =>
+      project.tasks.some((task) => task.id === highlightedTaskId),
+    );
+    if (!projectGroup) return;
+    const projectCollapseKey = `${clientGroup.key}::${projectGroup.key}`;
+    setCollapsedClients((prev) => {
+      if (!prev.has(clientGroup.key)) return prev;
+      const next = new Set(prev);
+      next.delete(clientGroup.key);
+      return next;
+    });
+    setCollapsedClientProjects((prev) => {
+      if (!prev.has(projectCollapseKey)) return prev;
+      const next = new Set(prev);
+      next.delete(projectCollapseKey);
+      return next;
+    });
+  }, [groupByClientProject, highlightedTaskId, clientProjectGroups]);
 
   if (isLoading) {
     return (
@@ -510,7 +567,14 @@ export function TaskListView({
     tasks.length > 0 &&
     tasks.every((task) => selectedIds.has(task.id));
 
-  const gridCols = selectable ? GRID_WITH_CHECKBOX : GRID_WITHOUT_CHECKBOX;
+  const hideProjectColumn = groupByClientProject;
+  const gridCols = hideProjectColumn
+    ? selectable
+      ? GRID_WITH_CHECKBOX_NO_PROJECT
+      : GRID_WITHOUT_CHECKBOX_NO_PROJECT
+    : selectable
+      ? GRID_WITH_CHECKBOX
+      : GRID_WITHOUT_CHECKBOX;
   const rowClass = `w-full grid ${gridCols} gap-x-4 gap-y-2 px-5 items-center`;
 
   const toggleStage = (stageKey: string) => {
@@ -571,6 +635,24 @@ export function TaskListView({
     updateMutation.variables?.id === taskId &&
     updateMutation.variables.projectId !== undefined;
 
+  const toggleClient = (clientKey: string) => {
+    setCollapsedClients((prev) => {
+      const next = new Set(prev);
+      if (next.has(clientKey)) next.delete(clientKey);
+      else next.add(clientKey);
+      return next;
+    });
+  };
+
+  const toggleClientProject = (projectCollapseKey: string) => {
+    setCollapsedClientProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(projectCollapseKey)) next.delete(projectCollapseKey);
+      else next.add(projectCollapseKey);
+      return next;
+    });
+  };
+
   const header = (
     <div className={`${rowClass} py-3 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider`}>
       {selectable ? (
@@ -585,7 +667,7 @@ export function TaskListView({
         </span>
       ) : null}
       <span>Task</span>
-      <span>Project</span>
+      {hideProjectColumn ? null : <span>Project</span>}
       <span>Assignee</span>
       <span>Created by</span>
       <span>Created</span>
@@ -593,6 +675,119 @@ export function TaskListView({
       <span>Priority</span>
     </div>
   );
+
+  if (groupByClientProject) {
+    return (
+      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden w-full">
+        <div className="overflow-x-auto">
+          <div className="min-w-[900px]">
+            {header}
+            {clientProjectGroups.map((clientGroup) => {
+              const clientCollapsed = collapsedClients.has(clientGroup.key);
+              return (
+                <div key={clientGroup.key}>
+                  <button
+                    type="button"
+                    onClick={() => toggleClient(clientGroup.key)}
+                    className="w-full flex items-center gap-2.5 px-5 py-3 bg-[#F8FAFC] border-b border-gray-200 text-left hover:bg-[#F1F5F9] transition-colors"
+                    aria-expanded={!clientCollapsed}
+                  >
+                    <ChevronDown
+                      size={16}
+                      className={cn(
+                        "text-gray-400 shrink-0 transition-transform",
+                        clientCollapsed && "-rotate-90",
+                      )}
+                    />
+                    <span className="text-sm font-semibold text-[#1F2937] truncate">
+                      {clientGroup.clientName}
+                    </span>
+                    <span className="text-[11px] font-semibold text-gray-500 bg-white border border-gray-200 rounded-full min-w-[22px] h-5 px-1.5 flex items-center justify-center">
+                      {clientGroup.taskCount}
+                    </span>
+                    <span className="text-[11px] text-gray-400 truncate">
+                      {clientGroup.projects.length}{" "}
+                      {clientGroup.projects.length === 1 ? "project" : "projects"}
+                    </span>
+                  </button>
+
+                  {!clientCollapsed
+                    ? clientGroup.projects.map((projectGroup) => {
+                        const projectCollapseKey = `${clientGroup.key}::${projectGroup.key}`;
+                        const projectCollapsed = collapsedClientProjects.has(projectCollapseKey);
+                        return (
+                          <div key={projectCollapseKey}>
+                            <button
+                              type="button"
+                              onClick={() => toggleClientProject(projectCollapseKey)}
+                              className="w-full flex items-center gap-2 px-5 py-2.5 pl-12 bg-gray-50/80 border-b border-gray-200 text-left hover:bg-gray-100/80 transition-colors"
+                              aria-expanded={!projectCollapsed}
+                            >
+                              <ChevronDown
+                                size={15}
+                                className={cn(
+                                  "text-gray-400 shrink-0 transition-transform",
+                                  projectCollapsed && "-rotate-90",
+                                )}
+                              />
+                              {projectGroup.projectColor ? (
+                                <span
+                                  className="w-2.5 h-2.5 rounded-full shrink-0"
+                                  style={{ backgroundColor: projectGroup.projectColor }}
+                                />
+                              ) : (
+                                <FolderKanban size={14} className="text-gray-400 shrink-0" />
+                              )}
+                              <span className="text-[13px] font-medium text-[#374151] truncate">
+                                {projectGroup.projectName}
+                              </span>
+                              <span className="text-[11px] font-semibold text-gray-500 bg-gray-200/80 rounded-full min-w-[22px] h-5 px-1.5 flex items-center justify-center">
+                                {projectGroup.tasks.length}
+                              </span>
+                            </button>
+
+                            {!projectCollapsed
+                              ? projectGroup.tasks.map((task) => (
+                                  <TaskListRow
+                                    key={task.id}
+                                    task={task}
+                                    rowClass={rowClass}
+                                    selectable={selectable}
+                                    selectedIds={selectedIds}
+                                    onToggleSelect={onToggleSelect}
+                                    highlightedTaskId={highlightedTaskId}
+                                    enableStageDrag={false}
+                                    isDragging={false}
+                                    onDragStart={handleDragStart}
+                                    onDragEnd={handleDragEnd}
+                                    didDragRef={didDragRef}
+                                    onTaskClick={onTaskClick}
+                                    allowProjectEdit={allowProjectEdit}
+                                    projects={projects}
+                                    projectUpdatePending={isProjectUpdatePending(task.id)}
+                                    onProjectChange={handleProjectChange}
+                                    isTimerRunning={activeTimerTaskId === task.id}
+                                    timerElapsedSeconds={
+                                      activeTimerTaskId === task.id
+                                        ? activeTimerElapsedSeconds
+                                        : undefined
+                                    }
+                                    hideProjectColumn={hideProjectColumn}
+                                  />
+                                ))
+                              : null}
+                          </div>
+                        );
+                      })
+                    : null}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!groupByStage) {
     return (
@@ -623,6 +818,7 @@ export function TaskListView({
             timerElapsedSeconds={
               activeTimerTaskId === task.id ? activeTimerElapsedSeconds : undefined
             }
+            hideProjectColumn={hideProjectColumn}
           />
         ))}
           </div>
@@ -708,6 +904,7 @@ export function TaskListView({
                     timerElapsedSeconds={
                       activeTimerTaskId === task.id ? activeTimerElapsedSeconds : undefined
                     }
+                    hideProjectColumn={hideProjectColumn}
                   />
                 ))
               )

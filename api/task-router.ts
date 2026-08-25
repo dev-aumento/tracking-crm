@@ -42,7 +42,8 @@ import { extractMentionedUserIdsFromComment, richCommentPlainText } from "@/lib/
 import { parseMeetingComment } from "@/lib/workspace-meetings";
 import { readCommentReactions, toggleUserReaction } from "@/lib/comment-reactions";
 import { pauseOtherRunningTaskTimers } from "./lib/task-timers";
-import { belongsToUserOrg, findOrganizationById, orgFilter, requireOrganizationId } from "./lib/tenant";
+import { belongsToUserOrg, orgFilter, requireOrganizationId } from "./lib/tenant";
+import { isInvitedStaffClient, resolveProjectForInvitedClientTask } from "./lib/client-projects";
 
 /** Comment reactions are stored on activity.metadata.reactions */
 const projectStageSchema = z
@@ -97,16 +98,9 @@ function isStaffAssigneeRole(role: string | null | undefined) {
   return normalized !== "client" && normalized !== "platform";
 }
 
-function isClientRole(role: string | null | undefined) {
-  return String(role ?? "").toLowerCase() === "client";
-}
-
 /** Invited clients live in a staff CRM org, not a standalone client portal. */
 async function isInvitedClientUser(user: { role?: string | null; organizationId?: number | null }) {
-  if (!isClientRole(user.role)) return false;
-  if (user.organizationId == null || user.organizationId <= 0) return true;
-  const org = await findOrganizationById(user.organizationId);
-  return org?.workspaceType !== "client";
+  return isInvitedStaffClient(user);
 }
 
 async function canViewTask(user: SafeUser, task: Pick<TaskDoc, "organizationId" | "assigneeId">) {
@@ -283,7 +277,7 @@ export const taskRouter = createRouter({
         projectIds.length > 0
           ? await projectCol
               .find({ id: { $in: projectIds } })
-              .project({ id: 1, name: 1, color: 1 })
+              .project({ id: 1, name: 1, color: 1, clientName: 1 })
               .toArray()
           : [];
       const projectMap = new Map(projectDocs.map((p) => [p.id, p]));
@@ -459,10 +453,22 @@ export const taskRouter = createRouter({
         createdBy = ctx.user.id;
       }
 
-      if (taskData.projectId != null) {
-        const project = await findById<ProjectDoc>(Collections.projects, taskData.projectId);
+      let projectId = taskData.projectId ?? null;
+      if (projectId != null) {
+        const project = await findById<ProjectDoc>(Collections.projects, projectId);
         if (!project || !belongsToUserOrg(ctx.user, project.organizationId)) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+        }
+        if (await isInvitedStaffClient(ctx.user)) {
+          const resolved = await resolveProjectForInvitedClientTask(
+            organizationId,
+            project,
+            ctx.user.id,
+          );
+          if (!resolved) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+          }
+          projectId = resolved.id;
         }
       }
 
@@ -473,7 +479,7 @@ export const taskRouter = createRouter({
         stage: taskData.stage ?? "new",
         priority: taskData.priority ?? "medium",
         assigneeId: taskData.assigneeId ?? null,
-        projectId: taskData.projectId ?? null,
+        projectId,
         organizationId,
         createdBy,
         dueDate: taskData.dueDate
@@ -592,7 +598,25 @@ export const taskRouter = createRouter({
       }
       if (data.priority !== undefined) patch.priority = data.priority;
       if (data.assigneeId !== undefined) patch.assigneeId = data.assigneeId;
-      if (data.projectId !== undefined) patch.projectId = data.projectId;
+      if (data.projectId !== undefined) {
+        if (data.projectId != null && (await isInvitedStaffClient(ctx.user))) {
+          const project = await findById<ProjectDoc>(Collections.projects, data.projectId);
+          if (!project || !belongsToUserOrg(ctx.user, project.organizationId)) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+          }
+          const resolved = await resolveProjectForInvitedClientTask(
+            requireOrganizationId(ctx.user),
+            project,
+            ctx.user.id,
+          );
+          if (!resolved) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+          }
+          patch.projectId = resolved.id;
+        } else {
+          patch.projectId = data.projectId;
+        }
+      }
       if (data.position !== undefined) patch.position = data.position;
       if (data.dueDate !== undefined) {
         patch.dueDate = data.dueDate ? new Date(data.dueDate) : null;
